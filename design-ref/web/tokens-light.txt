@@ -1,0 +1,588 @@
+--add-to-library-bg-color: rgba(0,0,0,.06)
+--add-to-library-border-color: rgba(0,0,0,.04)
+--addToLibraryFillLayoutOverride: rgba(0,0,0,.85)
+--bannerDarkGray: #444
+--body: 400 13px/var(--body-line-height,1.2307692308) var(--body-font-family-locale,var(--body-font-family,var(--font-family)))
+--body-bold: 700 13px/var(--body-bold-line-height,1.2307692308) var(--body-bold-font-family-locale,var(--body-bold-font-family,var(--font-family)))
+--body-bold-short: 700 13px/var(--body-bold-short-line-height,1.0769630769) var(--body-bold-short-font-family-locale,var(--body-bold-short-font-family,var(--font-family)))
+--body-bold-tall: 700 13px/var(--body-bold-tall-line-height,1.3846153846) var(--body-bold-tall-font-family-locale,var(--body-bold-tall-font-family,var(--font-family)))
+--body-emphasized: 600 13px/var(--body-emphasized-line-height,1.2307692308) var(--body-emphasized-font-family-locale,var(--body-emphasized-font-family,var(--font-family)))
+--body-emphasized-short: 600 13px/var(--body-emphasized-short-line-height,1.0769630769) var(--body-emphasized-short-font-family-locale,var(--body-emphasized-short-font-family,var(--font-family)))
+--body-emphasized-tall: 600 13px/var(--body-emphasized-tall-line-height,1.3846153846) var(--body-emphasized-tall-font-family-locale,var(--body-emphasized-tall-font-family,var(--font-family)))
+--body-heavy: 800 13px/var(--body-heavy-line-height,1.2307692308) var(--body-heavy-font-family-locale,var(--body-heavy-font-family,var(--font-family)))
+--body-heavy-short: 800 13px/var(--body-heavy-short-line-height,1.0769630769) var(--body-heavy-short-font-family-locale,var(--body-heavy-short-font-family,var(--font-family)))
+--body-heavy-tall: 800 13px/var(--body-heavy-tall-line-height,1.3846153846) var(--body-heavy-tall-font-family-locale,var(--body-heavy-tall-font-family,var(--font-family)))
+--body-medium: 500 13px/var(--body-medium-line-height,1.2307692308) var(--body-medium-font-family-locale,var(--body-medium-font-family,var(--font-family)))
+--body-medium-short: 500 13px/var(--body-medium-short-line-height,1.0769630769) var(--body-medium-short-font-family-locale,var(--body-medium-short-font-family,var(--font-family)))
+--body-medium-tall: 500 13px/var(--body-medium-tall-line-height,1.3846153846) var(--body-medium-tall-font-family-locale,var(--body-medium-tall-font-family,var(--font-family)))
+--body-reduced: 400 14px/var(--body-reduced-line-height,1.4285914286) var(--body-reduced-font-family-locale,var(--body-reduced-font-family,var(--font-family)))
+--body-reduced-semibold: 600 14px/var(--body-reduced-semibold-line-height,1.4285914286) var(--body-reduced-semibold-font-family-locale,var(--body-reduced-semibold-font-family,var(--font-family)))
+--body-reduced-tight: 400 14px/var(--body-reduced-tight-line-height,1.2857742857) var(--body-reduced-tight-font-family-locale,var(--body-reduced-tight-font-family,var(--font-family)))
+--body-semibold: 600 13px/var(--body-semibold-line-height,1.2307692308) var(--body-semibold-font-family-locale,var(--body-semibold-font-family,var(--font-family)))
+--body-semibold-short: 600 13px/var(--body-semibold-short-line-height,1.0769630769) var(--body-semibold-short-font-family-locale,var(--body-semibold-short-font-family,var(--font-family)))
+--body-semibold-tall: 600 13px/var(--body-semibold-tall-line-height,1.3846153846) var(--body-semibold-tall-font-family-locale,var(--body-semibold-tall-font-family,var(--font-family)))
+--body-short: 400 13px/var(--body-short-line-height,1.0769630769) var(--body-short-font-family-locale,var(--body-short-font-family,var(--font-family)))
+--body-tall: 400 13px/var(--body-tall-line-height,1.3846153846) var(--body-tall-font-family-locale,var(--body-tall-font-family,var(--font-family)))
+--body-tight: 400 17px/var(--body-tight-line-height,1.2353641176) var(--body-tight-font-family-locale,var(--body-tight-font-family,var(--font-family)))
+--bodyGutter: 40px
+--button-circle-background-color: rgba(0,0,0,.06)
+--button-circle-border-color: rgba(0,0,0,.04)
+--button-pill-background-color: #000
+--button-pill-color: #fff
+--callout: 400 12px/var(--callout-line-height,1.25) var(--callout-font-family-locale,var(--callout-font-family,var(--font-family)))
+--callout-bold: 700 12px/var(--callout-bold-line-height,1.25) var(--callout-bold-font-family-locale,var(--callout-bold-font-family,var(--font-family)))
+--callout-bold-short: 700 12px/var(--callout-bold-short-line-height,1.0833733333) var(--callout-bold-short-font-family-locale,var(--callout-bold-short-font-family,var(--font-family)))
+--callout-bold-tall: 700 12px/var(--callout-bold-tall-line-height,1.4166666667) var(--callout-bold-tall-font-family-locale,var(--callout-bold-tall-font-family,var(--font-family)))
+--callout-emphasized: 600 12px/var(--callout-emphasized-line-height,1.25) var(--callout-emphasized-font-family-locale,var(--callout-emphasized-font-family,var(--font-family)))
+--callout-emphasized-short: 600 12px/var(--callout-emphasized-short-line-height,1.0833733333) var(--callout-emphasized-short-font-family-locale,var(--callout-emphasized-short-font-family,var(--font-family)))
+--callout-emphasized-tall: 600 12px/var(--callout-emphasized-tall-line-height,1.4166666667) var(--callout-emphasized-tall-font-family-locale,var(--callout-emphasized-tall-font-family,var(--font-family)))
+--callout-heavy: 800 12px/var(--callout-heavy-line-height,1.25) var(--callout-heavy-font-family-locale,var(--callout-heavy-font-family,var(--font-family)))
+--callout-heavy-short: 800 12px/var(--callout-heavy-short-line-height,1.0833733333) var(--callout-heavy-short-font-family-locale,var(--callout-heavy-short-font-family,var(--font-family)))
+--callout-heavy-tall: 800 12px/var(--callout-heavy-tall-line-height,1.4166666667) var(--callout-heavy-tall-font-family-locale,var(--callout-heavy-tall-font-family,var(--font-family)))
+--callout-medium: 500 12px/var(--callout-medium-line-height,1.25) var(--callout-medium-font-family-locale,var(--callout-medium-font-family,var(--font-family)))
+--callout-medium-short: 500 12px/var(--callout-medium-short-line-height,1.0833733333) var(--callout-medium-short-font-family-locale,var(--callout-medium-short-font-family,var(--font-family)))
+--callout-medium-tall: 500 12px/var(--callout-medium-tall-line-height,1.4166666667) var(--callout-medium-tall-font-family-locale,var(--callout-medium-tall-font-family,var(--font-family)))
+--callout-semibold: 600 12px/var(--callout-semibold-line-height,1.25) var(--callout-semibold-font-family-locale,var(--callout-semibold-font-family,var(--font-family)))
+--callout-semibold-short: 600 12px/var(--callout-semibold-short-line-height,1.0833733333) var(--callout-semibold-short-font-family-locale,var(--callout-semibold-short-font-family,var(--font-family)))
+--callout-semibold-tall: 600 12px/var(--callout-semibold-tall-line-height,1.4166666667) var(--callout-semibold-tall-font-family-locale,var(--callout-semibold-tall-font-family,var(--font-family)))
+--callout-short: 400 12px/var(--callout-short-line-height,1.0833733333) var(--callout-short-font-family-locale,var(--callout-short-font-family,var(--font-family)))
+--callout-tall: 400 12px/var(--callout-tall-line-height,1.4166666667) var(--callout-tall-font-family-locale,var(--callout-tall-font-family,var(--font-family)))
+--caption: 400 12px/var(--caption-line-height,1.3333733333) var(--caption-font-family-locale,var(--caption-font-family,var(--font-family)))
+--caption-1: 400 10px/var(--caption-1-line-height,1.3) var(--caption-1-font-family-locale,var(--caption-1-font-family,var(--font-family)))
+--caption-1-bold: 700 10px/var(--caption-1-bold-line-height,1.3) var(--caption-1-bold-font-family-locale,var(--caption-1-bold-font-family,var(--font-family)))
+--caption-1-bold-short: 700 10px/var(--caption-1-bold-short-line-height,1.1) var(--caption-1-bold-short-font-family-locale,var(--caption-1-bold-short-font-family,var(--font-family)))
+--caption-1-bold-tall: 700 10px/var(--caption-1-bold-tall-line-height,1.5) var(--caption-1-bold-tall-font-family-locale,var(--caption-1-bold-tall-font-family,var(--font-family)))
+--caption-1-emphasized: 500 10px/var(--caption-1-emphasized-line-height,1.3) var(--caption-1-emphasized-font-family-locale,var(--caption-1-emphasized-font-family,var(--font-family)))
+--caption-1-emphasized-short: 500 10px/var(--caption-1-emphasized-short-line-height,1.1) var(--caption-1-emphasized-short-font-family-locale,var(--caption-1-emphasized-short-font-family,var(--font-family)))
+--caption-1-emphasized-tall: 500 10px/var(--caption-1-emphasized-tall-line-height,1.5) var(--caption-1-emphasized-tall-font-family-locale,var(--caption-1-emphasized-tall-font-family,var(--font-family)))
+--caption-1-heavy: 800 10px/var(--caption-1-heavy-line-height,1.3) var(--caption-1-heavy-font-family-locale,var(--caption-1-heavy-font-family,var(--font-family)))
+--caption-1-heavy-short: 800 10px/var(--caption-1-heavy-short-line-height,1.1) var(--caption-1-heavy-short-font-family-locale,var(--caption-1-heavy-short-font-family,var(--font-family)))
+--caption-1-heavy-tall: 800 10px/var(--caption-1-heavy-tall-line-height,1.5) var(--caption-1-heavy-tall-font-family-locale,var(--caption-1-heavy-tall-font-family,var(--font-family)))
+--caption-1-medium: 500 10px/var(--caption-1-medium-line-height,1.3) var(--caption-1-medium-font-family-locale,var(--caption-1-medium-font-family,var(--font-family)))
+--caption-1-medium-short: 500 10px/var(--caption-1-medium-short-line-height,1.1) var(--caption-1-medium-short-font-family-locale,var(--caption-1-medium-short-font-family,var(--font-family)))
+--caption-1-medium-tall: 500 10px/var(--caption-1-medium-tall-line-height,1.5) var(--caption-1-medium-tall-font-family-locale,var(--caption-1-medium-tall-font-family,var(--font-family)))
+--caption-1-semibold: 600 10px/var(--caption-1-semibold-line-height,1.3) var(--caption-1-semibold-font-family-locale,var(--caption-1-semibold-font-family,var(--font-family)))
+--caption-1-semibold-short: 600 10px/var(--caption-1-semibold-short-line-height,1.1) var(--caption-1-semibold-short-font-family-locale,var(--caption-1-semibold-short-font-family,var(--font-family)))
+--caption-1-semibold-tall: 600 10px/var(--caption-1-semibold-tall-line-height,1.5) var(--caption-1-semibold-tall-font-family-locale,var(--caption-1-semibold-tall-font-family,var(--font-family)))
+--caption-1-short: 400 10px/var(--caption-1-short-line-height,1.1) var(--caption-1-short-font-family-locale,var(--caption-1-short-font-family,var(--font-family)))
+--caption-1-tall: 400 10px/var(--caption-1-tall-line-height,1.5) var(--caption-1-tall-font-family-locale,var(--caption-1-tall-font-family,var(--font-family)))
+--caption-2: 500 10px/var(--caption-2-line-height,1.3) var(--caption-2-font-family-locale,var(--caption-2-font-family,var(--font-family)))
+--caption-2-bold: 700 10px/var(--caption-2-bold-line-height,1.3) var(--caption-2-bold-font-family-locale,var(--caption-2-bold-font-family,var(--font-family)))
+--caption-2-bold-short: 700 10px/var(--caption-2-bold-short-line-height,1.1) var(--caption-2-bold-short-font-family-locale,var(--caption-2-bold-short-font-family,var(--font-family)))
+--caption-2-bold-tall: 700 10px/var(--caption-2-bold-tall-line-height,1.5) var(--caption-2-bold-tall-font-family-locale,var(--caption-2-bold-tall-font-family,var(--font-family)))
+--caption-2-emphasized: 600 10px/var(--caption-2-emphasized-line-height,1.3) var(--caption-2-emphasized-font-family-locale,var(--caption-2-emphasized-font-family,var(--font-family)))
+--caption-2-emphasized-short: 600 10px/var(--caption-2-emphasized-short-line-height,1.1) var(--caption-2-emphasized-short-font-family-locale,var(--caption-2-emphasized-short-font-family,var(--font-family)))
+--caption-2-emphasized-tall: 600 10px/var(--caption-2-emphasized-tall-line-height,1.5) var(--caption-2-emphasized-tall-font-family-locale,var(--caption-2-emphasized-tall-font-family,var(--font-family)))
+--caption-2-heavy: 800 10px/var(--caption-2-heavy-line-height,1.3) var(--caption-2-heavy-font-family-locale,var(--caption-2-heavy-font-family,var(--font-family)))
+--caption-2-heavy-short: 800 10px/var(--caption-2-heavy-short-line-height,1.1) var(--caption-2-heavy-short-font-family-locale,var(--caption-2-heavy-short-font-family,var(--font-family)))
+--caption-2-heavy-tall: 800 10px/var(--caption-2-heavy-tall-line-height,1.5) var(--caption-2-heavy-tall-font-family-locale,var(--caption-2-heavy-tall-font-family,var(--font-family)))
+--caption-2-medium: 500 10px/var(--caption-2-medium-line-height,1.3) var(--caption-2-medium-font-family-locale,var(--caption-2-medium-font-family,var(--font-family)))
+--caption-2-medium-short: 500 10px/var(--caption-2-medium-short-line-height,1.1) var(--caption-2-medium-short-font-family-locale,var(--caption-2-medium-short-font-family,var(--font-family)))
+--caption-2-medium-tall: 500 10px/var(--caption-2-medium-tall-line-height,1.5) var(--caption-2-medium-tall-font-family-locale,var(--caption-2-medium-tall-font-family,var(--font-family)))
+--caption-2-semibold: 600 10px/var(--caption-2-semibold-line-height,1.3) var(--caption-2-semibold-font-family-locale,var(--caption-2-semibold-font-family,var(--font-family)))
+--caption-2-semibold-short: 600 10px/var(--caption-2-semibold-short-line-height,1.1) var(--caption-2-semibold-short-font-family-locale,var(--caption-2-semibold-short-font-family,var(--font-family)))
+--caption-2-semibold-tall: 600 10px/var(--caption-2-semibold-tall-line-height,1.5) var(--caption-2-semibold-tall-font-family-locale,var(--caption-2-semibold-tall-font-family,var(--font-family)))
+--caption-2-short: 500 10px/var(--caption-2-short-line-height,1.1) var(--caption-2-short-font-family-locale,var(--caption-2-short-font-family,var(--font-family)))
+--caption-2-tall: 500 10px/var(--caption-2-tall-line-height,1.5) var(--caption-2-tall-font-family-locale,var(--caption-2-tall-font-family,var(--font-family)))
+--cardHoverColor: rgba(120,120,128,.25)
+--circularArtistHeaderGradientBottom: rgba(0,0,0,.05)
+--containerInnerStroke: #000
+--contextMenuBorderColor: rgba(0,0,0,.15)
+--contextMenuOverrideTextColor: #ff3b30
+--contextMenuTextColor: rgba(0,0,0,.85)
+--dialogShadowColor: rgba(0,0,0,.25)
+--dropdownActiveOutlineColor: #06c
+--dropdownActiveOutlineColorShadow: rgba(0,102,204,.6)
+--dropdownBackground: #575757
+--dropdownLightGray: #707070
+--dropdownLightGrayIcon: #999
+--eyebrow: 600 21px/var(--eyebrow-line-height,1.1904761905) var(--eyebrow-font-family-locale,var(--eyebrow-font-family,var(--font-family)))
+--eyebrow-elevated: 600 21px/var(--eyebrow-elevated-line-height,1.1904761905) var(--eyebrow-elevated-font-family-locale,var(--eyebrow-elevated-font-family,var(--font-family)))
+--eyebrow-reduced: 600 19px/var(--eyebrow-reduced-line-height,1.2105263158) var(--eyebrow-reduced-font-family-locale,var(--eyebrow-reduced-font-family,var(--font-family)))
+--eyebrow-super: 600 24px/var(--eyebrow-super-line-height,1.1666666667) var(--eyebrow-super-font-family-locale,var(--eyebrow-super-font-family,var(--font-family)))
+--fallbackButtonMaterial: rgba(142,142,147,.8)
+--fallbackMaterialBG: hsla(0,0%,100%,.97)
+--footerBg: #fbfbfb
+--footnote: 400 10px/var(--footnote-line-height,1.3) var(--footnote-font-family-locale,var(--footnote-font-family,var(--font-family)))
+--footnote-bold: 700 10px/var(--footnote-bold-line-height,1.3) var(--footnote-bold-font-family-locale,var(--footnote-bold-font-family,var(--font-family)))
+--footnote-bold-short: 700 10px/var(--footnote-bold-short-line-height,1.1) var(--footnote-bold-short-font-family-locale,var(--footnote-bold-short-font-family,var(--font-family)))
+--footnote-bold-tall: 700 10px/var(--footnote-bold-tall-line-height,1.5) var(--footnote-bold-tall-font-family-locale,var(--footnote-bold-tall-font-family,var(--font-family)))
+--footnote-emphasized: 600 10px/var(--footnote-emphasized-line-height,1.3) var(--footnote-emphasized-font-family-locale,var(--footnote-emphasized-font-family,var(--font-family)))
+--footnote-emphasized-short: 600 10px/var(--footnote-emphasized-short-line-height,1.1) var(--footnote-emphasized-short-font-family-locale,var(--footnote-emphasized-short-font-family,var(--font-family)))
+--footnote-emphasized-tall: 600 10px/var(--footnote-emphasized-tall-line-height,1.5) var(--footnote-emphasized-tall-font-family-locale,var(--footnote-emphasized-tall-font-family,var(--font-family)))
+--footnote-heavy: 800 10px/var(--footnote-heavy-line-height,1.3) var(--footnote-heavy-font-family-locale,var(--footnote-heavy-font-family,var(--font-family)))
+--footnote-heavy-short: 800 10px/var(--footnote-heavy-short-line-height,1.1) var(--footnote-heavy-short-font-family-locale,var(--footnote-heavy-short-font-family,var(--font-family)))
+--footnote-heavy-tall: 800 10px/var(--footnote-heavy-tall-line-height,1.5) var(--footnote-heavy-tall-font-family-locale,var(--footnote-heavy-tall-font-family,var(--font-family)))
+--footnote-medium: 500 10px/var(--footnote-medium-line-height,1.3) var(--footnote-medium-font-family-locale,var(--footnote-medium-font-family,var(--font-family)))
+--footnote-medium-short: 500 10px/var(--footnote-medium-short-line-height,1.1) var(--footnote-medium-short-font-family-locale,var(--footnote-medium-short-font-family,var(--font-family)))
+--footnote-medium-tall: 500 10px/var(--footnote-medium-tall-line-height,1.5) var(--footnote-medium-tall-font-family-locale,var(--footnote-medium-tall-font-family,var(--font-family)))
+--footnote-semibold: 600 10px/var(--footnote-semibold-line-height,1.3) var(--footnote-semibold-font-family-locale,var(--footnote-semibold-font-family,var(--font-family)))
+--footnote-semibold-short: 600 10px/var(--footnote-semibold-short-line-height,1.1) var(--footnote-semibold-short-font-family-locale,var(--footnote-semibold-short-font-family,var(--font-family)))
+--footnote-semibold-tall: 600 10px/var(--footnote-semibold-tall-line-height,1.5) var(--footnote-semibold-tall-font-family-locale,var(--footnote-semibold-tall-font-family,var(--font-family)))
+--footnote-short: 400 10px/var(--footnote-short-line-height,1.1) var(--footnote-short-font-family-locale,var(--footnote-short-font-family,var(--font-family)))
+--footnote-tall: 400 10px/var(--footnote-tall-line-height,1.5) var(--footnote-tall-font-family-locale,var(--footnote-tall-font-family,var(--font-family)))
+--genericJoeColor: #ebebeb
+--glassMaterialBackground: rgba(245,245,247,.55)
+--glassMaterialBackground-default_IC: #f2f2f2
+--glassMaterialBackground-onDark: rgba(38,38,40,.6)
+--glassMaterialBackground-onDark_IC: #0e0e0e
+--glassMaterialBackground-onLight: rgba(245,245,247,.55)
+--glassMaterialBackground-onLight_IC: #f2f2f2
+--glassMaterialInnerStroke: #000
+--glassMaterialInnerStroke-onDark: #fff
+--glassMaterialInnerStroke-onDark_IC: #e7e7e7
+--glassMaterialInnerStroke-onLight: #000
+--glassMaterialInnerStroke-onLight_IC: #0d0d0d
+--glassMaterialInnerStrokeCombined: rgba(0,0,0,.05)
+--glassMaterialInnerStrokeCombined-default_IC: #0d0d0d
+--glassMaterialInnerStrokeCombined-onDark: hsla(0,0%,100%,.2)
+--glassMaterialInnerStrokeCombined-onDark_IC: #e7e7e7
+--glassMaterialInnerStrokeCombined-onLight: rgba(0,0,0,.05)
+--glassMaterialInnerStrokeCombined-onLight_IC: #0d0d0d
+--glassMaterialShadowColor: rgba(0,0,0,.1)
+--glassMaterialShadowColor-onDark: rgba(0,0,0,.2)
+--glassMaterialShadowColor-onLight: rgba(0,0,0,.1)
+--global-transition: var(--global-transition-property,opacity) var(--global-transition-duration,.1s) var(--global-transition-timing-function,ease-in)
+--global-transition-duration: .1s
+--global-transition-property: opacity
+--global-transition-timing-function: ease-in
+--header: 400 34px/var(--header-line-height,1.1764905882) var(--header-font-family-locale,var(--header-font-family,var(--font-family)))
+--header-emphasized: 700 34px/var(--header-emphasized-line-height,1.1764905882) var(--header-emphasized-font-family-locale,var(--header-emphasized-font-family,var(--font-family)))
+--headline: 700 13px/var(--headline-line-height,1.2307692308) var(--headline-font-family-locale,var(--headline-font-family,var(--font-family)))
+--headline-bold: 700 13px/var(--headline-bold-line-height,1.2307692308) var(--headline-bold-font-family-locale,var(--headline-bold-font-family,var(--font-family)))
+--headline-bold-short: 700 13px/var(--headline-bold-short-line-height,1.0769630769) var(--headline-bold-short-font-family-locale,var(--headline-bold-short-font-family,var(--font-family)))
+--headline-bold-tall: 700 13px/var(--headline-bold-tall-line-height,1.3846153846) var(--headline-bold-tall-font-family-locale,var(--headline-bold-tall-font-family,var(--font-family)))
+--headline-elevated: 600 40px/var(--headline-elevated-line-height,1.1) var(--headline-elevated-font-family-locale,var(--headline-elevated-font-family,var(--font-family)))
+--headline-emphasized: 800 13px/var(--headline-emphasized-line-height,1.2307692308) var(--headline-emphasized-font-family-locale,var(--headline-emphasized-font-family,var(--font-family)))
+--headline-emphasized-short: 800 13px/var(--headline-emphasized-short-line-height,1.0769630769) var(--headline-emphasized-short-font-family-locale,var(--headline-emphasized-short-font-family,var(--font-family)))
+--headline-emphasized-tall: 800 13px/var(--headline-emphasized-tall-line-height,1.3846153846) var(--headline-emphasized-tall-font-family-locale,var(--headline-emphasized-tall-font-family,var(--font-family)))
+--headline-heavy: 800 13px/var(--headline-heavy-line-height,1.2307692308) var(--headline-heavy-font-family-locale,var(--headline-heavy-font-family,var(--font-family)))
+--headline-heavy-short: 800 13px/var(--headline-heavy-short-line-height,1.0769630769) var(--headline-heavy-short-font-family-locale,var(--headline-heavy-short-font-family,var(--font-family)))
+--headline-heavy-tall: 800 13px/var(--headline-heavy-tall-line-height,1.3846153846) var(--headline-heavy-tall-font-family-locale,var(--headline-heavy-tall-font-family,var(--font-family)))
+--headline-medium: 500 13px/var(--headline-medium-line-height,1.2307692308) var(--headline-medium-font-family-locale,var(--headline-medium-font-family,var(--font-family)))
+--headline-medium-short: 500 13px/var(--headline-medium-short-line-height,1.0769630769) var(--headline-medium-short-font-family-locale,var(--headline-medium-short-font-family,var(--font-family)))
+--headline-medium-tall: 500 13px/var(--headline-medium-tall-line-height,1.3846153846) var(--headline-medium-tall-font-family-locale,var(--headline-medium-tall-font-family,var(--font-family)))
+--headline-reduced: 600 28px/var(--headline-reduced-line-height,1.1428571429) var(--headline-reduced-font-family-locale,var(--headline-reduced-font-family,var(--font-family)))
+--headline-semibold: 600 13px/var(--headline-semibold-line-height,1.2307692308) var(--headline-semibold-font-family-locale,var(--headline-semibold-font-family,var(--font-family)))
+--headline-semibold-short: 600 13px/var(--headline-semibold-short-line-height,1.0769630769) var(--headline-semibold-short-font-family-locale,var(--headline-semibold-short-font-family,var(--font-family)))
+--headline-semibold-tall: 600 13px/var(--headline-semibold-tall-line-height,1.3846153846) var(--headline-semibold-tall-font-family-locale,var(--headline-semibold-tall-font-family,var(--font-family)))
+--headline-short: 700 13px/var(--headline-short-line-height,1.0769630769) var(--headline-short-font-family-locale,var(--headline-short-font-family,var(--font-family)))
+--headline-standalone: 600 48px/var(--headline-standalone-line-height,1.0834933333) var(--headline-standalone-font-family-locale,var(--headline-standalone-font-family,var(--font-family)))
+--headline-super: 600 48px/var(--headline-super-line-height,1.0834933333) var(--headline-super-font-family-locale,var(--headline-super-font-family,var(--font-family)))
+--headline-tall: 700 13px/var(--headline-tall-line-height,1.3846153846) var(--headline-tall-font-family-locale,var(--headline-tall-font-family,var(--font-family)))
+--intro: 400 19px/var(--intro-line-height,1.4211026316) var(--intro-font-family-locale,var(--intro-font-family,var(--font-family)))
+--intro-elevated: 400 21px/var(--intro-elevated-line-height,1.381002381) var(--intro-elevated-font-family-locale,var(--intro-elevated-font-family,var(--font-family)))
+--keyColor: #fa233b
+--keyColor-deepPressed: #c60007
+--keyColor-deepPressed-rgb: 198,0,7
+--keyColor-deepPressed_IC: #a20000
+--keyColor-deepPressed_IC-rgb: 162,0,0
+--keyColor-default_IC: #d60017
+--keyColor-default_IC-rgb: 214,0,23
+--keyColor-disabled: rgba(250,35,59,.35)
+--keyColor-disabled_IC: rgba(214,0,23,.25)
+--keyColor-pressed: #e00921
+--keyColor-pressed-rgb: 224,9,33
+--keyColor-pressed_IC: #b00
+--keyColor-pressed_IC-rgb: 187,0,0
+--keyColor-rgb: 250,35,59
+--keyColor-rollover: #c60007
+--keyColor-rollover-rgb: 198,0,7
+--keyColor-rollover_IC: #a20000
+--keyColor-rollover_IC-rgb: 162,0,0
+--keyColorBG: #fa233b
+--keyColorBG-default_IC: #d60017
+--keyline-border-style: .5px solid var(--labelDivider)
+--label: 600 21px/var(--label-line-height,1.1904761905) var(--label-font-family-locale,var(--label-font-family,var(--font-family)))
+--labelDivider: rgba(0,0,0,.15)
+--labelDivider-default_IC: rgba(0,0,0,.3)
+--labelDivider-onDark: hsla(0,0%,100%,.1)
+--labelDivider-onDark_IC: hsla(0,0%,100%,.3)
+--labelDivider-onLight: rgba(0,0,0,.15)
+--labelDivider-onLight_IC: rgba(0,0,0,.4)
+--labelDivider-vibrant: rgba(0,0,0,.11)
+--labelDivider-vibrantOnDark: hsla(0,0%,100%,.13)
+--labelDivider-vibrantOnDark_IC: #fff
+--labelDivider-vibrantOnLight: rgba(0,0,0,.11)
+--labelDivider-vibrantOnLight_IC: #000
+--labelDivider-vibrant_IC: rgba(0,0,0,.3)
+--large-title: 400 26px/var(--large-title-line-height,1.2307692308) var(--large-title-font-family-locale,var(--large-title-font-family,var(--font-family)))
+--large-title-bold: 700 26px/var(--large-title-bold-line-height,1.2307692308) var(--large-title-bold-font-family-locale,var(--large-title-bold-font-family,var(--font-family)))
+--large-title-bold-short: 700 26px/var(--large-title-bold-short-line-height,1.1538461538) var(--large-title-bold-short-font-family-locale,var(--large-title-bold-short-font-family,var(--font-family)))
+--large-title-bold-tall: 700 26px/var(--large-title-bold-tall-line-height,1.3077523077) var(--large-title-bold-tall-font-family-locale,var(--large-title-bold-tall-font-family,var(--font-family)))
+--large-title-emphasized: 700 26px/var(--large-title-emphasized-line-height,1.2307692308) var(--large-title-emphasized-font-family-locale,var(--large-title-emphasized-font-family,var(--font-family)))
+--large-title-emphasized-short: 700 26px/var(--large-title-emphasized-short-line-height,1.1538461538) var(--large-title-emphasized-short-font-family-locale,var(--large-title-emphasized-short-font-family,var(--font-family)))
+--large-title-emphasized-tall: 700 26px/var(--large-title-emphasized-tall-line-height,1.3077523077) var(--large-title-emphasized-tall-font-family-locale,var(--large-title-emphasized-tall-font-family,var(--font-family)))
+--large-title-heavy: 800 26px/var(--large-title-heavy-line-height,1.2307692308) var(--large-title-heavy-font-family-locale,var(--large-title-heavy-font-family,var(--font-family)))
+--large-title-heavy-short: 800 26px/var(--large-title-heavy-short-line-height,1.1538461538) var(--large-title-heavy-short-font-family-locale,var(--large-title-heavy-short-font-family,var(--font-family)))
+--large-title-heavy-tall: 800 26px/var(--large-title-heavy-tall-line-height,1.3077523077) var(--large-title-heavy-tall-font-family-locale,var(--large-title-heavy-tall-font-family,var(--font-family)))
+--large-title-medium: 500 26px/var(--large-title-medium-line-height,1.2307692308) var(--large-title-medium-font-family-locale,var(--large-title-medium-font-family,var(--font-family)))
+--large-title-medium-short: 500 26px/var(--large-title-medium-short-line-height,1.1538461538) var(--large-title-medium-short-font-family-locale,var(--large-title-medium-short-font-family,var(--font-family)))
+--large-title-medium-tall: 500 26px/var(--large-title-medium-tall-line-height,1.3077523077) var(--large-title-medium-tall-font-family-locale,var(--large-title-medium-tall-font-family,var(--font-family)))
+--large-title-semibold: 600 26px/var(--large-title-semibold-line-height,1.2307692308) var(--large-title-semibold-font-family-locale,var(--large-title-semibold-font-family,var(--font-family)))
+--large-title-semibold-short: 600 26px/var(--large-title-semibold-short-line-height,1.1538461538) var(--large-title-semibold-short-font-family-locale,var(--large-title-semibold-short-font-family,var(--font-family)))
+--large-title-semibold-tall: 600 26px/var(--large-title-semibold-tall-line-height,1.3077523077) var(--large-title-semibold-tall-font-family-locale,var(--large-title-semibold-tall-font-family,var(--font-family)))
+--large-title-short: 400 26px/var(--large-title-short-line-height,1.1538461538) var(--large-title-short-font-family-locale,var(--large-title-short-font-family,var(--font-family)))
+--large-title-tall: 400 26px/var(--large-title-tall-line-height,1.3077523077) var(--large-title-tall-font-family-locale,var(--large-title-tall-font-family,var(--font-family)))
+--librarySongsTrackInactiveBG: rgba(0,0,0,.14)
+--live-badge: 600 10px/var(--live-badge-line-height,1) var(--live-badge-font-family-locale,var(--live-badge-font-family,var(--font-family)))
+--live-badge-large: 600 15px/var(--live-badge-large-line-height,1) var(--live-badge-large-font-family-locale,var(--live-badge-large-font-family,var(--font-family)))
+--liveBadgePlatterBG: #ff5066
+--lockupChinScrim: rgba(0,0,0,.2)
+--lockupHoverBGColor: rgba(51,51,51,.3)
+--lyricsBg: #fff
+--lyricsTranslationButtonBG: rgba(0,0,0,.1)
+--lyricsTranslationButtonBGActive: #6c6c6c
+--lyricsTranslationButtonBGActiveHover: rgba(0,0,0,.68)
+--lyricsTranslationButtonBGActiveMenu: rgba(0,0,0,.85)
+--lyricsTranslationButtonBGHover: rgba(0,0,0,.25)
+--lyricsTranslationButtonBGMenu: rgba(0,0,0,.4)
+--lyricsTranslationButtonIconFill: #666
+--lyricsTranslationButtonIconFillActive: #fff
+--lyricsTranslationButtonIconFillMenu: #343434
+--lyricsTranslationButtonIconHover: #666
+--manifesto: 600 24px/var(--manifesto-line-height,1.3334133333) var(--manifesto-font-family-locale,var(--manifesto-font-family,var(--font-family)))
+--miniPlayerBackground: hsla(0,0%,100%,.9)
+--miniPlayerBackground-default_IC: #fafafa
+--mobileNavigationBG: #fff
+--modalCloseButtonBGColor: #e8e8ed
+--modalCloseButtonBGColor-pressed: #dfdfe4
+--modalCloseButtonBGColor-rollover: #ececf0
+--modalScrimColor: rgba(0,0,0,.45)
+--monogram: 500 310px/var(--monogram-line-height,.0032258065) var(--monogram-font-family-locale,var(--monogram-font-family,var(--font-family)))
+--musicKeyColor: #fa233b
+--musicKeyColor-deepPressed: #c60007
+--musicKeyColor-deepPressed_IC: #a20000
+--musicKeyColor-default_IC: #d60017
+--musicKeyColor-disabled: rgba(250,35,59,.35)
+--musicKeyColor-disabled_IC: rgba(214,0,23,.25)
+--musicKeyColor-pressed: #e00921
+--musicKeyColor-pressed_IC: #b00
+--musicKeyColor-rollover: #c60007
+--musicKeyColor-rollover_IC: #a20000
+--navSidebarBG: rgba(60,60,67,.03)
+--navSidebarBG-default_IC: #fafafa
+--navSidebarSelectedState: rgba(60,60,67,.1)
+--nowPlayingBackdropBG: #878787
+--opaqueShelfBG: #f2f2f2
+--pageBG: #fff
+--pageBG-dark: #1f1f1f
+--pageBG-dark-rgb: 31,31,31
+--pageBG-light: #fff
+--pageBG-light-rgb: 255,255,255
+--pageBG-rgb: 255,255,255
+--playerBackground: hsla(0,0%,100%,.88)
+--playerBackground-default_IC: #fafafa
+--playerBackgroundFallback: hsla(0,0%,100%,.97)
+--playerBackgroundFallback-default_IC: #fafafa
+--playerMissingArtworkBg: #e9e9e9
+--playerMissingArtworkIcon: #dcdcdc
+--playerPlatterButtonBGFill: #6c6c6c
+--playerPlatterButtonIconFill: #fff
+--profileBadgeBG: #e2e4e7
+--quote: 400 28px/var(--quote-line-height,1.2858342857) var(--quote-font-family-locale,var(--quote-font-family,var(--font-family)))
+--quote-reduced: 400 24px/var(--quote-reduced-line-height,1.3334133333) var(--quote-reduced-font-family-locale,var(--quote-reduced-font-family,var(--font-family)))
+--radiosityShadowColor: rgba(0,0,0,.1)
+--searchBarBorderColor: rgba(0,0,0,.15)
+--searchBoxIconFill: rgba(0,0,0,.65)
+--segmentedControlActiveBG: hsla(0,0%,100%,.7)
+--segmentedControlActiveBG-default_IC: #d9d9d9
+--segmentedControlBG: rgba(118,118,128,.12)
+--segmentedControlBG-default_IC: rgba(0,0,0,.2)
+--segmentedControlSelectedBG: #fff
+--segmentedControlSelectedBorder: rgba(0,0,0,.15)
+--segmentedControlSelectedShadow1: rgba(0,0,0,.12)
+--segmentedControlSelectedShadow2: rgba(0,0,0,.04)
+--segmentedControlSelectedText: rgba(0,0,0,.85)
+--segmentedControlSelectedText-default_IC: #000
+--selectionColor: #dd1f34
+--selectionColor-default_IC: #d60017
+--shelfBG: rgba(0,0,0,.05)
+--shelfLockupPlayHover: #69696e
+--sk-body-text-color: var(--bodyTextColor,var(--systemPrimary))
+--sk-headline-text-color: var(--bodyTextColor,var(--systemPrimary))
+--sosumi: 400 12px/var(--sosumi-line-height,1.3333733333) var(--sosumi-font-family-locale,var(--sosumi-font-family,var(--font-family)))
+--stickyHeaderDropShadow2: rgba(0,0,0,.07)
+--stickyHeaderInnerShadow: hsla(0,0%,100%,.45)
+--subhead: 400 11px/var(--subhead-line-height,1.2727272727) var(--subhead-font-family-locale,var(--subhead-font-family,var(--font-family)))
+--subhead-bold: 700 11px/var(--subhead-bold-line-height,1.2727272727) var(--subhead-bold-font-family-locale,var(--subhead-bold-font-family,var(--font-family)))
+--subhead-bold-short: 700 11px/var(--subhead-bold-short-line-height,1.0909090909) var(--subhead-bold-short-font-family-locale,var(--subhead-bold-short-font-family,var(--font-family)))
+--subhead-bold-tall: 700 11px/var(--subhead-bold-tall-line-height,1.4545454545) var(--subhead-bold-tall-font-family-locale,var(--subhead-bold-tall-font-family,var(--font-family)))
+--subhead-emphasized: 600 11px/var(--subhead-emphasized-line-height,1.2727272727) var(--subhead-emphasized-font-family-locale,var(--subhead-emphasized-font-family,var(--font-family)))
+--subhead-emphasized-short: 600 11px/var(--subhead-emphasized-short-line-height,1.0909090909) var(--subhead-emphasized-short-font-family-locale,var(--subhead-emphasized-short-font-family,var(--font-family)))
+--subhead-emphasized-tall: 600 11px/var(--subhead-emphasized-tall-line-height,1.4545454545) var(--subhead-emphasized-tall-font-family-locale,var(--subhead-emphasized-tall-font-family,var(--font-family)))
+--subhead-emphasized_title-3-emphasized_title-2-emphasized: 700 17px/var(--subhead-emphasized_title-3-emphasized_title-2-emphasized-line-height,1.2941176471) var(--subhead-emphasized_title-3-emphasized_title-2-emphasized-font-family-locale,var(--subhead-emphasized_title-3-emphasized_title-2-emphasized-font-family,var(--font-family)))
+--subhead-heavy: 800 11px/var(--subhead-heavy-line-height,1.2727272727) var(--subhead-heavy-font-family-locale,var(--subhead-heavy-font-family,var(--font-family)))
+--subhead-heavy-short: 800 11px/var(--subhead-heavy-short-line-height,1.0909090909) var(--subhead-heavy-short-font-family-locale,var(--subhead-heavy-short-font-family,var(--font-family)))
+--subhead-heavy-tall: 800 11px/var(--subhead-heavy-tall-line-height,1.4545454545) var(--subhead-heavy-tall-font-family-locale,var(--subhead-heavy-tall-font-family,var(--font-family)))
+--subhead-medium: 500 11px/var(--subhead-medium-line-height,1.2727272727) var(--subhead-medium-font-family-locale,var(--subhead-medium-font-family,var(--font-family)))
+--subhead-medium-short: 500 11px/var(--subhead-medium-short-line-height,1.0909090909) var(--subhead-medium-short-font-family-locale,var(--subhead-medium-short-font-family,var(--font-family)))
+--subhead-medium-tall: 500 11px/var(--subhead-medium-tall-line-height,1.4545454545) var(--subhead-medium-tall-font-family-locale,var(--subhead-medium-tall-font-family,var(--font-family)))
+--subhead-semibold: 600 11px/var(--subhead-semibold-line-height,1.2727272727) var(--subhead-semibold-font-family-locale,var(--subhead-semibold-font-family,var(--font-family)))
+--subhead-semibold-short: 600 11px/var(--subhead-semibold-short-line-height,1.0909090909) var(--subhead-semibold-short-font-family-locale,var(--subhead-semibold-short-font-family,var(--font-family)))
+--subhead-semibold-tall: 600 11px/var(--subhead-semibold-tall-line-height,1.4545454545) var(--subhead-semibold-tall-font-family-locale,var(--subhead-semibold-tall-font-family,var(--font-family)))
+--subhead-short: 400 11px/var(--subhead-short-line-height,1.0909090909) var(--subhead-short-font-family-locale,var(--subhead-short-font-family,var(--font-family)))
+--subhead-tall: 400 11px/var(--subhead-tall-line-height,1.4545454545) var(--subhead-tall-font-family-locale,var(--subhead-tall-font-family,var(--font-family)))
+--systemBlue: #007aff
+--systemBlue-deepPressed: #0045b7
+--systemBlue-default_IC: #0040dd
+--systemBlue-disabled: rgba(0,122,255,.35)
+--systemBlue-pressed: #005cd7
+--systemBlue-rollover: #0045b7
+--systemBlue-vibrant: #0070f5
+--systemBlue-vibrant_IC: #0040dd
+--systemBrown: #a2845e
+--systemBrown-default_IC: #7f6545
+--systemBrown-vibrant: #987a54
+--systemBrown-vibrant_IC: #775d3b
+--systemCyan: #55bef0
+--systemCyan-default_IC: #0071a4
+--systemCyan-vibrant: #41afdc
+--systemCyan-vibrant_IC: #006796
+--systemGray: #8e8e93
+--systemGray-default_IC: #69696e
+--systemGray-vibrant: #848489
+--systemGray-vibrant_IC: #616165
+--systemGray2: #aeaeb2
+--systemGray2-default_IC: #8e8e93
+--systemGray2-onDark: #636366
+--systemGray2-onDark_IC: #7c7c80
+--systemGray2-onLight: #aeaeb2
+--systemGray2-onLight_IC: #8e8e93
+--systemGray3: #c7c7cc
+--systemGray3-default_IC: #aeaeb2
+--systemGray3-onDark: #48484a
+--systemGray3-onDark_IC: #545456
+--systemGray3-onLight: #c7c7cc
+--systemGray3-onLight_IC: #aeaeb2
+--systemGray4: #d1d1d6
+--systemGray4-default_IC: #bcbcc0
+--systemGray4-onDark: #3a3a3c
+--systemGray4-onDark_IC: #444446
+--systemGray4-onLight: #d1d1d6
+--systemGray4-onLight_IC: #bcbcc0
+--systemGray5: #e5e5ea
+--systemGray5-default_IC: #d8d8dc
+--systemGray5-onDark: #2c2c2e
+--systemGray5-onDark_IC: #363638
+--systemGray5-onLight: #e5e5ea
+--systemGray5-onLight_IC: #d8d8dc
+--systemGray6: #f2f2f7
+--systemGray6-default_IC: #ebebf0
+--systemGray6-onDark: #1c1c1e
+--systemGray6-onDark_IC: #242426
+--systemGray6-onLight: #f2f2f7
+--systemGray6-onLight_IC: #ebebf0
+--systemGreen: #28cd41
+--systemGreen-default_IC: #007d1b
+--systemGreen-vibrant: #1ec337
+--systemGreen-vibrant_IC: #007018
+--systemGroupedBackgroundSecondary: #fff
+--systemHeaderMaterialSover: hsla(0,0%,100%,.8)
+--systemHeaderMaterialSover-default_IC: #fff
+--systemIndigo: #5856d6
+--systemIndigo-default_IC: #3634a3
+--systemIndigo-vibrant: #5452cc
+--systemIndigo-vibrant_IC: #3634a3
+--systemLink: #0068da
+--systemLink-default_IC: #0059cb
+--systemLink-vibrant: #005ed0
+--systemLink-vibrant_IC: #004ec0
+--systemMint: #00c7be
+--systemMint-default_IC: #0c817b
+--systemMint-vibrant: #00bdb4
+--systemMint-vibrant_IC: #0b7570
+--systemOrange: #ff9500
+--systemOrange-default_IC: #c93400
+--systemOrange-vibrant: #f58b00
+--systemOrange-vibrant_IC: #ad3a00
+--systemPink: #ff2d55
+--systemPink-default_IC: #d30f45
+--systemPink-vibrant: #f5234b
+--systemPink-vibrant_IC: #c11032
+--systemPrimary: rgba(0,0,0,.85)
+--systemPrimary-default_IC: #000
+--systemPrimary-onDark: hsla(0,0%,100%,.85)
+--systemPrimary-onDark_IC: #fff
+--systemPrimary-onLight: rgba(0,0,0,.85)
+--systemPrimary-onLight_IC: #000
+--systemPrimary-vibrant: #4d4d4d
+--systemPrimary-vibrantOnDark: #e5e5e5
+--systemPrimary-vibrantOnDark_IC: #fff
+--systemPrimary-vibrantOnLight: #4d4d4d
+--systemPrimary-vibrantOnLight_IC: #000
+--systemPrimary-vibrant_IC: #000
+--systemPurple: #af52de
+--systemPurple-default_IC: #ad44ab
+--systemPurple-vibrant: #9f4bc9
+--systemPurple-vibrant_IC: #ad44ab
+--systemQuaternary: rgba(0,0,0,.1)
+--systemQuaternary-default_IC: rgba(0,0,0,.35)
+--systemQuaternary-onDark: hsla(0,0%,100%,.1)
+--systemQuaternary-onDark_IC: hsla(0,0%,100%,.3)
+--systemQuaternary-onLight: rgba(0,0,0,.1)
+--systemQuaternary-onLight_IC: rgba(0,0,0,.35)
+--systemQuaternary-vibrant: #e8e8e8
+--systemQuaternary-vibrantOnDark: #232323
+--systemQuaternary-vibrantOnDark_IC: hsla(0,0%,100%,.3)
+--systemQuaternary-vibrantOnLight: #e8e8e8
+--systemQuaternary-vibrantOnLight_IC: rgba(0,0,0,.35)
+--systemQuaternary-vibrant_IC: rgba(0,0,0,.35)
+--systemQuinary: rgba(0,0,0,.05)
+--systemQuinary-default_IC: rgba(0,0,0,.1)
+--systemQuinary-onDark: hsla(0,0%,100%,.05)
+--systemQuinary-onDark_IC: hsla(0,0%,100%,.1)
+--systemQuinary-onLight: rgba(0,0,0,.05)
+--systemQuinary-onLight_IC: rgba(0,0,0,.1)
+--systemQuinary-vibrant: #f5f5f5
+--systemQuinary-vibrantOnDark: #080808
+--systemQuinary-vibrantOnDark_IC: hsla(0,0%,100%,.1)
+--systemQuinary-vibrantOnLight: #f5f5f5
+--systemQuinary-vibrantOnLight_IC: rgba(0,0,0,.1)
+--systemQuinary-vibrant_IC: rgba(0,0,0,.1)
+--systemRed: #ff3b30
+--systemRed-default_IC: #d70015
+--systemRed-vibrant: #f53126
+--systemRed-vibrant_IC: #c20618
+--systemSecondary: rgba(0,0,0,.5)
+--systemSecondary-default_IC: rgba(0,0,0,.76)
+--systemSecondary-onDark: hsla(0,0%,100%,.55)
+--systemSecondary-onDark_IC: hsla(0,0%,100%,.7)
+--systemSecondary-onLight: rgba(0,0,0,.5)
+--systemSecondary-onLight_IC: rgba(0,0,0,.76)
+--systemSecondary-vibrant: gray
+--systemSecondary-vibrantOnDark: #7c7c7c
+--systemSecondary-vibrantOnDark_IC: hsla(0,0%,100%,.7)
+--systemSecondary-vibrantOnLight: gray
+--systemSecondary-vibrantOnLight_IC: rgba(0,0,0,.76)
+--systemSecondary-vibrant_IC: rgba(0,0,0,.76)
+--systemStandardMediumMaterialSover: hsla(0,0%,96.5%,.6)
+--systemStandardMediumMaterialSover-default_IC: #e6e6e6
+--systemStandardMediumMaterialSover-inactive: #f0f0f0
+--systemStandardMediumMaterialSover-inactive_IC: #ececec
+--systemStandardThickMaterialSover: rgba(246,246,246,.72)
+--systemStandardThickMaterialSover-default_IC: #f0f0f0
+--systemStandardThickMaterialSover-inactive: #f0f0f0
+--systemStandardThickMaterialSover-inactive_IC: #ececec
+--systemStandardThinMaterialSover: hsla(0,0%,96.5%,.48)
+--systemStandardThinMaterialSover-default_IC: #dcdcdc
+--systemStandardThinMaterialSover-inactive: #f0f0f0
+--systemStandardThinMaterialSover-inactive_IC: #ececec
+--systemStandardUltrathickMaterialSover: hsla(0,0%,96.5%,.84)
+--systemStandardUltrathickMaterialSover-default_IC: #fafafa
+--systemStandardUltrathickMaterialSover-inactive: #f0f0f0
+--systemStandardUltrathickMaterialSover-inactive_IC: #ececec
+--systemStandardUltrathinMaterialSover: rgba(246,246,246,.36)
+--systemStandardUltrathinMaterialSover-default_IC: #d2d2d2
+--systemStandardUltrathinMaterialSover-inactive: #f0f0f0
+--systemStandardUltrathinMaterialSover-inactive_IC: #ececec
+--systemTeal: #59adc4
+--systemTeal-default_IC: #008299
+--systemTeal-vibrant: #2ea7bd
+--systemTeal-vibrant_IC: #00778c
+--systemTertiary: rgba(0,0,0,.25)
+--systemTertiary-default_IC: rgba(0,0,0,.56)
+--systemTertiary-onDark: hsla(0,0%,100%,.25)
+--systemTertiary-onDark_IC: hsla(0,0%,100%,.5)
+--systemTertiary-onLight: rgba(0,0,0,.25)
+--systemTertiary-onLight_IC: rgba(0,0,0,.56)
+--systemTertiary-vibrant: #c6c6c6
+--systemTertiary-vibrantOnDark: #414141
+--systemTertiary-vibrantOnDark_IC: hsla(0,0%,100%,.5)
+--systemTertiary-vibrantOnLight: #c6c6c6
+--systemTertiary-vibrantOnLight_IC: rgba(0,0,0,.56)
+--systemTertiary-vibrant_IC: rgba(0,0,0,.56)
+--systemToolbarTitlebarMaterialSover: hsla(0,0%,99.2%,.8)
+--systemToolbarTitlebarMaterialSover-default_IC: #fff
+--systemToolbarTitlebarMaterialSover-inactive: #f0f0f0
+--systemToolbarTitlebarMaterialSover-inactive_IC: #ececec
+--systemYellow: #fc0
+--systemYellow-default_IC: #a05a00
+--systemYellow-vibrant: #f5c200
+--systemYellow-vibrant_IC: #925100
+--title-1: 400 22px/var(--title-1-line-height,1.1818181818) var(--title-1-font-family-locale,var(--title-1-font-family,var(--font-family)))
+--title-1-bold: 700 22px/var(--title-1-bold-line-height,1.1818181818) var(--title-1-bold-font-family-locale,var(--title-1-bold-font-family,var(--font-family)))
+--title-1-bold-short: 700 22px/var(--title-1-bold-short-line-height,1.0909090909) var(--title-1-bold-short-font-family-locale,var(--title-1-bold-short-font-family,var(--font-family)))
+--title-1-bold-tall: 700 22px/var(--title-1-bold-tall-line-height,1.2727272727) var(--title-1-bold-tall-font-family-locale,var(--title-1-bold-tall-font-family,var(--font-family)))
+--title-1-emphasized: 700 22px/var(--title-1-emphasized-line-height,1.1818181818) var(--title-1-emphasized-font-family-locale,var(--title-1-emphasized-font-family,var(--font-family)))
+--title-1-emphasized-short: 700 22px/var(--title-1-emphasized-short-line-height,1.0909090909) var(--title-1-emphasized-short-font-family-locale,var(--title-1-emphasized-short-font-family,var(--font-family)))
+--title-1-emphasized-tall: 700 22px/var(--title-1-emphasized-tall-line-height,1.2727272727) var(--title-1-emphasized-tall-font-family-locale,var(--title-1-emphasized-tall-font-family,var(--font-family)))
+--title-1-heavy: 800 22px/var(--title-1-heavy-line-height,1.1818181818) var(--title-1-heavy-font-family-locale,var(--title-1-heavy-font-family,var(--font-family)))
+--title-1-heavy-short: 800 22px/var(--title-1-heavy-short-line-height,1.0909090909) var(--title-1-heavy-short-font-family-locale,var(--title-1-heavy-short-font-family,var(--font-family)))
+--title-1-heavy-tall: 800 22px/var(--title-1-heavy-tall-line-height,1.2727272727) var(--title-1-heavy-tall-font-family-locale,var(--title-1-heavy-tall-font-family,var(--font-family)))
+--title-1-medium: 500 22px/var(--title-1-medium-line-height,1.1818181818) var(--title-1-medium-font-family-locale,var(--title-1-medium-font-family,var(--font-family)))
+--title-1-medium-short: 500 22px/var(--title-1-medium-short-line-height,1.0909090909) var(--title-1-medium-short-font-family-locale,var(--title-1-medium-short-font-family,var(--font-family)))
+--title-1-medium-tall: 500 22px/var(--title-1-medium-tall-line-height,1.2727272727) var(--title-1-medium-tall-font-family-locale,var(--title-1-medium-tall-font-family,var(--font-family)))
+--title-1-semibold: 600 22px/var(--title-1-semibold-line-height,1.1818181818) var(--title-1-semibold-font-family-locale,var(--title-1-semibold-font-family,var(--font-family)))
+--title-1-semibold-short: 600 22px/var(--title-1-semibold-short-line-height,1.0909090909) var(--title-1-semibold-short-font-family-locale,var(--title-1-semibold-short-font-family,var(--font-family)))
+--title-1-semibold-tall: 600 22px/var(--title-1-semibold-tall-line-height,1.2727272727) var(--title-1-semibold-tall-font-family-locale,var(--title-1-semibold-tall-font-family,var(--font-family)))
+--title-1-short: 400 22px/var(--title-1-short-line-height,1.0909090909) var(--title-1-short-font-family-locale,var(--title-1-short-font-family,var(--font-family)))
+--title-1-tall: 400 22px/var(--title-1-tall-line-height,1.2727272727) var(--title-1-tall-font-family-locale,var(--title-1-tall-font-family,var(--font-family)))
+--title-2: 400 17px/var(--title-2-line-height,1.2941176471) var(--title-2-font-family-locale,var(--title-2-font-family,var(--font-family)))
+--title-2-bold: 700 17px/var(--title-2-bold-line-height,1.2941176471) var(--title-2-bold-font-family-locale,var(--title-2-bold-font-family,var(--font-family)))
+--title-2-bold-short: 700 17px/var(--title-2-bold-short-line-height,1.1764805882) var(--title-2-bold-short-font-family-locale,var(--title-2-bold-short-font-family,var(--font-family)))
+--title-2-bold-tall: 700 17px/var(--title-2-bold-tall-line-height,1.4118447059) var(--title-2-bold-tall-font-family-locale,var(--title-2-bold-tall-font-family,var(--font-family)))
+--title-2-emphasized: 700 17px/var(--title-2-emphasized-line-height,1.2941176471) var(--title-2-emphasized-font-family-locale,var(--title-2-emphasized-font-family,var(--font-family)))
+--title-2-emphasized-short: 700 17px/var(--title-2-emphasized-short-line-height,1.1764805882) var(--title-2-emphasized-short-font-family-locale,var(--title-2-emphasized-short-font-family,var(--font-family)))
+--title-2-emphasized-tall: 700 17px/var(--title-2-emphasized-tall-line-height,1.4118447059) var(--title-2-emphasized-tall-font-family-locale,var(--title-2-emphasized-tall-font-family,var(--font-family)))
+--title-2-heavy: 800 17px/var(--title-2-heavy-line-height,1.2941176471) var(--title-2-heavy-font-family-locale,var(--title-2-heavy-font-family,var(--font-family)))
+--title-2-heavy-short: 800 17px/var(--title-2-heavy-short-line-height,1.1764805882) var(--title-2-heavy-short-font-family-locale,var(--title-2-heavy-short-font-family,var(--font-family)))
+--title-2-heavy-tall: 800 17px/var(--title-2-heavy-tall-line-height,1.4118447059) var(--title-2-heavy-tall-font-family-locale,var(--title-2-heavy-tall-font-family,var(--font-family)))
+--title-2-medium: 500 17px/var(--title-2-medium-line-height,1.2941176471) var(--title-2-medium-font-family-locale,var(--title-2-medium-font-family,var(--font-family)))
+--title-2-medium-short: 500 17px/var(--title-2-medium-short-line-height,1.1764805882) var(--title-2-medium-short-font-family-locale,var(--title-2-medium-short-font-family,var(--font-family)))
+--title-2-medium-tall: 500 17px/var(--title-2-medium-tall-line-height,1.4118447059) var(--title-2-medium-tall-font-family-locale,var(--title-2-medium-tall-font-family,var(--font-family)))
+--title-2-semibold: 600 17px/var(--title-2-semibold-line-height,1.2941176471) var(--title-2-semibold-font-family-locale,var(--title-2-semibold-font-family,var(--font-family)))
+--title-2-semibold-short: 600 17px/var(--title-2-semibold-short-line-height,1.1764805882) var(--title-2-semibold-short-font-family-locale,var(--title-2-semibold-short-font-family,var(--font-family)))
+--title-2-semibold-tall: 600 17px/var(--title-2-semibold-tall-line-height,1.4118447059) var(--title-2-semibold-tall-font-family-locale,var(--title-2-semibold-tall-font-family,var(--font-family)))
+--title-2-short: 400 17px/var(--title-2-short-line-height,1.1764805882) var(--title-2-short-font-family-locale,var(--title-2-short-font-family,var(--font-family)))
+--title-2-tall: 400 17px/var(--title-2-tall-line-height,1.4118447059) var(--title-2-tall-font-family-locale,var(--title-2-tall-font-family,var(--font-family)))
+--title-3: 400 15px/var(--title-3-line-height,1.3333833333) var(--title-3-font-family-locale,var(--title-3-font-family,var(--font-family)))
+--title-3-bold: 700 15px/var(--title-3-bold-line-height,1.3333833333) var(--title-3-bold-font-family-locale,var(--title-3-bold-font-family,var(--font-family)))
+--title-3-bold-short: 700 15px/var(--title-3-bold-short-line-height,1.2) var(--title-3-bold-short-font-family-locale,var(--title-3-bold-short-font-family,var(--font-family)))
+--title-3-bold-tall: 700 15px/var(--title-3-bold-tall-line-height,1.4666666667) var(--title-3-bold-tall-font-family-locale,var(--title-3-bold-tall-font-family,var(--font-family)))
+--title-3-emphasized: 600 15px/var(--title-3-emphasized-line-height,1.3333833333) var(--title-3-emphasized-font-family-locale,var(--title-3-emphasized-font-family,var(--font-family)))
+--title-3-emphasized-short: 600 15px/var(--title-3-emphasized-short-line-height,1.2) var(--title-3-emphasized-short-font-family-locale,var(--title-3-emphasized-short-font-family,var(--font-family)))
+--title-3-emphasized-tall: 600 15px/var(--title-3-emphasized-tall-line-height,1.4666666667) var(--title-3-emphasized-tall-font-family-locale,var(--title-3-emphasized-tall-font-family,var(--font-family)))
+--title-3-heavy: 800 15px/var(--title-3-heavy-line-height,1.3333833333) var(--title-3-heavy-font-family-locale,var(--title-3-heavy-font-family,var(--font-family)))
+--title-3-heavy-short: 800 15px/var(--title-3-heavy-short-line-height,1.2) var(--title-3-heavy-short-font-family-locale,var(--title-3-heavy-short-font-family,var(--font-family)))
+--title-3-heavy-tall: 800 15px/var(--title-3-heavy-tall-line-height,1.4666666667) var(--title-3-heavy-tall-font-family-locale,var(--title-3-heavy-tall-font-family,var(--font-family)))
+--title-3-medium: 500 15px/var(--title-3-medium-line-height,1.3333833333) var(--title-3-medium-font-family-locale,var(--title-3-medium-font-family,var(--font-family)))
+--title-3-medium-short: 500 15px/var(--title-3-medium-short-line-height,1.2) var(--title-3-medium-short-font-family-locale,var(--title-3-medium-short-font-family,var(--font-family)))
+--title-3-medium-tall: 500 15px/var(--title-3-medium-tall-line-height,1.4666666667) var(--title-3-medium-tall-font-family-locale,var(--title-3-medium-tall-font-family,var(--font-family)))
+--title-3-semibold: 600 15px/var(--title-3-semibold-line-height,1.3333833333) var(--title-3-semibold-font-family-locale,var(--title-3-semibold-font-family,var(--font-family)))
+--title-3-semibold-short: 600 15px/var(--title-3-semibold-short-line-height,1.2) var(--title-3-semibold-short-font-family-locale,var(--title-3-semibold-short-font-family,var(--font-family)))
+--title-3-semibold-tall: 600 15px/var(--title-3-semibold-tall-line-height,1.4666666667) var(--title-3-semibold-tall-font-family-locale,var(--title-3-semibold-tall-font-family,var(--font-family)))
+--title-3-short: 400 15px/var(--title-3-short-line-height,1.2) var(--title-3-short-font-family-locale,var(--title-3-short-font-family,var(--font-family)))
+--title-3-tall: 400 15px/var(--title-3-tall-line-height,1.4666666667) var(--title-3-tall-font-family-locale,var(--title-3-tall-font-family,var(--font-family)))
+--title-navigation: 400 14px/var(--title-navigation-line-height,1.4285914286) var(--title-navigation-font-family-locale,var(--title-navigation-font-family,var(--font-family)))
+--title3tall_bodytall_Title3Tall: 400 15px/var(--title3tall_bodytall_Title3Tall-line-height,1.4666666667) var(--title3tall_bodytall_Title3Tall-font-family-locale,var(--title3tall_bodytall_Title3Tall-font-family,var(--font-family)))
+--titleBadgeBG: rgba(118,118,128,.12)
+--titleBadgeColor: #000
+--tout: 600 19px/var(--tout-line-height,1.2105263158) var(--tout-font-family-locale,var(--tout-font-family,var(--font-family)))
+--trackBackgroundEven: rgba(0,0,0,.02)
+--trackLockupArtworkOverlay: rgba(51,51,51,.3)
+--tracklistAltRowColor: rgba(0,0,0,.015)
+--tracklistAltRowColor-default_IC: rgba(0,0,0,.05)
+--tracklistBadgeBackgroundColor: #e9e9ea
+--tracklistBadgeBorderColor: #fbfbfb
+--tracklistHoverColor: rgba(0,0,0,.06)
+--tracklistHoverColor-default_IC: rgba(0,0,0,.1)
+--tracklistWorksTrackHoverColor: rgba(0,0,0,.1)
+--tracklistWorksTrackHoverColor-default_IC: rgba(0,0,0,.18)
+--vibrantDivider: rgba(60,60,67,.29)
+--viewport-default: "xlarge"
+--viewport-grid-layout: "grid-layout:xs-1-sidebar"
+--viewport-info-fullscreen: "info-fullscreen:xxlarge"
+--viewport-lyrics-fullscreen: "lyrics-fullscreen:xxlarge"
+--viewport-search-landing-grid: "search-landing-grid:1-sidebar"
+--viewport-sidebar: "sidebar:large-visible"
+--viewport-song-shift-layout: "song-shift-layout:status"
+--viewport-text-fullscreen: "text-fullscreen:xxlarge"
+--web-navigation-width: 260px
+--z-bubbles: 50
+--z-contextual-menus: 9951
+--z-default: 1
+--z-gpu: 1001
+--z-modal: 10001
+--z-unset: unset
+--z-web-chrome: 9901

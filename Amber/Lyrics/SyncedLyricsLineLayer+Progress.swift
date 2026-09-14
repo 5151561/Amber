@@ -1,0 +1,207 @@
+import AppKit
+
+// 逐字的四层数据模型。字段与顺序来自原版的字段表，见 §7.1。
+//
+// 每一层都同时留 `frame` 与`originalFrame`：后者是排版算出来的原始位置，
+// 前者是叠加 `xOffset`（Word 还有`widthOffset`）之后的当前位置。
+// 逐字的横向位移是**改 frame、留 originalFrame 当基准**，不是往 transform 里塞平移。
+
+extension SyncedLyricsLineLayer {
+
+    /// 逐字高亮的技术选型。[实测] `Line.animationKind`，
+    /// 两处分派。
+    enum AnimationKind: Sendable, Equatable {
+        /// 整行一条渐变扫过（`LineProgressGradientLayer`）。只有这一档走 §7.3 的几何。
+        case gradient
+        /// 词级 crossfade overlay（`Word.overlayLayer` + `crossfadeAnimationParameters`）。
+        /// 未接线：Amber 的数据源不声明这条能力，建层时一律写 `.gradient`。
+        case crossfade
+    }
+
+    /// 一个字的动画状态。带载荷的枚举，tag 字节紧跟在载荷后面
+    /// （Syllable 载荷 / tag）。
+    enum AnimationStatus: Sendable, Equatable {
+        case idle
+        case running
+        case finished
+    }
+
+    /// 一个字形。
+    struct Glyph: Sendable {
+        var glyphIndex: Int = 0
+        var textPosition: Int = 0
+        var text: String = ""
+        var frame: CGRect = .zero
+        var xOffset: CGFloat = 0
+        var originalFrame: CGRect = .zero
+        init() {}
+    }
+
+    /// 一个音节。**只有这一层带时间**——Word 没有自己的 start/end，
+    /// 一个词的时间范围是它 syllables 的并集。
+    struct Syllable: Sendable {
+        var text: String = ""
+        var glyphs: [Glyph] = []
+        var textPosition: Int = 0
+        var animationStatus: AnimationStatus = .idle  //载荷 / tag
+        var startTime: TimeInterval = 0
+        var endTime: TimeInterval = 0
+        var frame: CGRect = .zero
+        var xOffset: CGFloat = 0
+        var originalFrame: CGRect = .zero
+        init() {}
+    }
+
+    /// 一个词。
+    struct Word: Sendable {
+        var text: String = ""
+        /// 这个词的强调载荷。原版内联在 `correspondingLyricWord` 里：
+        /// 载荷、tag（§23.6）。辉光强度（§23.3）与强调缩放（§8.1）
+        /// 都读它，**是词级不是音节级**——§23.5 的触发闸查的也是模型词数组的首元素。
+        var emphasis: Lyrics.Emphasis = .none
+        var syllables: [Syllable] = []
+        var index: Int = 0
+        var animationStatus: AnimationStatus = .idle
+        var originalFrame: CGRect = .zero
+        var frame: CGRect = .zero
+        var xOffset: CGFloat = 0
+        var widthOffset: CGFloat = 0
+        init() {}
+    }
+
+    /// 一行（排版意义上的一行，一条歌词可能折成多行）。
+    final class LayoutLine {
+        var words: [Word] = []
+        var text: String = ""
+        var isTransliteration = false
+        var animationKind: AnimationKind = .gradient
+        var isRightToLeft = false                    //direction == 1
+        var startTime: TimeInterval = 0
+        var endTime: TimeInterval = 0
+        var frame: CGRect = .zero
+
+        /// 互锁：为真时逐帧走查对这一行整个停手。
+        ///
+        /// 两处置位：§7.4 的行末补完（0.25 秒后解）与
+        /// §7.6 的点击冻结（`lineTapProgressFreezeDuration` = 0.1 秒后解）。
+        /// 没有它，每帧都会把渐变位置改回「按时间算出来的」，
+        /// 补完动画一帧都活不下来。
+        var ignoreProgress = false
+        var lastProgressedToSyllable: Syllable?
+
+        /// 这一行有没有带 `Emphasis.factor` 的词。建层时算一次，
+        /// 免得每帧为「一个光斑都不会出现」的行去扫一遍词表。`[补]`
+        var hasEmphasis = false
+
+        init() {}
+    }
+}
+
+extension SyncedLyricsLineLayer.LayoutLine {
+
+    /// 这一行在 `elapsed` 时刻的进度状态。[实测]/b3c。
+    enum ProgressState: Sendable, Equatable {
+        case notStarted
+        case singing(syllableIndexInWord: Int, wordIndex: Int)
+        case finished
+    }
+
+    /// 每帧走查。规格见 §7.2。
+    ///
+    /// [实测]。
+    /// **音译行整个跳过音节层**（读 `isTransliteration`）——
+    /// 音译文本没有逐字时间。
+    ///
+    /// - Returns: 每个音节是否「还没开始」，供音节层动画（§7.5）用；
+    ///   顺序与 `words` × `syllables` 展平后一致。
+    ///
+    /// 未接线：Amber 的音节上抬按 `progress >= syllable.startTime` 就地判
+    /// （`SBS_TextContentLayer.liftStartedSyllables`），没有先摊平成一张旗标表。
+    func syllableNotStartedFlags(at elapsed: TimeInterval) -> [Bool] {
+        guard !isTransliteration else { return [] }
+        return words.flatMap { word in
+            word.syllables.map { elapsed < $0.startTime }
+        }
+    }
+
+    /// 三状态判定。注意边界：`endTime <= elapsed` 才算唱完，
+    /// `elapsed >= startTime` 才算开始。
+    func progressState(at elapsed: TimeInterval) -> ProgressState {
+        if endTime <= elapsed { return .finished }
+        guard elapsed >= startTime else { return .notStarted }
+        var lastStarted: (syllable: Int, word: Int)?
+        for (w, word) in words.enumerated() {
+            for (s, syl) in word.syllables.enumerated() {
+                // startTime > endTime 的音节直接跳过（脏数据保护）
+                guard syl.startTime <= syl.endTime else { continue }
+                if syl.startTime <= elapsed, elapsed < syl.endTime {
+                    return .singing(syllableIndexInWord: s, wordIndex: w)
+                }
+                if syl.startTime <= elapsed {
+                    lastStarted = (s, w)
+                }
+            }
+        }
+        // QRC 的相邻音节并不保证首尾相接。空档期间应保持在刚唱完的音节末端；
+        // 退回 `.notStarted` 会把整行遮罩清零，表现为高亮唱到一半突然闪灭。
+        if let lastStarted {
+            return .singing(syllableIndexInWord: lastStarted.syllable,
+                            wordIndex: lastStarted.word)
+        }
+        return .notStarted
+    }
+}
+
+/// 渐变扫过的几何。规格见 §7.3。
+enum LineProgressGradientGeometry {
+
+    /// 渐变层要比行框多罩住多少（上下各一半）。
+    ///
+    /// [实测]：
+    /// ```
+    /// h   = CTFontGetAscent(font) + CTFontGetDescent(font)   ;，13 条指令
+    /// h  *= specs.emphasizingScaleRange.upperBound           ; 1.14
+    /// h  += 2 * specs.glowRadius                             ; 5
+    /// pad = |h − line.frame.height| * 0.5
+    /// ```
+    ///
+    /// 强调时字号放大到 1.14 倍、外面还有半径 5 的辉光。
+    /// **只按行高铺渐变的话，强调峰值那一帧字的顶部和辉光会被切掉。**
+    ///
+    /// 注意取的是**墨高**（ascent + descent），不含 leading。
+    static func verticalPadding(font: NSFont,
+                                       lineHeight: CGFloat,
+                                       specs: LyricsSpecs) -> CGFloat {
+        let ink = font.ascender + abs(font.descender)
+        let covered = ink * specs.emphasizingScaleRange.upperBound + 2 * specs.glowRadius
+        return abs(covered - lineHeight) * 0.5
+    }
+
+    /// 唱完之后渐变的右端。
+    ///
+    /// [实测]：
+    /// `width = pad + feather + (最后一个 word.frame.minX + 它最后一个 syllable.frame.maxX)`。
+    ///
+    /// **不是行宽**——行框可能比墨迹宽（居中排版留白），照行宽铺会多亮一截。
+    static func finishedWidth(lastWordMinX: CGFloat,
+                                     lastSyllableMaxX: CGFloat,
+                                     verticalPadding pad: CGFloat,
+                                     specs: LyricsSpecs) -> CGFloat {
+        pad + specs.lineProgressionGradientFeather + (lastWordMinX + lastSyllableMaxX)
+    }
+}
+
+extension SpringTimingParameters {
+
+    /// 逐字抬升 / 强调的弹簧。
+    ///
+    /// [实测] 就地建
+    /// `CASpringAnimation`：`mass 1 / stiffness 14 / damping 7`，时长取`settlingDuration`。
+    ///
+    /// ω₀ = 3.742、ζ = 0.935——**欠阻尼、留一点点回弹**。
+    /// 和翻行那条 (1, 100, 18) 的 ζ = 0.900 是同一个量级的手感，但慢得多
+    /// （ω₀ 3.74 对 10.0）。`syllableLift = 2` 与`emphasizingScaleRange = 1.0…1.14`
+    /// 都由它推动。
+    static let syllableEmphasis = SpringTimingParameters(
+        mass: 1, stiffness: 14, damping: 7)
+}

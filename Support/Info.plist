@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AmberBuildCommit</key>
+	<string>$(AMBER_BUILD_COMMIT)</string>
+	<key>AmberBuildDate</key>
+	<string>$(AMBER_BUILD_DATE)</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleDisplayName</key>
+	<string>Amber</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<!-- [HIG] ATS 这一条是**有意保留全开**的，不是忘了收。2026-09-05 全量核过一遍：
+	     代码里写死的主机全是 https（u.y.qq.com / c.y.qq.com / y.qq.com / y.gtimg.cn /
+	     isure.stream.qqmusic.qq.com / *.ptlogin2.qq.com / graph.qq.com /
+	     music.163.com / interface.music.163.com），封面与网易取流也都过了
+	     `String.httpsUpgraded`（ProviderHelpers.swift）。
+
+	     挡住收紧的是 QQ 的取流地址：QQAPI.swift 的 `UrlGetVkey` 回一个 `sip` 主机表，
+	     代码取表里第一条拼上相对 purl（QQAPI.swift:1107/1117）。这张表是**服务端当场下发**的，
+	     ws / ws6 / dl / isure 等前缀轮换，且常带 `http://` 一档——域名穷举不出来，
+	     写死一份 NSExceptionDomains 只会在某天换 CDN 时把播放整个打断，
+	     那比 ATS 全开更糟。
+
+	     收紧的正确前置是先在取流那一侧把 sip 升成 https（QQAPI 归另一位负责人），
+	     实测确认全档位都走得通之后，这里再换成
+	     `NSExceptionDomains → qqmusic.qq.com（NSIncludesSubdomains）` 那种逐域名写法，
+	     或者直接整段删掉。在那之前不动。 -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- 设置 › 高级 ›「遥控器」：与 iOS 的「遥控」App 配对并被它控制（DACP/DMAP）。
+	     macOS 26 在**第一次广播或浏览 Bonjour 时**弹本地网络授权，这两条键是那次弹窗的
+	     文案与白名单。`NSBonjourServices` 同时管广播与浏览：
+	     `_touch-remote._tcp` 是遥控 App 那一侧（我们浏览它、去连它做配对），
+	     其余三条是 Amber 自己广播的（见 RemoteControlServer.serviceSpecs）。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Amber 需要访问本地网络，才能找到同一 Wi-Fi 下的“遥控”App 并接受它的播放控制。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_touch-remote._tcp</string>
+		<string>_touch-able._tcp</string>
+		<string>_dacp._tcp</string>
+		<string>_daap._tcp</string>
+	</array>
+	<!-- NSApplication 的子类。存在的唯一理由是把无修饰的空格键在文本输入时让出来
+	     （菜单 key equivalent 的匹配发生在 sendEvent: 里、先于窗口响应链）。
+	     见 Amber/App/AmberApplication.swift；类上用 @objc(AmberApplication) 钉住 ObjC 名字。 -->
+	<key>NSPrincipalClass</key>
+	<string>AmberApplication</string>
+	<!-- 拖曲目用的私有类型（见 TrackTransfer）。UTType(exportedAs:) 要求 App 自己声明它，
+	     没声明时拿回来的类型 supertypes 是空的：不 conform public.data，
+	     SwiftUI 的 dropDestination(for: TrackTransfer.self) 就认不出拖进来的这份载荷。 -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.changlepan.Amber.tracks</string>
+			<key>UTTypeDescription</key>
+			<string>Amber 曲目</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
+</dict>
+</plist>

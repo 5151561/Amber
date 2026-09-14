@@ -1,0 +1,16 @@
+// 本机签名身份。
+//
+// Team ID 不入库，按下面任一种方式给：
+//
+//   1. 复制 Support/Signing.local.xcconfig.example 为 Support/Signing.local.xcconfig，
+//      填上自己的 Team ID。Xcode 里直接 ⌘R 走这条。
+//   2. 或者 export AMBER_TEAM_ID=XXXXXXXXXX，`Tools/` 下的脚本会把它传给 xcodebuild，
+//      优先级高于上面那份文件。
+//
+// 两个都没有时构建会因为找不到签名身份而失败——这是预期行为，不要改成 ad-hoc 绕过：
+// Keychain 条目绑定签名的 Designated Requirement，ad-hoc 会让登录态每次升级都丢。
+// 详见 README「为什么不用 ad-hoc 签名」。
+
+#include? "Signing.local.xcconfig"
+
+DEVELOPMENT_TEAM = $(AMBER_DEVELOPMENT_TEAM)
