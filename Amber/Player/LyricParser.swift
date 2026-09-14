@@ -276,34 +276,45 @@ enum LyricParser {
         private static let nameSeparators: Set<Character> = ["/", "、", ",", "，", "&", "＆", ";", "；", "|"]
     }
 
-    /// 开头那一块非歌词行：`歌名 - 歌手`、`词：`、`曲：`、`编曲：`、`制作人：`…
+    /// 开头那一块非歌词行：`歌名 - 歌手`、`词：`、`编曲 Arranger：`、`OP：`…
     ///
-    /// 只扫开头连续的一段就停：正文里出现「XX：YY」是可能的（对白、旁白），
-    /// 从头扫到尾会误伤。
+    /// 三条规律，缺一条就漏：
+    ///
+    /// 1. **只扫开头连续的一段**：正文里出现「XX：YY」是可能的（对白、旁白），
+    ///    从头扫到尾会误伤。
+    /// 2. **角色名列不完**（`弦乐编写`、`录音混音`、`音乐企划`…），所以不认整个键、
+    ///    认词根，中英两侧各认各的；再加上「中文 + 英文对照」这个写法本身
+    ///    （`封面设计 Cover Designer`）——那是制作表的排版习惯，歌词不会这么写。
+    /// 3. **这一块是连着的**：认不出的行先挂起（只推进不摘），后面再出现一条认得出的，
+    ///    夹在中间的就跟着一起摘；块尾之后一行都不多摘。所以漏认一条不会连累整块。
     private static func stripLeadingCredits(_ lines: inout [RawLine]) -> Credits {
         var credits = Credits()
-        var cut = 0
+        var cut = 0 // 已确认的块尾：`lines[..<cut]` 都不是歌词
         for (offset, line) in lines.enumerated() {
-            if offset == 0, credits.isEmpty, isHeaderLine(line.text) {
-                cut = offset + 1
+            if offset == 0, cut == 0, isHeaderLine(line.text) {
+                cut = 1
                 continue
             }
             guard let (key, value) = creditPair(in: line.text) else {
-                // 网易那种 JSON 信息行按定义就不是歌词，白名单认不出来（「人声录音室」
-                // 这类词条列不完）也照样摘掉，不能让它排上屏。
+                // 网易那种 JSON 信息行按定义就不是歌词，认不出角色名也照样摘掉。
                 guard line.isMetadata else { break }
                 cut = offset + 1
                 continue
             }
-            switch key {
-            case "词", "作词", "Lyricist", "lyricist":
+            // 认不出的「键：值」先挂起：它要么被后面某条确认行带走，要么留在正文里。
+            guard line.isMetadata || isCreditKey(key, insideBlock: cut > 0) else { continue }
+            cut = offset + 1
+            switch songwriterRole(of: key) {
+            case .lyricist:
                 if credits.lyricist == nil { credits.lyricist = value }
-            case "曲", "作曲", "Composer", "composer":
+            case .composer:
                 if credits.composer == nil { credits.composer = value }
-            default:
+            case .both:
+                if credits.lyricist == nil { credits.lyricist = value }
+                if credits.composer == nil { credits.composer = value }
+            case .none:
                 break // 编曲 / 制作人 / 吉他 / 混音…：认出来是为了摘掉，不展示
             }
-            cut = offset + 1
         }
         lines.removeFirst(cut)
         return credits
@@ -315,24 +326,99 @@ enum LyricParser {
             && text.range(of: "^.+\\s[-–—]\\s.+$", options: .regularExpression) != nil
     }
 
-    private static let creditKeys: Set<String> = [
-        "词", "曲", "作词", "作曲", "编曲", "改编", "填词", "制作人", "制作", "监制", "出品",
-        "出品人", "发行", "策划", "统筹", "企划", "录音", "录音师", "录音室", "录音助理",
-        "录音工程", "混音", "混音工程", "母带", "母带工程", "和声", "合声", "和音", "合声编写",
-        "吉他", "电吉他", "木吉他", "贝斯", "鼓", "架子鼓", "键盘", "钢琴", "弦乐", "大提琴",
-        "小提琴", "长笛", "萨克斯", "编程", "配唱", "配唱制作人", "人声", "演唱", "美术设计",
-        "OP", "SP", "OP/SP", "Producer", "Mixing", "Mastering", "Arranger", "Arrangement",
-        "Recording", "Composer", "Lyricist", "Vocal", "Guitar", "Bass", "Drums", "Keyboard",
-    ]
-
-    /// 「键：值」里的键值对；键必须整个落在白名单里（`编曲` 不会被 `曲` 命中）。
+    /// 「键：值」两侧；键过长就不像角色名（那是带冒号的唱词）。
     private static func creditPair(in text: String) -> (key: String, value: String)? {
         guard let separator = text.rangeOfCharacter(from: CharacterSet(charactersIn: "：:")) else { return nil }
         let key = text[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
         let value = text[separator.upperBound...].trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty, !value.isEmpty, creditKeys.contains(key) else { return nil }
+        guard !key.isEmpty, !value.isEmpty, key.count <= maxCreditKeyLength else { return nil }
         return (key, value)
     }
+
+    /// 角色名的长度上限。`录音师 Recording Engineer` 是 22 个字符，中英对照里算长的。[推]
+    private static let maxCreditKeyLength = 24
+
+    /// 这个键是不是制作信息里的角色名。
+    ///
+    /// - Parameter insideBlock: 前面已经确认过至少一条制作信息行。
+    ///   「中文 + 英文」这条形态规律只在块内生效——否则
+    ///   `权志龙 G-DRAGON：…` 这种双语歌手提示行会被当成制作信息吃掉。
+    private static func isCreditKey(_ key: String, insideBlock: Bool) -> Bool {
+        let compact = key.filter { !$0.isWhitespace }
+        guard !compact.isEmpty else { return false }
+        let han = String(compact.filter { $0.isLetter && !$0.isASCII })
+        let latin = String(compact.lowercased().filter { $0.isASCII && $0.isLetter })
+        // 单字角色名（`词` `曲` `鼓`）只认整个键——包含匹配会咬到唱词。
+        if songwriterRole(of: key) != .none { return true }
+        if shortCreditKeys.contains(han.isEmpty ? latin : han) { return true }
+        if !han.isEmpty, chineseCreditWords.contains(where: { han.contains($0) }) { return true }
+        if !latin.isEmpty, latinCreditWords.contains(where: { latin.contains($0) }) { return true }
+        if creditAbbreviations.contains(compact.uppercased()) { return true }
+        return insideBlock && !han.isEmpty && !latin.isEmpty
+    }
+
+    /// 只认整键的短角色名。
+    private static let shortCreditKeys: Set<String> = [
+        "鼓", "唱", "琴", "笛", "箫", "编", "监", "制", "唢呐", "琵琶", "口白", "旁白",
+    ]
+
+    /// 中文角色词根（按**包含**匹配，所以 `弦乐` 认得下 `弦乐编写`、`弦乐监制`）。
+    /// 一律两个字起——单字（`词` `曲` `鼓`）包含匹配会咬到唱词。
+    private static let chineseCreditWords: Set<String> = [
+        "作词", "填词", "词曲", "曲词", "作曲", "谱曲", "编曲", "改编", "编写", "配器", "作者",
+        "制作", "监制", "出品", "发行", "策划", "企划", "统筹", "制片", "导演", "厂牌", "公司",
+        "录音", "混音", "缩混", "母带", "后期", "工程", "工作室", "录音棚", "版权", "出版",
+        "和声", "合声", "和音", "伴唱", "配唱", "合唱", "人声", "演唱", "歌手", "艺人", "指挥",
+        "吉他", "贝斯", "鼓手", "鼓组", "打击", "键盘", "钢琴", "弦乐", "提琴", "长笛", "单簧",
+        "萨克斯", "小号", "口琴", "二胡", "琵琶", "古筝", "笛子", "乐手", "乐队", "乐团",
+        "编程", "合成器", "采样", "调音", "修音", "配乐", "编制", "编配",
+        "设计", "美术", "视觉", "封面", "摄影", "造型", "化妆", "剪辑", "文案",
+        "推广", "宣传", "营销", "经纪", "翻译", "音乐", "歌曲", "专辑", "鸣谢",
+    ]
+
+    /// 英文角色词根（小写、**包含**匹配，所以 `master` 认得下 `Mastering` / `Mastered by`）。
+    private static let latinCreditWords: Set<String> = [
+        "lyric", "compos", "songwrit", "written", "arrang", "produc", "direct", "record",
+        "mix", "master", "engineer", "vocal", "chorus", "backing", "harmon", "featur",
+        "guitar", "bass", "drum", "percussion", "piano", "keyboard", "violin", "cello",
+        "viola", "string", "flute", "sax", "trumpet", "synth", "program", "orchestra",
+        "design", "artwork", "cover", "photo", "styling", "makeup", "edit", "translat",
+        "market", "promot", "publish", "label", "studio", "plan", "supervis", "manage",
+        "compan", "copyright", "executive", "credit", "thanks", "perform", "band", "music",
+    ]
+
+    /// 整键就是缩写的那些（`OP：步虚工作室`）。
+    private static let creditAbbreviations: Set<String> = [
+        "OP", "SP", "OP/SP", "SP/OP", "A&R", "AR", "PD", "MV", "OST", "ISRC", "UPC",
+    ]
+
+    private enum SongwriterRole { case lyricist, composer, both, none }
+
+    /// 只有词与曲进「创作者」那一行。这里按**整键**认（去掉空白与英文对照那半边），
+    /// 免得 `编曲` 被 `曲` 咬中——摘除可以粗，署名不能错。
+    private static func songwriterRole(of key: String) -> SongwriterRole {
+        let compact = key.filter { !$0.isWhitespace }
+        let han = String(compact.filter { !$0.isASCII })
+        let latin = String(compact.lowercased().filter { $0.isASCII && $0.isLetter })
+        let name = han.isEmpty ? latin : han
+        if Self.bothRoleKeys.contains(name) { return .both }
+        if Self.lyricistKeys.contains(name) { return .lyricist }
+        if Self.composerKeys.contains(name) { return .composer }
+        return .none
+    }
+
+    private static let bothRoleKeys: Set<String> = [
+        "词曲", "曲词", "词/曲", "曲/词", "作词作曲", "作曲作词", "词曲作者", "词曲创作",
+        "lyricscomposer", "lyricscompose",
+    ]
+    private static let lyricistKeys: Set<String> = [
+        "词", "作词", "填词", "词作", "词作者", "作词人", "原词",
+        "lyric", "lyrics", "lyricist", "lyricsby", "writtenby", "songwriter",
+    ]
+    private static let composerKeys: Set<String> = [
+        "曲", "作曲", "谱曲", "曲作", "曲作者", "作曲人", "原曲",
+        "compose", "composer", "composedby", "music", "musicby",
+    ]
 
     // MARK: - 发音归位
 

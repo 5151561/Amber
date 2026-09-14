@@ -362,6 +362,53 @@ final class LyricParserTests: XCTestCase {
         XCTAssertTrue(credits.isEmpty)
     }
 
+    /// 制作表整块都得摘干净：中英对照的角色名、没收录的角色名、OP/SP 一个都不许排上屏
+    func testBilingualAndUncoveredCreditRolesStripped() {
+        let lrc = """
+        [00:00.00]词：某某
+        [00:01.00]弦乐编写：林一凡
+        [00:02.00]录音混音：刘森（WoWooo studio）
+        [00:03.00]母带：刘英（刘英音乐工作室）
+        [00:04.00]OP：步虚工作室
+        [00:05.00]SP：为音乐
+        [00:06.00]制作人 Producer：黄乐乐
+        [00:07.00]编曲 Arranger：黄乐乐
+        [00:08.00]吉他 Guitar：黄乐乐
+        [00:09.00]和声Backing Vocal：黄乐乐
+        [00:10.00]录音师 Recording Engineer：黄乐乐
+        [00:11.00]混音 Mixing：黄乐乐
+        [00:12.00]母带处理 Mastering：黄乐乐
+        [00:13.00]音乐企划 Creative Planning：唐勇
+        [00:14.00]封面设计 Cover Designer：曾昭玮
+        [00:15.00]推广 Marketing：为音乐
+        [00:30.00]正文第一句
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["正文第一句"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：某某"])
+    }
+
+    /// 角色名列不完：认不出的那条夹在块中间时，靠后面认得出的那条一起带走
+    func testUnknownRoleInsideCreditBlockIsStripped() {
+        let lrc = """
+        [00:00.00]词：甲
+        [00:01.00]灵感来源：乙
+        [00:02.00]OP：丙
+        [00:20.00]正文
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text), ["正文"])
+    }
+
+    /// 「中文 + 英文」只在制作表内部算角色名：开头的双语歌手提示行是正文
+    func testBilingualSpeakerLineIsNotCredit() {
+        let lrc = """
+        [00:00.00]权志龙 G-DRAGON：Let's go
+        [00:04.00]第二句
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text),
+                       ["权志龙 G-DRAGON：Let's go", "第二句"])
+    }
+
     /// 正文里的「XX：YY」不能被当成创作者摘掉
     func testColonInsideBodyIsNotTreatedAsCredit() {
         let lrc = """

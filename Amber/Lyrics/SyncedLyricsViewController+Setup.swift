@@ -16,6 +16,7 @@ final class LyricsScrollView: NSScrollView {
 
     var onUserScrollBegan: (() -> Void)?
     var onUserScrollEnded: (() -> Void)?
+    var onLegacyScrollWheel: (() -> Void)?
     private var legacyScrollEndTimer: Timer?
 
     override func scrollWheel(with event: NSEvent) {
@@ -23,6 +24,7 @@ final class LyricsScrollView: NSScrollView {
         // 有 phase 的交给 live scroll 通知，别重复上报。
         guard event.phase.isEmpty, event.momentumPhase.isEmpty else { return }
 
+        onLegacyScrollWheel?()
         if legacyScrollEndTimer == nil { onUserScrollBegan?() }
         legacyScrollEndTimer?.invalidate()
         // 滚轮没有「松手」事件，只能按静默时长判结束。
@@ -44,6 +46,7 @@ extension SyncedLyricsViewController {
     /// 所以这里不装 `NSScrollView` 自己的那套滚动动画。
     func installScrollView(in container: NSView) {
         let scrollView = LyricsScrollView()
+        scrollView.wantsLayer = true
         scrollView.drawsBackground = false
         scrollView.backgroundColor = .clear
         scrollView.hasVerticalScroller = specs.showsVerticalScrollIndicator
@@ -75,6 +78,7 @@ extension SyncedLyricsViewController {
         self.documentView = document
         scrollView.onUserScrollBegan = { [weak self] in self?.scrollViewWillBeginScrolling() }
         scrollView.onUserScrollEnded = { [weak self] in self?.scrollViewDidEndScrolling() }
+        scrollView.onLegacyScrollWheel = { [weak self] in self?.updateLineAlphasForViewportEdges() }
         installScrollObserversIfNeeded()
     }
 
@@ -95,6 +99,10 @@ extension SyncedLyricsViewController {
             center.addObserver(forName: NSScrollView.didEndLiveScrollNotification,
                                object: scrollView, queue: .main) { [weak self] _ in
                 self?.scrollViewDidEndScrolling()
+            },
+            center.addObserver(forName: NSScrollView.didLiveScrollNotification,
+                               object: scrollView, queue: .main) { [weak self] _ in
+                self?.updateLineAlphasForViewportEdges()
             },
         ]
     }
@@ -270,6 +278,83 @@ extension SyncedLyricsViewController {
         }
         CATransaction.commit()
         collapseDocument(below: manager.lineViews.last)
+        updateLineAlphasForViewportEdges()
+    }
+
+    // MARK: - 视口边缘遮罩与动态行透明度
+
+    /// 原生 AppKit 视口垂直渐变遮罩：在 `scrollView` 上挂载垂直羽化 `CAGradientLayer`，
+    /// 上下平滑移入移出；左右不加遮罩，由 `margins` 安全边距（safe area）保证不被裁切。
+    func updateViewportMask() {
+        guard let scrollView, scrollView.bounds.width > 0, scrollView.bounds.height > 0 else { return }
+        let bounds = scrollView.bounds
+        let maskBounds = CGRect(origin: .zero, size: bounds.size)
+
+        let vMask: CAGradientLayer
+        if let existing = scrollView.layer?.mask as? CAGradientLayer {
+            vMask = existing
+        } else {
+            vMask = CAGradientLayer()
+            vMask.colors = [
+                NSColor.clear.cgColor,
+                NSColor.black.cgColor,
+                NSColor.black.cgColor,
+                NSColor.clear.cgColor,
+            ]
+            vMask.startPoint = CGPoint(x: 0.5, y: 0)
+            vMask.endPoint = CGPoint(x: 0.5, y: 1)
+            scrollView.layer?.mask = vMask
+        }
+
+        let vFraction = MusicMetrics.NowPlaying.hostedContentVerticalFadeFraction
+        vMask.locations = [
+            0.0,
+            NSNumber(value: Double(vFraction)),
+            NSNumber(value: Double(1 - vFraction)),
+            1.0,
+        ]
+
+        // 左右不加遮罩，由 safe area / margins 保证安全边距
+        vMask.mask = nil
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        vMask.frame = maskBounds
+        CATransaction.commit()
+    }
+
+    /// 逐行透明度：**行被视口上下边缘切掉多少，就淡多少**，只看几何。
+    ///
+    /// 一行完全在视口内就一律全亮——正在唱的那句在两种落点档里（侧栏的贴顶、
+    /// 整窗播放器的 `.center`）都完整落在视口里，所以这里永远碰不到它。
+    ///
+    /// **不看选中态。** 选中发生在开唱前 `maxEndTimeOffset`（0.5 s）的准入，
+    /// 拿它当亮度开关，下一句就会在还没唱的时候先亮起来；亮度是几何的事，
+    /// 唱没唱是时间的事，两件事不能共用一个开关。
+    func updateLineAlphasForViewportEdges() {
+        guard let scrollView, let manager, !manager.lineViews.isEmpty else { return }
+        let viewport = scrollView.contentView.bounds
+        guard viewport.height > 0 else { return }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for view in manager.lineViews {
+            let frame = view.frame
+            // 收起态的间奏行高度为 0（§16.1），没有「被切掉多少」可言。
+            guard !manager.hiddenLineViews.contains(view), frame.height > 0 else {
+                setAlpha(0, on: view)
+                continue
+            }
+            let visible = min(frame.maxY, viewport.maxY) - max(frame.minY, viewport.minY)
+            setAlpha(min(max(visible / frame.height, 0), 1), on: view)
+        }
+        CATransaction.commit()
+    }
+
+    /// 每帧全表写 `alphaValue` 等于每帧把整棵层树重新提交一遍；值没变就别写。
+    private func setAlpha(_ alpha: CGFloat, on view: SyncedLyricsLineView) {
+        guard abs(view.alphaValue - alpha) > 0.001 else { return }
+        view.alphaValue = alpha
     }
 
     // MARK: - 每帧（§1.1）
@@ -300,6 +385,7 @@ extension SyncedLyricsViewController {
         // 先点亮到点的行，再按点亮后的结果决定焦点位要不要往下一句挪。
         visual.activateDueLines(at: basis.elapsed)
         visual.followScrollTarget(at: basis.elapsed)
+        updateLineAlphasForViewportEdges()
 
         // 逐字渐变每帧推进（原版的走查）。喂进去的时间是
         // §1.2 的前两步（扣掉空间音频偏移），**不含**第三步那个提前量。

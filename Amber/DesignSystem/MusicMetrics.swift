@@ -1754,6 +1754,8 @@ enum MusicMetrics {
         static let hostedContentBottom: CGFloat = 64
         /// [AX] 面板宽 668、歌词文字 630 → 左右各内缩 19
         static let hostedContentInset: CGFloat = 19
+        /// 歌词滚动视口上下垂直渐隐带占面板高度的比例 [推]（对标 Apple Music 约 100~120pt 深度，避免文字硬切）
+        static let hostedContentVerticalFadeFraction: CGFloat = 0.14
 
         // MARK: 背景（`NowPlayingViewModel.Backdrop`）
 

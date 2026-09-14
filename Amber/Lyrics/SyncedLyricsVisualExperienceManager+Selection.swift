@@ -92,8 +92,8 @@ extension SyncedLyricsVisualExperienceManager {
             selectedLineViews = []                                 //写空数组存储
         }
 
-        // 滚动与高亮分开：文字行准入（开唱前 `maxEndTimeOffset`）时只入列、去模糊，
-        // 高亮等到开唱那一刻由每帧的 `activateDueLines` 点亮，滚动由 `scrollTargetLineView` 另判。
+        // 滚动与高亮分开：文字行准入（开唱前 `maxEndTimeOffset`）时**只入列**，
+        // 高亮与去模糊等到开唱那一刻由每帧的 `activateDueLines` 给，滚动由 `scrollTargetLineView` 另判。
         // 两种例外立刻点亮：
         // - `deselectingOthers`（jump / 拖开后只换外观那一支）——目标必须当场亮；
         // - 间奏行——它的「高亮」就是三个点，而点阵的显隐、逐点点亮都看内容层自己的
@@ -132,8 +132,16 @@ extension SyncedLyricsVisualExperienceManager {
             }
         }
 
-        // 五、去模糊：传 `(target, true, 0.0)`。无论是提前滚动就位还是已到开唱，只要纳入选中视图都清除模糊，保持文字清晰可读。
-        setBlurRadius(0, on: target, animated: true)
+        // 五、去模糊：传 `(target, true, 0.0)`。**跟着高亮走，不跟着准入走。**
+        //
+        // 准入是开唱前 `maxEndTimeOffset`（0.5 s）的入列。原版在那一刻连高亮一起给，
+        // 去模糊与点亮本来就是同一刻；Amber 把滚动与高亮拆开之后（`activateDueLines`），
+        // 这一步要是仍留在准入路径上，就成了「还没唱的那句先从糊变清」——
+        // 全表就它一行是清的，眼睛读到的就是「没唱就亮了」。
+        // 还没到点的行由 `activateDueLines` 在开唱那一刻一并去模糊（那里已经有同一句）。
+        if isDue {
+            setBlurRadius(0, on: target, animated: true)
+        }
 
         // 六、入列。–是 `Array.append`
         //    （`_makeUniqueAndReserveCapacityIfNotUnique` + `_appendElementAssumeUniqueAndCapacity`），
@@ -143,7 +151,8 @@ extension SyncedLyricsVisualExperienceManager {
         // 起才打 "[SyncedLyricsDebug] selecting line …"，在所有副作用之后。
     }
 
-    /// 检查已选中的行中，是否有已到达开唱时刻但尚未激活高亮的行（提前 0.5s 滚动就位但等到开唱才高亮）。
+    /// 已入列但还没到开唱时刻的行，在这里补上外观：点亮、起逐字进度、去模糊。
+    /// **准入那一刻什么外观都不给**——给了就是「还没唱就亮了」。
     func activateDueLines(at elapsed: TimeInterval) {
         for view in selectedLineViews {
             guard view.lineLayer?.isSelected == false,
@@ -167,7 +176,7 @@ extension SyncedLyricsVisualExperienceManager {
     /// 1. 正在唱的 = 已点亮的最后一行 `current`；一行都没亮（歌开头、seek 落在句前）就取第一条。
     ///    打开着的间奏行一律停住：它由展开动画落位、由 `deselectLine` 的收起带走（§16.6）。
     /// 2. 候选下一句 = `current` 之后第一条**未点亮**的选中行 `next`；没有就停在 `current`。
-    ///    准入（开唱前 `maxEndTimeOffset`）只是入列、去模糊，不是滚动的理由——按「谁最新准入
+    ///    准入（开唱前 `maxEndTimeOffset`）只是入列，不是滚动的理由——按「谁最新准入
     ///    就滚向谁」，句子比提前量短时会连着往下翻，正在唱的那句被推出视口（当天的「行错位」）。
     ///    于是焦点位最多领先正在唱的那句一行。
     /// 3. 让位时刻 = `min(current.end, next.start)`：当前句唱完就切下一句；两句重叠的，
@@ -430,7 +439,7 @@ extension SyncedLyricsVisualExperienceManager {
     private func restoreBlurAfterPause() {
         guard mode == .regular else { return }
         let onScreen = Set((viewController?.visibleLineViews() ?? []).map(ObjectIdentifier.init))
-        let selected = Set(selectedLineViews.map(ObjectIdentifier.init))
+        let selected = litLineViewIDs
         for view in lineViews where !selected.contains(ObjectIdentifier(view)) {
             setBlurRadius(Self.deselectedBlurRadius, on: view,
                           animated: onScreen.contains(ObjectIdentifier(view)))
@@ -586,11 +595,22 @@ extension SyncedLyricsVisualExperienceManager {
         }
         guard specs.lineBlurEnabled,
               viewController?.isHighContrastAppearance != true else { return }
-        let selected = Set(selectedLineViews.map(ObjectIdentifier.init))
+        let selected = litLineViewIDs
         for view in lineViews where !selected.contains(ObjectIdentifier(view)) {
             setBlurRadius(Self.deselectedBlurRadius, on: view,
                           animated: onScreen.contains(ObjectIdentifier(view)))
         }
+    }
+
+    /// 「该是清晰的」那一组：**已点亮**的行，不是已入列的行。
+    ///
+    /// 准入（开唱前 `maxEndTimeOffset`）只入列，那一刻还轮不到它清晰——
+    /// 拿 `selectedLineViews` 当判据，暂停恢复与松手这两个时刻就会把还没唱的那句
+    /// 提前擦清楚，观感与「没唱就亮了」是同一件事。
+    var litLineViewIDs: Set<ObjectIdentifier> {
+        Set(selectedLineViews.lazy
+            .filter { $0.lineLayer?.isSelected == true }
+            .map(ObjectIdentifier.init))
     }
 
     // MARK: - 时间基准
