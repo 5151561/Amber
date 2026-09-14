@@ -59,15 +59,20 @@ final class SyncedLyricsViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        updateViewportMask()
         // [实测] `layoutLines: scrolling to` 的判据是**锚点行矩形全等**，
         // 不是 y 差——窗口宽度变了导致换行数变化、锚点行因此移位时才滚。
-        guard let scrollView, scrollView.bounds != previousBounds else { return }
+        guard let scrollView, scrollView.bounds != previousBounds else {
+            updateLineAlphasForViewportEdges()
+            return
+        }
         previousBounds = scrollView.bounds
         let anchor = manager.flatMap { $0.scrollTargetLineView(at: $0.currentElapsedTime()) }
             ?? manager?.selectedLineViews.first
         recomputeLineFrames()
         layoutLines(anchor: anchor, measure: measure)
         collapseDocument(below: manager?.lineViews.last)
+        updateLineAlphasForViewportEdges()
     }
 
     override func viewWillAppear() {
@@ -76,11 +81,15 @@ final class SyncedLyricsViewController: NSViewController {
         // `tearDown()` 会把观察者摘掉，再次上台得装回来（幂等，装过就不重复装）。
         installScrollObserversIfNeeded()
         updateDisplayLink()
+        updateViewportMask()
+        updateLineAlphasForViewportEdges()
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         didAppear = true
+        updateViewportMask()
+        updateLineAlphasForViewportEdges()
     }
 
     override func viewWillDisappear() {
