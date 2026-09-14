@@ -1,0 +1,4 @@
+// 复制为 Signing.local.xcconfig（同目录，已在 .gitignore 里），填上你的 Team ID。
+// 在「钥匙串访问」里看证书详情，或 Xcode → Settings → Accounts → Manage Certificates 都能找到。
+
+AMBER_DEVELOPMENT_TEAM = XXXXXXXXXX

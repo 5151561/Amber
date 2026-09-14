@@ -1,0 +1,29 @@
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Swift
+.build/
+.swiftpm/
+
+# ZCode 会话
+.zcode/
+
+# macOS
+.DS_Store
+
+# UI spec 采集产物（含本机资料库文本与参考截图，一律不入库）
+design-ref/ui-spec/sweep/
+design-ref/ui-spec/pages/
+design-ref/ui-spec/am/
+design-ref/ui-spec/*.json
+design-ref/ui-spec/*.png
+
+
+
+.claude/
+
+# 本机签名身份（Team ID 不入库）
+Support/Signing.local.xcconfig

@@ -1,0 +1,699 @@
+--add-to-library-bg-color
+  light: rgba(0,0,0,.06)
+  dark:  hsla(0,0%,100%,.04)
+--add-to-library-border-color
+  light: rgba(0,0,0,.04)
+  dark:  hsla(0,0%,100%,.08)
+--addToLibraryFillLayoutOverride
+  light: rgba(0,0,0,.85)
+  dark:  hsla(0,0%,100%,.85)
+--button-circle-background-color
+  light: rgba(0,0,0,.06)
+  dark:  hsla(0,0%,100%,.04)
+--button-circle-border-color
+  light: rgba(0,0,0,.04)
+  dark:  hsla(0,0%,100%,.08)
+--button-pill-background-color
+  light: #000
+  dark:  #fff
+--button-pill-color
+  light: #fff
+  dark:  #000
+--cardHoverColor
+  light: rgba(120,120,128,.25)
+  dark:  rgba(120,120,128,.41)
+--circularArtistHeaderGradientBottom
+  light: rgba(0,0,0,.05)
+  dark:  hsla(0,0%,100%,.03)
+--containerInnerStroke
+  light: #000
+  dark:  #fff
+--contextMenuBorderColor
+  light: rgba(0,0,0,.15)
+  dark:  hsla(0,0%,100%,.1)
+--contextMenuTextColor
+  light: rgba(0,0,0,.85)
+  dark:  hsla(0,0%,100%,.85)
+--dialogShadowColor
+  light: rgba(0,0,0,.25)
+  dark:  rgba(0,0,0,.55)
+--fallbackButtonMaterial
+  light: rgba(142,142,147,.8)
+  dark:  rgba(152,152,157,.8)
+--fallbackMaterialBG
+  light: hsla(0,0%,100%,.97)
+  dark:  rgba(31,31,31,.97)
+--footerBg
+  light: #fbfbfb
+  dark:  #323232
+--genericJoeColor
+  light: #ebebeb
+  dark:  #323232
+--glassMaterialBackground
+  light: rgba(245,245,247,.55)
+  dark:  rgba(38,38,40,.6)
+--glassMaterialBackground-default_IC
+  light: #f2f2f2
+  dark:  #0e0e0e
+--glassMaterialInnerStroke
+  light: #000
+  dark:  #fff
+--glassMaterialInnerStrokeCombined
+  light: rgba(0,0,0,.05)
+  dark:  hsla(0,0%,100%,.2)
+--glassMaterialInnerStrokeCombined-default_IC
+  light: #0d0d0d
+  dark:  #e7e7e7
+--glassMaterialShadowColor
+  light: rgba(0,0,0,.1)
+  dark:  rgba(0,0,0,.2)
+--keyColor
+  light: #fa233b
+  dark:  #fa2d48
+--keyColor-deepPressed
+  light: #c60007
+  dark:  #ff5f7a
+--keyColor-deepPressed-rgb
+  light: 198,0,7
+  dark:  255,95,122
+--keyColor-deepPressed_IC
+  light: #a20000
+  dark:  #ff8a9c
+--keyColor-deepPressed_IC-rgb
+  light: 162,0,0
+  dark:  255,138,156
+--keyColor-default_IC
+  light: #d60017
+  dark:  #fa586a
+--keyColor-default_IC-rgb
+  light: 214,0,23
+  dark:  250,88,106
+--keyColor-disabled
+  light: rgba(250,35,59,.35)
+  dark:  rgba(250,45,72,.35)
+--keyColor-disabled_IC
+  light: rgba(214,0,23,.25)
+  dark:  rgba(250,88,106,.35)
+--keyColor-pressed
+  light: #e00921
+  dark:  #ff4661
+--keyColor-pressed-rgb
+  light: 224,9,33
+  dark:  255,70,97
+--keyColor-pressed_IC
+  light: #b00
+  dark:  #ff7183
+--keyColor-pressed_IC-rgb
+  light: 187,0,0
+  dark:  255,113,131
+--keyColor-rgb
+  light: 250,35,59
+  dark:  250,45,72
+--keyColor-rollover
+  light: #c60007
+  dark:  #ff5f7a
+--keyColor-rollover-rgb
+  light: 198,0,7
+  dark:  255,95,122
+--keyColor-rollover_IC
+  light: #a20000
+  dark:  #ff8a9c
+--keyColor-rollover_IC-rgb
+  light: 162,0,0
+  dark:  255,138,156
+--labelDivider
+  light: rgba(0,0,0,.15)
+  dark:  hsla(0,0%,100%,.1)
+--labelDivider-default_IC
+  light: rgba(0,0,0,.3)
+  dark:  hsla(0,0%,100%,.3)
+--labelDivider-vibrant
+  light: rgba(0,0,0,.11)
+  dark:  hsla(0,0%,100%,.13)
+--labelDivider-vibrant_IC
+  light: rgba(0,0,0,.3)
+  dark:  hsla(0,0%,100%,.3)
+--librarySongsTrackInactiveBG
+  light: rgba(0,0,0,.14)
+  dark:  rgba(255,255,240,.12)
+--lyricsBg
+  light: #fff
+  dark:  #2d2d2d
+--lyricsTranslationButtonBG
+  light: rgba(0,0,0,.1)
+  dark:  hsla(0,0%,100%,.1)
+--lyricsTranslationButtonBGActive
+  light: #6c6c6c
+  dark:  hsla(0,0%,100%,.85)
+--lyricsTranslationButtonBGActiveHover
+  light: rgba(0,0,0,.68)
+  dark:  hsla(0,0%,100%,.95)
+--lyricsTranslationButtonBGActiveMenu
+  light: rgba(0,0,0,.85)
+  dark:  #fff
+--lyricsTranslationButtonBGHover
+  light: rgba(0,0,0,.25)
+  dark:  hsla(0,0%,100%,.25)
+--lyricsTranslationButtonBGMenu
+  light: rgba(0,0,0,.4)
+  dark:  hsla(0,0%,100%,.4)
+--lyricsTranslationButtonIconFill
+  light: #666
+  dark:  hsla(0,0%,100%,.55)
+--lyricsTranslationButtonIconFillActive
+  light: #fff
+  dark:  #525252
+--lyricsTranslationButtonIconFillMenu
+  light: #343434
+  dark:  #fff
+--lyricsTranslationButtonIconHover
+  light: #666
+  dark:  hsla(0,0%,100%,.7)
+--miniPlayerBackground
+  light: hsla(0,0%,100%,.9)
+  dark:  rgba(37,37,37,.9)
+--miniPlayerBackground-default_IC
+  light: #fafafa
+  dark:  #282828
+--mobileNavigationBG
+  light: #fff
+  dark:  #2e2e2e
+--modalCloseButtonBGColor
+  light: #e8e8ed
+  dark:  #333336
+--modalCloseButtonBGColor-pressed
+  light: #dfdfe4
+  dark:  #2f2f32
+--modalCloseButtonBGColor-rollover
+  light: #ececf0
+  dark:  #37373a
+--musicKeyColor
+  light: #fa233b
+  dark:  #fa2d48
+--musicKeyColor-deepPressed
+  light: #c60007
+  dark:  #ff5f7a
+--musicKeyColor-deepPressed_IC
+  light: #a20000
+  dark:  #ff8a9c
+--musicKeyColor-default_IC
+  light: #d60017
+  dark:  #fa586a
+--musicKeyColor-disabled
+  light: rgba(250,35,59,.35)
+  dark:  rgba(250,45,72,.35)
+--musicKeyColor-disabled_IC
+  light: rgba(214,0,23,.25)
+  dark:  rgba(250,88,106,.35)
+--musicKeyColor-pressed
+  light: #e00921
+  dark:  #ff4661
+--musicKeyColor-pressed_IC
+  light: #b00
+  dark:  #ff7183
+--musicKeyColor-rollover
+  light: #c60007
+  dark:  #ff5f7a
+--musicKeyColor-rollover_IC
+  light: #a20000
+  dark:  #ff8a9c
+--navSidebarBG
+  light: rgba(60,60,67,.03)
+  dark:  rgba(235,235,245,.03)
+--navSidebarBG-default_IC
+  light: #fafafa
+  dark:  #282828
+--navSidebarSelectedState
+  light: rgba(60,60,67,.1)
+  dark:  rgba(235,235,245,.1)
+--opaqueShelfBG
+  light: #f2f2f2
+  dark:  #2b2b2b
+--pageBG
+  light: #fff
+  dark:  #1f1f1f
+--pageBG-rgb
+  light: 255,255,255
+  dark:  31,31,31
+--playerBackground
+  light: hsla(0,0%,100%,.88)
+  dark:  rgba(45,45,45,.88)
+--playerBackground-default_IC
+  light: #fafafa
+  dark:  #282828
+--playerBackgroundFallback
+  light: hsla(0,0%,100%,.97)
+  dark:  rgba(45,45,45,.97)
+--playerBackgroundFallback-default_IC
+  light: #fafafa
+  dark:  #282828
+--playerMissingArtworkBg
+  light: #e9e9e9
+  dark:  #323232
+--playerMissingArtworkIcon
+  light: #dcdcdc
+  dark:  #434343
+--playerPlatterButtonBGFill
+  light: #6c6c6c
+  dark:  #fff
+--playerPlatterButtonIconFill
+  light: #fff
+  dark:  rgba(0,0,0,.7)
+--radiosityShadowColor
+  light: rgba(0,0,0,.1)
+  dark:  rgba(0,0,0,.3)
+--searchBarBorderColor
+  light: rgba(0,0,0,.15)
+  dark:  hsla(0,0%,100%,.15)
+--searchBoxIconFill
+  light: rgba(0,0,0,.65)
+  dark:  hsla(0,0%,100%,.9)
+--segmentedControlActiveBG
+  light: hsla(0,0%,100%,.7)
+  dark:  #747477
+--segmentedControlActiveBG-default_IC
+  light: #d9d9d9
+  dark:  rgba(255,255,240,.9)
+--segmentedControlBG
+  light: rgba(118,118,128,.12)
+  dark:  rgba(118,118,128,.24)
+--segmentedControlBG-default_IC
+  light: rgba(0,0,0,.2)
+  dark:  hsla(0,0%,100%,.24)
+--segmentedControlSelectedBG
+  light: #fff
+  dark:  #636366
+--segmentedControlSelectedShadow1
+  light: rgba(0,0,0,.12)
+  dark:  transparent
+--segmentedControlSelectedShadow2
+  light: rgba(0,0,0,.04)
+  dark:  transparent
+--segmentedControlSelectedText
+  light: rgba(0,0,0,.85)
+  dark:  hsla(0,0%,100%,.85)
+--selectionColor
+  light: #dd1f34
+  dark:  #c11b2e
+--selectionColor-default_IC
+  light: #d60017
+  dark:  #a50012
+--shelfBG
+  light: rgba(0,0,0,.05)
+  dark:  hsla(0,0%,100%,.05)
+--shelfLockupPlayHover
+  light: #69696e
+  dark:  #aeaeb2
+--stickyHeaderDropShadow2
+  light: rgba(0,0,0,.07)
+  dark:  rgba(0,0,0,.1)
+--stickyHeaderInnerShadow
+  light: hsla(0,0%,100%,.45)
+  dark:  hsla(0,0%,100%,.1)
+--systemBlue
+  light: #007aff
+  dark:  #0a84ff
+--systemBlue-deepPressed
+  light: #0045b7
+  dark:  #47c1ff
+--systemBlue-default_IC
+  light: #0040dd
+  dark:  #409cff
+--systemBlue-disabled
+  light: rgba(0,122,255,.35)
+  dark:  rgba(10,132,255,.5)
+--systemBlue-pressed
+  light: #005cd7
+  dark:  #38b2ff
+--systemBlue-rollover
+  light: #0045b7
+  dark:  #47c1ff
+--systemBlue-vibrant
+  light: #0070f5
+  dark:  #148eff
+--systemBlue-vibrant_IC
+  light: #0040dd
+  dark:  #409cff
+--systemBrown
+  light: #a2845e
+  dark:  #ac8e68
+--systemBrown-default_IC
+  light: #7f6545
+  dark:  #b59469
+--systemBrown-vibrant
+  light: #987a54
+  dark:  #b69872
+--systemBrown-vibrant_IC
+  light: #775d3b
+  dark:  #b59469
+--systemCyan
+  light: #55bef0
+  dark:  #5ac8f5
+--systemCyan-default_IC
+  light: #0071a4
+  dark:  #70d7ff
+--systemCyan-vibrant
+  light: #41afdc
+  dark:  #5acdfa
+--systemCyan-vibrant_IC
+  light: #006796
+  dark:  #70d7ff
+--systemGray
+  light: #8e8e93
+  dark:  #98989d
+--systemGray-default_IC
+  light: #69696e
+  dark:  #98989d
+--systemGray-vibrant
+  light: #848489
+  dark:  #a2a2a7
+--systemGray-vibrant_IC
+  light: #616165
+  dark:  #98989d
+--systemGray2
+  light: #aeaeb2
+  dark:  #636366
+--systemGray2-default_IC
+  light: #8e8e93
+  dark:  #7c7c80
+--systemGray3
+  light: #c7c7cc
+  dark:  #48484a
+--systemGray3-default_IC
+  light: #aeaeb2
+  dark:  #545456
+--systemGray4
+  light: #d1d1d6
+  dark:  #3a3a3c
+--systemGray4-default_IC
+  light: #bcbcc0
+  dark:  #444446
+--systemGray5
+  light: #e5e5ea
+  dark:  #2c2c2e
+--systemGray5-default_IC
+  light: #d8d8dc
+  dark:  #363638
+--systemGray6
+  light: #f2f2f7
+  dark:  #1c1c1e
+--systemGray6-default_IC
+  light: #ebebf0
+  dark:  #242426
+--systemGreen
+  light: #28cd41
+  dark:  #32d74b
+--systemGreen-default_IC
+  light: #007d1b
+  dark:  #31de4b
+--systemGreen-vibrant
+  light: #1ec337
+  dark:  #3ce155
+--systemGreen-vibrant_IC
+  light: #007018
+  dark:  #31de4b
+--systemGroupedBackgroundSecondary
+  light: #fff
+  dark:  #2c2c2e
+--systemHeaderMaterialSover
+  light: hsla(0,0%,100%,.8)
+  dark:  rgba(30,30,30,.8)
+--systemHeaderMaterialSover-default_IC
+  light: #fff
+  dark:  #1e1e1e
+--systemIndigo
+  light: #5856d6
+  dark:  #5e5ce6
+--systemIndigo-default_IC
+  light: #3634a3
+  dark:  #7d7aff
+--systemIndigo-vibrant
+  light: #5452cc
+  dark:  #6361f2
+--systemIndigo-vibrant_IC
+  light: #3634a3
+  dark:  #7d7aff
+--systemLink
+  light: #0068da
+  dark:  #419cff
+--systemLink-default_IC
+  light: #0059cb
+  dark:  #419cff
+--systemLink-vibrant
+  light: #005ed0
+  dark:  #4ba6f0
+--systemLink-vibrant_IC
+  light: #004ec0
+  dark:  #419cff
+--systemMint
+  light: #00c7be
+  dark:  #63e6e2
+--systemMint-default_IC
+  light: #0c817b
+  dark:  #63e6e2
+--systemMint-vibrant
+  light: #00bdb4
+  dark:  #6ce0db
+--systemMint-vibrant_IC
+  light: #0b7570
+  dark:  #63e6e2
+--systemOrange
+  light: #ff9500
+  dark:  #ff9f0a
+--systemOrange-default_IC
+  light: #c93400
+  dark:  #ffb340
+--systemOrange-vibrant
+  light: #f58b00
+  dark:  #ffa914
+--systemOrange-vibrant_IC
+  light: #ad3a00
+  dark:  #ffb340
+--systemPink
+  light: #ff2d55
+  dark:  #ff375f
+--systemPink-default_IC
+  light: #d30f45
+  dark:  #ff6482
+--systemPink-vibrant
+  light: #f5234b
+  dark:  #ff4169
+--systemPink-vibrant_IC
+  light: #c11032
+  dark:  #ff3a5f
+--systemPrimary
+  light: rgba(0,0,0,.85)
+  dark:  hsla(0,0%,100%,.85)
+--systemPrimary-default_IC
+  light: #000
+  dark:  #fff
+--systemPrimary-vibrant
+  light: #4d4d4d
+  dark:  #e5e5e5
+--systemPrimary-vibrant_IC
+  light: #000
+  dark:  #fff
+--systemPurple
+  light: #af52de
+  dark:  #bf5af2
+--systemPurple-default_IC
+  light: #ad44ab
+  dark:  #da8fff
+--systemPurple-vibrant
+  light: #9f4bc9
+  dark:  #cc65ff
+--systemPurple-vibrant_IC
+  light: #ad44ab
+  dark:  #da8fff
+--systemQuaternary
+  light: rgba(0,0,0,.1)
+  dark:  hsla(0,0%,100%,.1)
+--systemQuaternary-default_IC
+  light: rgba(0,0,0,.35)
+  dark:  hsla(0,0%,100%,.3)
+--systemQuaternary-vibrant
+  light: #e8e8e8
+  dark:  #232323
+--systemQuaternary-vibrant_IC
+  light: rgba(0,0,0,.35)
+  dark:  hsla(0,0%,100%,.3)
+--systemQuinary
+  light: rgba(0,0,0,.05)
+  dark:  hsla(0,0%,100%,.05)
+--systemQuinary-default_IC
+  light: rgba(0,0,0,.1)
+  dark:  hsla(0,0%,100%,.1)
+--systemQuinary-vibrant
+  light: #f5f5f5
+  dark:  #080808
+--systemQuinary-vibrant_IC
+  light: rgba(0,0,0,.1)
+  dark:  hsla(0,0%,100%,.1)
+--systemRed
+  light: #ff3b30
+  dark:  #ff453a
+--systemRed-default_IC
+  light: #d70015
+  dark:  #ff6961
+--systemRed-vibrant
+  light: #f53126
+  dark:  #ff4f44
+--systemRed-vibrant_IC
+  light: #c20618
+  dark:  #ff4136
+--systemSecondary
+  light: rgba(0,0,0,.5)
+  dark:  hsla(0,0%,100%,.55)
+--systemSecondary-default_IC
+  light: rgba(0,0,0,.76)
+  dark:  hsla(0,0%,100%,.7)
+--systemSecondary-vibrant
+  light: gray
+  dark:  #7c7c7c
+--systemSecondary-vibrant_IC
+  light: rgba(0,0,0,.76)
+  dark:  hsla(0,0%,100%,.7)
+--systemStandardMediumMaterialSover
+  light: hsla(0,0%,96.5%,.6)
+  dark:  rgba(40,40,40,.6)
+--systemStandardMediumMaterialSover-default_IC
+  light: #e6e6e6
+  dark:  #141414
+--systemStandardMediumMaterialSover-inactive
+  light: #f0f0f0
+  dark:  #282828
+--systemStandardMediumMaterialSover-inactive_IC
+  light: #ececec
+  dark:  #141414
+--systemStandardThickMaterialSover
+  light: rgba(246,246,246,.72)
+  dark:  rgba(40,40,40,.7)
+--systemStandardThickMaterialSover-default_IC
+  light: #f0f0f0
+  dark:  #1e1e1e
+--systemStandardThickMaterialSover-inactive
+  light: #f0f0f0
+  dark:  #282828
+--systemStandardThickMaterialSover-inactive_IC
+  light: #ececec
+  dark:  #141414
+--systemStandardThinMaterialSover
+  light: hsla(0,0%,96.5%,.48)
+  dark:  rgba(40,40,40,.5)
+--systemStandardThinMaterialSover-default_IC
+  light: #dcdcdc
+  dark:  #0a0a0a
+--systemStandardThinMaterialSover-inactive
+  light: #f0f0f0
+  dark:  #282828
+--systemStandardThinMaterialSover-inactive_IC
+  light: #ececec
+  dark:  #141414
+--systemStandardUltrathickMaterialSover
+  light: hsla(0,0%,96.5%,.84)
+  dark:  rgba(40,40,40,.8)
+--systemStandardUltrathickMaterialSover-default_IC
+  light: #fafafa
+  dark:  #282828
+--systemStandardUltrathickMaterialSover-inactive
+  light: #f0f0f0
+  dark:  #282828
+--systemStandardUltrathickMaterialSover-inactive_IC
+  light: #ececec
+  dark:  #141414
+--systemStandardUltrathinMaterialSover
+  light: rgba(246,246,246,.36)
+  dark:  rgba(40,40,40,.4)
+--systemStandardUltrathinMaterialSover-default_IC
+  light: #d2d2d2
+  dark:  #000
+--systemStandardUltrathinMaterialSover-inactive
+  light: #f0f0f0
+  dark:  #282828
+--systemStandardUltrathinMaterialSover-inactive_IC
+  light: #ececec
+  dark:  #141414
+--systemTeal
+  light: #59adc4
+  dark:  #6ac4dc
+--systemTeal-default_IC
+  light: #008299
+  dark:  #5de6ff
+--systemTeal-vibrant
+  light: #2ea7bd
+  dark:  #44d4ed
+--systemTeal-vibrant_IC
+  light: #00778c
+  dark:  #5de6ff
+--systemTertiary
+  light: rgba(0,0,0,.25)
+  dark:  hsla(0,0%,100%,.25)
+--systemTertiary-default_IC
+  light: rgba(0,0,0,.56)
+  dark:  hsla(0,0%,100%,.5)
+--systemTertiary-vibrant
+  light: #c6c6c6
+  dark:  #414141
+--systemTertiary-vibrant_IC
+  light: rgba(0,0,0,.56)
+  dark:  hsla(0,0%,100%,.5)
+--systemToolbarTitlebarMaterialSover
+  light: hsla(0,0%,99.2%,.8)
+  dark:  rgba(60,60,60,.8)
+--systemToolbarTitlebarMaterialSover-default_IC
+  light: #fff
+  dark:  #262626
+--systemToolbarTitlebarMaterialSover-inactive
+  light: #f0f0f0
+  dark:  #282828
+--systemToolbarTitlebarMaterialSover-inactive_IC
+  light: #ececec
+  dark:  #141414
+--systemYellow
+  light: #fc0
+  dark:  #ffd60a
+--systemYellow-default_IC
+  light: #a05a00
+  dark:  #ffd426
+--systemYellow-vibrant
+  light: #f5c200
+  dark:  #ffe014
+--systemYellow-vibrant_IC
+  light: #925100
+  dark:  #ffd426
+--titleBadgeBG
+  light: rgba(118,118,128,.12)
+  dark:  rgba(118,118,128,.24)
+--titleBadgeColor
+  light: #000
+  dark:  #fff
+--trackBackgroundEven
+  light: rgba(0,0,0,.02)
+  dark:  hsla(0,0%,100%,.05)
+--tracklistAltRowColor
+  light: rgba(0,0,0,.015)
+  dark:  hsla(0,0%,100%,.015)
+--tracklistAltRowColor-default_IC
+  light: rgba(0,0,0,.05)
+  dark:  hsla(0,0%,100%,.05)
+--tracklistBadgeBackgroundColor
+  light: #e9e9ea
+  dark:  #4d4d4d
+--tracklistBadgeBorderColor
+  light: #fbfbfb
+  dark:  #232323
+--tracklistHoverColor
+  light: rgba(0,0,0,.06)
+  dark:  hsla(0,0%,100%,.06)
+--tracklistHoverColor-default_IC
+  light: rgba(0,0,0,.1)
+  dark:  hsla(0,0%,100%,.1)
+--tracklistWorksTrackHoverColor
+  light: rgba(0,0,0,.1)
+  dark:  hsla(0,0%,100%,.1)
+--tracklistWorksTrackHoverColor-default_IC
+  light: rgba(0,0,0,.18)
+  dark:  hsla(0,0%,100%,.18)
+--vibrantDivider
+  light: rgba(60,60,67,.29)
+  dark:  rgba(235,235,245,.19)
