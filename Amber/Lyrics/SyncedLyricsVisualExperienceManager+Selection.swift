@@ -92,9 +92,17 @@ extension SyncedLyricsVisualExperienceManager {
             selectedLineViews = []                                 //写空数组存储
         }
 
-        // 仅当已经到达开唱时间（或强制单选/跳转）时，才立刻激活高亮；
-        // 提前 0.5s 准入的行仅加入 selectedLineViews 触发滚动，等到开唱时由 activateDueLines 激活高亮。
-        let isDue = deselectingOthers || currentElapsedTime() >= line.startTime
+        // 滚动与高亮分开：文字行准入（开唱前 `maxEndTimeOffset`）时只入列、去模糊，
+        // 高亮等到开唱那一刻由每帧的 `activateDueLines` 点亮，滚动由 `scrollTargetLineView` 另判。
+        // 两种例外立刻点亮：
+        // - `deselectingOthers`（jump / 拖开后只换外观那一支）——目标必须当场亮；
+        // - 间奏行——它的「高亮」就是三个点，而点阵的显隐、逐点点亮都看内容层自己的
+        //   `isSelected`（`InstrumentalContentLayer.layoutSublayers` / 逐点淡入那道闸），
+        //   `prepare(at:)` 又在准入时就把入场动画起了，晚 0.5 s 才置选中会让点在
+        //   藏着的图层上跑完入场再突然冒出来。照原版：准入即选中，时序由点阵自己的状态机管。
+        let isDue = deselectingOthers
+            || line is InstrumentalLine
+            || currentElapsedTime() >= line.startTime
 
         // 二、目标行进选中态。–
         if isDue {
@@ -151,6 +159,52 @@ extension SyncedLyricsVisualExperienceManager {
         }
     }
 
+    // MARK: - 焦点位该停在哪一行
+
+    /// 焦点位（§2.5 的锚点）该停在哪一行。
+    ///
+    /// 滚动与高亮分开，滚动**不提前**（2026-09-15 定的行为）：
+    /// 1. 正在唱的 = 已点亮的最后一行 `current`；一行都没亮（歌开头、seek 落在句前）就取第一条。
+    ///    打开着的间奏行一律停住：它由展开动画落位、由 `deselectLine` 的收起带走（§16.6）。
+    /// 2. 候选下一句 = `current` 之后第一条**未点亮**的选中行 `next`；没有就停在 `current`。
+    ///    准入（开唱前 `maxEndTimeOffset`）只是入列、去模糊，不是滚动的理由——按「谁最新准入
+    ///    就滚向谁」，句子比提前量短时会连着往下翻，正在唱的那句被推出视口（当天的「行错位」）。
+    ///    于是焦点位最多领先正在唱的那句一行。
+    /// 3. 让位时刻 = `min(current.end, next.start)`：当前句唱完就切下一句；两句重叠的，
+    ///    下一句一开唱就滚过去（那一刻它也点亮，两句同亮），上一句唱完由淘汰路径模糊走人。
+    ///
+    /// - Parameter views: 选中行集合。`select(_:)` 在新行入列**之前**调用，要把新行一起传进来。
+    func scrollTargetLineView(in views: [SyncedLyricsLineView],
+                              at elapsed: TimeInterval) -> SyncedLyricsLineView? {
+        guard let current = views.last(where: { $0.lineLayer?.isSelected == true }) else {
+            return views.first
+        }
+        guard current !== instrumentalBreakVisibleView,
+              let currentIndex = views.firstIndex(where: { $0 === current }),
+              let next = views[(currentIndex + 1)...].first(where: { $0.lineLayer?.isSelected != true }),
+              let currentLine = current.lineLayer?.line,
+              let nextLine = next.lineLayer?.line
+        else { return current }
+        let switchAt = min(currentLine.endTime, nextLine.startTime)
+        return elapsed >= switchAt ? next : current
+    }
+
+    func scrollTargetLineView(at elapsed: TimeInterval) -> SyncedLyricsLineView? {
+        scrollTargetLineView(in: selectedLineViews, at: elapsed)
+    }
+
+    /// 每帧跟一次焦点位。规则 3 的让位时刻不一定落在准入 / 点亮 / 淘汰任何一个事件上，
+    /// 所以按帧查；目标行没换就什么都不做，换了才滚一次。
+    func followScrollTarget(at elapsed: TimeInterval) {
+        guard let viewController, let target = scrollTargetLineView(at: elapsed) else { return }
+        guard target !== scrollTargetView else { return }
+        scrollTargetView = target
+        // 打开着的间奏行由展开动画自己落位（动画期间视口不动），这里不抢。
+        guard target !== instrumentalBreakVisibleView else { return }
+        viewController.scrollFocus(to: target,
+                                   animation: makeLineChangeAnimation(speed: 0, useSpecsSpring: true))
+    }
+
     // MARK: - selecting
 
     /// 对外的选行入口。复现 `selecting`，规格 §9.3。
@@ -190,6 +244,7 @@ extension SyncedLyricsVisualExperienceManager {
             let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
+            scrollTargetView = view
             // 动画期间**视口不动**，每一行自己走到「真实落点 − delta」：上方（含间奏行）
             // 上移 delta、下方下移 `撑开量 − delta`，逐行错开（§16.3 / §17.1 / §17.2）。
             // 跑完由完成回调一次对账（行 += delta、视口 += delta，屏幕零位移）。
@@ -203,6 +258,20 @@ extension SyncedLyricsVisualExperienceManager {
                 animation: animation,
                 stagger: .sharedFirstPair(specs.lineDelay))    // §17.1
             viewController.hideLines(above: line.index, among: affected)         // §17.2
+            return .selectedInPlace
+        }
+
+        // 焦点位轮不轮得到这一句，由 `scrollTargetLineView` 说了算（新行还没入列，一起传进去）。
+        // 轮不到——正在唱的那句还没让位——就只换外观入列，滚动交给每帧的 `followScrollTarget`。
+        let target = scrollTargetLineView(in: selectedLineViews + [view], at: currentElapsedTime())
+        scrollTargetView = target
+        guard target === view else {
+            let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+            selectLine(line, animation: animation,
+                       deselectingOthers: false, updatesInstrumentalTime: true)
+            viewController.relayout(affected: viewController.visibleLineViews(),
+                                    animation: animation,
+                                    animated: true)
             return .selectedInPlace
         }
 
@@ -454,11 +523,12 @@ extension SyncedLyricsVisualExperienceManager {
             instrumentalBreakVisibleView = nil
         }
 
-        // 收回到还亮着的第一行。–
-        guard let first = selectedLineViews.first,
+        // 收回到焦点位该停的那一行（原版是「还亮着的第一行」；先滚动后高亮之后，
+        // 那一行可能还没点亮，统一交给 `scrollTargetLineView` 判）。
+        guard let anchor = scrollTargetLineView(at: currentElapsedTime()) ?? selectedLineViews.first,
               let viewController, let scrollView = viewController.scrollView
         else { return }
-        let target = viewController.targetOrigin(for: first)        //，§2.5
+        let target = viewController.targetOrigin(for: anchor)       //，§2.5
         let span = CGRect(origin: target, size: .zero)
             .union(scrollView.documentVisibleRect)
         viewController.relayout(affected: viewController.lineViews(in: span),

@@ -246,21 +246,89 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(percentage, 0)
     }
 
-    /// 当下一行提前 0.5s 准入高亮时，selectedLineViews 同时包含上一行与下一行。
-    /// scrollToSelectedLine 应当滚向最新选中的行（last），让翻行与准入同步。
-    func testScrollToSelectedLineTargetsLastSelectedLineWhenMultipleLinesSelected() throws {
-        let (controller, visual) = makeExpansionFixture(instrumentalAt: 5)
+    /// 滚动不提前：正在唱的 A 已点亮、下一句 B 准入未点亮时，焦点位要等 A 唱完才让给 B；
+    /// `scrollToSelectedLine` 滚的就是这一行。
+    func testScrollTargetHandsOverWhenCurrentLineFinishes() throws {
+        var elapsed: TimeInterval = 0
+        let (controller, visual, _) = makeScrubFixture { elapsed }
+        controller.setLyrics(Self.makeTextLyrics([(0, 8), (10, 15)]))
         let view0 = visual.lineViews[0]
         let view1 = visual.lineViews[1]
+        view0.lineLayer?.apply(selected: true, animation: nil)
         visual.selectedLineViews = [view0, view1]
-
         let animation = SyncedLyricsLineLayer.SelectionAnimation(
             spring: controller.specs.lineChangeSpringTimingParameters)
-        controller.scrollToSelectedLine(animation: animation, animated: false)
 
-        let targetOrigin = controller.targetOrigin(for: view1)
-        let actualOrigin = try XCTUnwrap(controller.scrollView?.contentView.bounds.origin)
-        XCTAssertEqual(actualOrigin, targetOrigin, "多行并存时应当滚向最新选中的那一行（view1）")
+        elapsed = 7.9
+        XCTAssertTrue(visual.scrollTargetLineView(at: elapsed) === view0, "A 还没唱完：焦点位仍是 A")
+        controller.scrollToSelectedLine(animation: animation, animated: false)
+        XCTAssertEqual(try XCTUnwrap(controller.scrollView?.contentView.bounds.origin),
+                       controller.targetOrigin(for: view0))
+
+        elapsed = 8.0
+        XCTAssertTrue(visual.scrollTargetLineView(at: elapsed) === view1, "A 唱完就切到 B，不等 B 开唱")
+        controller.scrollToSelectedLine(animation: animation, animated: false)
+        XCTAssertEqual(try XCTUnwrap(controller.scrollView?.contentView.bounds.origin),
+                       controller.targetOrigin(for: view1))
+    }
+
+    /// 两句重叠：下一句一开唱就滚过去（那一刻它也点亮，两句同亮）；上一句还没唱完不算数。
+    func testScrollTargetHandsOverWhenOverlappingNextLineStarts() throws {
+        let (controller, visual, _) = makeScrubFixture { 0 }
+        controller.setLyrics(Self.makeTextLyrics([(0, 12), (10, 15)]))
+        let a = visual.lineViews[0], b = visual.lineViews[1]
+        a.lineLayer?.apply(selected: true, animation: nil)
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b], at: 9.9) === a, "B 准入了但还没开唱")
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b], at: 10.0) === b, "B 开唱即切，A 仍在唱")
+        b.lineLayer?.apply(selected: true, animation: nil)
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b], at: 11.0) === b, "两句同亮时停在后一句")
+    }
+
+    /// 句子比提前量短时不能连着往下翻：准入不是滚动的理由，焦点位最多领先正在唱的那句一行。
+    func testScrollTargetNeverRunsAheadOnShortLines() throws {
+        let (controller, visual, _) = makeScrubFixture { 0 }
+        // A 1 s，B、C 各 0.3 s（说唱式密集句）。
+        controller.setLyrics(Self.makeTextLyrics([(0, 1), (1, 1.3), (1.3, 1.6)]))
+        let a = visual.lineViews[0], b = visual.lineViews[1], c = visual.lineViews[2]
+        a.lineLayer?.apply(selected: true, animation: nil)
+
+        // 0.8 s：B（0.5 s 前准入）与 C（刚准入）都在选中集合里，A 还在唱。
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b, c], at: 0.8) === a, "准入不滚，A 唱完才切")
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b, c], at: 1.0) === b, "A 唱完切到 B，不能跳到 C")
+
+        b.lineLayer?.apply(selected: true, animation: nil)
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b, c], at: 1.2) === b, "B 还在唱")
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b, c], at: 1.3) === c, "B 唱完才让给 C")
+
+        // 一行都没点亮（歌开头 / seek 落在句前）：停在第一条。
+        XCTAssertTrue(visual.scrollTargetLineView(in: [b, c], at: 0.9) === b)
+        // 没有未点亮的下一句：停在正在唱的那句。
+        XCTAssertTrue(visual.scrollTargetLineView(in: [a, b], at: 1.5) === b)
+    }
+
+    /// 正跑着的滚动弹簧目标没变就不重启（句间准入一次、淘汰一次连着两回滚向同一处）。
+    func testScrollToSameTargetKeepsRunningSpring() throws {
+        let (controller, _) = makeExpansionFixture(instrumentalAt: 5)
+        let spring = controller.specs.lineChangeSpringTimingParameters
+        controller.scroll(to: CGPoint(x: 0, y: 300), spring: spring, delay: 0)
+        let first = try XCTUnwrap(controller.scrollSpring)
+        controller.scroll(to: CGPoint(x: 0, y: 300.4), spring: spring, delay: 0)
+        XCTAssertEqual(controller.scrollSpring?.startTime, first.startTime, "同一目标：沿用在跑的那条")
+        controller.scroll(to: CGPoint(x: 0, y: 500), spring: spring, delay: 0)
+        XCTAssertEqual(controller.scrollSpring?.to, 500, "目标换了才重起")
+    }
+
+    private static func makeTextLyrics(_ spans: [(TimeInterval, TimeInterval)]) -> Lyrics {
+        var lyrics = Lyrics()
+        lyrics.lines = spans.enumerated().map { index, span in
+            var line = TextLine()
+            line.index = index
+            line.startTime = span.0
+            line.endTime = span.1
+            line.text = "第\(index)句"
+            return line
+        }
+        return lyrics
     }
 
     /// 提前 0.5s 准入的行在开唱前（elapsed < startTime）不高亮，
