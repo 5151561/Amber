@@ -158,14 +158,14 @@ extension SyncedLyricsViewController {
     /// 也就是说「就地换选中态」那一支（§9.3）照样会滚，只是不走
     /// `animating to`。少了这一段，当前行完整可见时画面就再也不动了。
     ///
-    /// 取**第一行**而不是最新那行：§9.8 的 `deselecting line` 收尾用的也是
-    /// 「剩下的第一行」算目标位置，两处一致。
+    /// 取**最新选中的行**（`last`）：下一行提前 0.5s 准入高亮时，视口同步提前 0.5s 滚动就位；
+    /// 旧行唱完淘汰（`deselectLine`）时，`last` 依然是该行，已在目标位置（命中死区），平滑过渡无跳动。
     ///
     /// 三道闸照 §6.4：用户在拖、在 tracking、或 3 秒计时器还没到，都不抢镜头。
     func scrollToSelectedLine(animation: SyncedLyricsLineLayer.SelectionAnimation,
                               animated: Bool) {
-        guard let first = manager?.selectedLineViews.first else { return }
-        scroll(toLineView: first, animation: animation, animated: animated)
+        guard let target = manager?.selectedLineViews.last else { return }
+        scroll(toLineView: target, animation: animation, animated: animated)
     }
 
     /// 把某一行滚回它的目标位置（§2.5）。三道闸同上。

@@ -92,15 +92,21 @@ extension SyncedLyricsVisualExperienceManager {
             selectedLineViews = []                                 //写空数组存储
         }
 
-        // 二、目标行进选中态。–
-        if target.isHighlighted { target.isHighlighted = false }
-        target.setAccessibilitySelected(true)
-        target.lineLayer?.apply(selected: true, animation: animation)
+        // 仅当已经到达开唱时间（或强制单选/跳转）时，才立刻激活高亮；
+        // 提前 0.5s 准入的行仅加入 selectedLineViews 触发滚动，等到开唱时由 activateDueLines 激活高亮。
+        let isDue = deselectingOthers || currentElapsedTime() >= line.startTime
 
-        // 三、逐字内容层起进度。
-        //    第二参数是 `animationKind != 0xff`，喂进去的时间是 §1.2 的前两步
-        //    （elapsed − 空间音频偏移），**不含**第三步那个 animationDuration 提前量。
-        startWordProgress(on: target, animated: animation != nil)
+        // 二、目标行进选中态。–
+        if isDue {
+            if target.isHighlighted { target.isHighlighted = false }
+            target.setAccessibilitySelected(true)
+            target.lineLayer?.apply(selected: true, animation: animation)
+
+            // 三、逐字内容层起进度。
+            //    第二参数是 `animationKind != 0xff`，喂进去的时间是 §1.2 的前两步
+            //    （elapsed − 空间音频偏移），**不含**第三步那个 animationDuration 提前量。
+            startWordProgress(on: target, animated: animation != nil)
+        }
 
         // 四、间奏行的特判。–
         //    先取 `lineLayer.contentLayer`，再动态转型到
@@ -118,7 +124,7 @@ extension SyncedLyricsVisualExperienceManager {
             }
         }
 
-        // 五、去模糊：传 `(target, true, 0.0)`
+        // 五、去模糊：传 `(target, true, 0.0)`。无论是提前滚动就位还是已到开唱，只要纳入选中视图都清除模糊，保持文字清晰可读。
         setBlurRadius(0, on: target, animated: true)
 
         // 六、入列。–是 `Array.append`
@@ -127,6 +133,22 @@ extension SyncedLyricsVisualExperienceManager {
         //    §1.3 的「队首出局」淘汰的就是它的第 0 个。
         selectedLineViews.append(target)
         // 起才打 "[SyncedLyricsDebug] selecting line …"，在所有副作用之后。
+    }
+
+    /// 检查已选中的行中，是否有已到达开唱时刻但尚未激活高亮的行（提前 0.5s 滚动就位但等到开唱才高亮）。
+    func activateDueLines(at elapsed: TimeInterval) {
+        for view in selectedLineViews {
+            guard view.lineLayer?.isSelected == false,
+                  let line = view.lineLayer?.line,
+                  elapsed >= line.startTime else { continue }
+
+            if view.isHighlighted { view.isHighlighted = false }
+            view.setAccessibilitySelected(true)
+            let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+            view.lineLayer?.apply(selected: true, animation: animation)
+            startWordProgress(on: view, animated: true)
+            setBlurRadius(0, on: view, animated: true)
+        }
     }
 
     // MARK: - selecting

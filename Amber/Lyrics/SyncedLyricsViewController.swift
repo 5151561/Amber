@@ -63,7 +63,7 @@ final class SyncedLyricsViewController: NSViewController {
         // 不是 y 差——窗口宽度变了导致换行数变化、锚点行因此移位时才滚。
         guard let scrollView, scrollView.bounds != previousBounds else { return }
         previousBounds = scrollView.bounds
-        let anchor = manager?.selectedLineViews.first
+        let anchor = manager?.selectedLineViews.last ?? manager?.selectedLineViews.first
         recomputeLineFrames()
         layoutLines(anchor: anchor, measure: measure)
         collapseDocument(below: manager?.lineViews.last)

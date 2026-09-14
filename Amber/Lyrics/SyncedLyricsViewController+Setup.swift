@@ -297,6 +297,7 @@ extension SyncedLyricsViewController {
 
         let basis = timeline.update()
         advanceScrollSpring()
+        visual.activateDueLines(at: basis.elapsed)
 
         // 逐字渐变每帧推进（原版的走查）。喂进去的时间是
         // §1.2 的前两步（扣掉空间音频偏移），**不含**第三步那个提前量。

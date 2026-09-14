@@ -246,6 +246,63 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(percentage, 0)
     }
 
+    /// 当下一行提前 0.5s 准入高亮时，selectedLineViews 同时包含上一行与下一行。
+    /// scrollToSelectedLine 应当滚向最新选中的行（last），让翻行与准入同步。
+    func testScrollToSelectedLineTargetsLastSelectedLineWhenMultipleLinesSelected() throws {
+        let (controller, visual) = makeExpansionFixture(instrumentalAt: 5)
+        let view0 = visual.lineViews[0]
+        let view1 = visual.lineViews[1]
+        visual.selectedLineViews = [view0, view1]
+
+        let animation = SyncedLyricsLineLayer.SelectionAnimation(
+            spring: controller.specs.lineChangeSpringTimingParameters)
+        controller.scrollToSelectedLine(animation: animation, animated: false)
+
+        let targetOrigin = controller.targetOrigin(for: view1)
+        let actualOrigin = try XCTUnwrap(controller.scrollView?.contentView.bounds.origin)
+        XCTAssertEqual(actualOrigin, targetOrigin, "多行并存时应当滚向最新选中的那一行（view1）")
+    }
+
+    /// 提前 0.5s 准入的行在开唱前（elapsed < startTime）不高亮，
+    /// 等到到达开唱时刻（elapsed >= startTime）才激活高亮。
+    func testUpcomingLineIsNotHighlightedUntilStartTime() throws {
+        var currentElapsed: TimeInterval = 9.6
+        let (controller, visual, _) = makeScrubFixture { currentElapsed }
+
+        var lines: [any LyricsLine] = []
+        var line0 = TextLine()
+        line0.index = 0
+        line0.startTime = 0
+        line0.endTime = 10
+        line0.text = "第一句"
+        lines.append(line0)
+
+        var line1 = TextLine()
+        line1.index = 1
+        line1.startTime = 10
+        line1.endTime = 15
+        line1.text = "第二句"
+        lines.append(line1)
+
+        var lyrics = Lyrics()
+        lyrics.lines = lines
+        controller.setLyrics(lyrics)
+
+        // 模拟 9.6s（距离第二句开唱还有 0.4s，已进入提前准入窗口）
+        currentElapsed = 9.6
+        visual.selectLine(line1, animation: nil, deselectingOthers: false, updatesInstrumentalTime: false)
+
+        let targetView = visual.lineViews[1]
+        XCTAssertTrue(visual.selectedLineViews.contains { $0 === targetView }, "已加入选中行集合以触发滚动")
+        XCTAssertFalse(targetView.lineLayer?.isSelected == true, "未到开唱时刻不得激活高亮")
+        XCTAssertEqual(targetView.lineLayer?.blurRadius, 0, "提前就位时应当清除模糊，保持清晰可读")
+
+        // 推进到 10.0s（开唱时刻）
+        currentElapsed = 10.0
+        visual.activateDueLines(at: 10.0)
+        XCTAssertTrue(targetView.lineLayer?.isSelected == true, "到达开唱时刻应当激活高亮")
+    }
+
     // MARK: - §3.2 / §3.3 间奏
 
     /// 两个时长全部由这一行的时长推出来，`LyricsSpecs` 里没有它们。
