@@ -1503,7 +1503,10 @@ final class PlayerController: ObservableObject {
     /// 所以这里比从前的 `AVPlayerItem(url:)` 多一次 asset 解析；解析不出音轨就
     /// 整支不挂 mix，照老路播——过渡与增强器对它失效，但绝不能因此播不出来。
     private func makeItem(url: URL, track: Track, fadeIn: TimeInterval?) async -> LoadedItem {
-        let asset = AVURLAsset(url: url)
+        // 网络上的纯音频（尤其 FLAC）默认只按字节估算时间轴：seek 落到估出来的位置，
+        // 再把那里标成目标时间——声音与时间轴（进度条、歌词）从此对不上，
+        // 实测点一句歌词声音偏 1.4 秒。打开精确时序让它按真实包表定位（实测偏差 ≤ 0.06 秒）。
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let audioTrack = try? await asset.loadTracks(withMediaType: .audio).first
         let item = AVPlayerItem(asset: asset)
         item.allowedAudioSpatializationFormats = spatializationFormats()
