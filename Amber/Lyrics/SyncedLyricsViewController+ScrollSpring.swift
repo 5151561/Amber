@@ -79,10 +79,14 @@ extension SyncedLyricsViewController {
     /// 起一次滚动。x 分量恒为 0（§2.5），所以只积分 y。
     func scroll(to origin: CGPoint, spring: SpringTimingParameters, delay: TimeInterval) {
         guard let clip = scrollView?.contentView else { return }
-        // 死区只在没有弹簧在跑时判：正跑着的那条目标可能在别处，这一帧的位置
-        // 只是路过，不能拿它当「已经到位」。
-        if scrollSpring == nil,
-           abs(origin.y - clip.bounds.origin.y) < Self.scrollDeadZone { return }
+        if let running = scrollSpring {
+            // 正跑着的弹簧已经在往同一处去就别重启：重启是从当前位置零初速再来一遍，
+            // 句间准入一次、淘汰一次连着两回，翻行中段就会顿一下。
+            // 目标在别处才按当前位置重起——这一帧的位置只是路过，不能拿它当「已经到位」。
+            if abs(running.to - origin.y) < Self.scrollDeadZone { return }
+        } else if abs(origin.y - clip.bounds.origin.y) < Self.scrollDeadZone {
+            return
+        }
         scrollSpring = ScrollSpring(from: clip.bounds.origin.y,
                                     to: origin.y,
                                     parameters: spring,

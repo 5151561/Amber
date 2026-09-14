@@ -158,14 +158,36 @@ extension SyncedLyricsViewController {
     /// 也就是说「就地换选中态」那一支（§9.3）照样会滚，只是不走
     /// `animating to`。少了这一段，当前行完整可见时画面就再也不动了。
     ///
-    /// 取**最新选中的行**（`last`）：下一行提前 0.5s 准入高亮时，视口同步提前 0.5s 滚动就位；
-    /// 旧行唱完淘汰（`deselectLine`）时，`last` 依然是该行，已在目标位置（命中死区），平滑过渡无跳动。
+    /// 滚向哪一行由 `scrollTargetLineView` 判（滚动不提前、与高亮分开；最多领先正在唱的那句一行）。
+    /// 旧行唱完淘汰（`deselectLine`）时目标行不变、已在目标位置（命中死区），平滑过渡无跳动。
     ///
     /// 三道闸照 §6.4：用户在拖、在 tracking、或 3 秒计时器还没到，都不抢镜头。
     func scrollToSelectedLine(animation: SyncedLyricsLineLayer.SelectionAnimation,
                               animated: Bool) {
-        guard let target = manager?.selectedLineViews.last else { return }
+        guard let manager,
+              let target = manager.scrollTargetLineView(at: manager.currentElapsedTime())
+                ?? manager.selectedLineViews.last
+        else { return }
         scroll(toLineView: target, animation: animation, animated: animated)
+    }
+
+    /// 把焦点位挪到某一行，**不碰选中态**（选中态归 `selectLine` / `activateDueLines`）。
+    /// 每帧的 `followScrollTarget` 用它：目标行完整可见就按 §9.3 就地那一支滚；
+    /// 不完整可见照 §6.4 的四道闸走 `animating to` 的滚动部分（含 §2.8 的 delay 压缩）。
+    func scrollFocus(to view: SyncedLyricsLineView,
+                     animation: SyncedLyricsLineLayer.SelectionAnimation) {
+        guard let manager else { return }
+        let visible = scrollView?.documentVisibleRect ?? .zero
+        let fitsVertically = view.frame.minY >= visible.minY && view.frame.maxY <= visible.maxY
+        guard !fitsVertically, let line = view.lineLayer?.line else {
+            scroll(toLineView: view, animation: animation, animated: true)
+            return
+        }
+        guard animateToDecision(targetLineFrame: view.frame) == .scroll else { return }
+        let elapsed = manager.currentElapsedTime()
+        let (spring, delay) = lineChangeSpring(for: line, baseOffset: elapsed - line.startTime)
+        manager.needsTapHandling = false
+        scroll(to: targetOrigin(for: view), spring: spring, delay: delay)
     }
 
     /// 把某一行滚回它的目标位置（§2.5）。三道闸同上。

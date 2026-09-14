@@ -43,6 +43,9 @@ final class SyncedLyricsVisualExperienceManager {
     var blurredLineViews: Set<SyncedLyricsLineView> = []     // +992
     var hiddenLineViews: Set<SyncedLyricsLineView> = []      // +1000
     var instrumentalBreakVisibleView: SyncedLyricsLineView?  // +1008
+    /// 上一次把焦点位交给了哪一行（`scrollTargetLineView` 的结论）。每帧的
+    /// `followScrollTarget` 只在它变了的时候滚一次。`[补]`
+    weak var scrollTargetView: SyncedLyricsLineView?
     var needsTapHandling = false                             // +1016
     var allowAnimateToNextLineAfterScrollTimer: Timer?
     var lastTapDate: Date?
