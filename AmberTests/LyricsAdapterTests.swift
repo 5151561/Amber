@@ -93,9 +93,10 @@ final class LyricsAdapterTests: XCTestCase {
         XCTAssertNil((lyrics.lines[0] as? TextLine)?.translation)
     }
 
-    /// 段首吃 `paragraphSpacing = 39`：第一句永远是段首，
-    /// 与上一句挨得近的不是。
-    func testParagraphDetection() {
+    /// 段首吃 `paragraphSpacing = 39`，而**段落只能来自源数据**。
+    /// QRC / YRC / LRC 都不声明段落，所以除了第一句，谁都不是段首——
+    /// 哪怕与上一句空了 14 秒（那种停顿由间奏行表达，不是段落）。
+    func testOnlyFirstLineIsParagraphStart() {
         let source = [
             line(0, 0, 3, text: "一"),
             line(1, 3.2, 6, text: "二"),
@@ -104,7 +105,20 @@ final class LyricsAdapterTests: XCTestCase {
         let lyrics = LyricsAdapter.makeLyrics(from: source)
         XCTAssertEqual((lyrics.lines[0] as? TextLine)?.isFirstLineOfParagraph, true)
         XCTAssertEqual((lyrics.lines[1] as? TextLine)?.isFirstLineOfParagraph, false)
-        XCTAssertEqual((lyrics.lines[2] as? TextLine)?.isFirstLineOfParagraph, true)
+        XCTAssertEqual((lyrics.lines[2] as? TextLine)?.isFirstLineOfParagraph, false)
+    }
+
+    /// 前奏那条间奏行也算「前面有东西」：第一句唱词此时不再是段首。
+    /// 它落在下标 1 上，判成段首就会在前奏与第一句之间凭空多出 39。
+    func testLeadingInterludeSuppressesParagraphStart() {
+        let source = [
+            line(0, 0, 7, kind: .interlude),
+            line(1, 7, 10, text: "一"),
+            line(2, 10, 13, text: "二"),
+        ]
+        let lyrics = LyricsAdapter.makeLyrics(from: source)
+        XCTAssertEqual((lyrics.lines[1] as? TextLine)?.isFirstLineOfParagraph, false)
+        XCTAssertEqual((lyrics.lines[2] as? TextLine)?.isFirstLineOfParagraph, false)
     }
 
     func testLeadingSilenceIsFirstLineStart() {

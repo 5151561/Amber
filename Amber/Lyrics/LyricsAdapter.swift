@@ -46,9 +46,24 @@ enum LyricsAdapter {
                 // 主唱时间与整行时间在 QRC 里是同一组。
                 text.primaryVocalsStartTime = line.time
                 text.primaryVocalsEndTime = line.end
-                // 段首：上一条不存在，或与上一条之间空了一段（间奏行本身就是分段）。
+                // 段首只认「前面一条都没有」这一种。段落是**结构信息**：原版的 TTML
+                // 用 `<div>` 直接声明，QRC / YRC / LRC 一家都不给。早先按「与上一句
+                // 空了 ≥3 秒」猜，猜出来的就是实机上那种忽宽忽窄的行距——
+                //
+                // - **有效窗口只有 2 秒宽。** 空隙 ≥5 秒会先被
+                //   `LyricParser.interludeMinGap` 插成间奏行，而收起态的间奏行既不占
+                //   高度也不产生行距（§16.1 / §16.2），前后两行的间距与普通行完全一样。
+                //   于是「加 39」只可能发生在 3–5 秒这一段里，慢歌的换气正好在这个
+                //   区间反复横跳。
+                // - **顺序还是反的。** 空 3.2 秒 → 大间隔；空 6 秒（真·间奏）→ 与普通
+                //   行同宽。空得越久反而越挤。
+                // - **行级歌词那档的空隙是编出来的。** 没有逐字时间轴时 `end` 按字数估
+                //   （`LyricParser.secondsPerCharacter`），「空了多久」约等于「上一句
+                //   有几个字」，短句后面必出一个大间隔。
+                //
+                // 真停顿由间奏行表达，够了。音源哪天给出段落结构，从那里接回来，
+                // 不要再从时间轴上猜。
                 text.isFirstLineOfParagraph = previousEnd == nil
-                    || line.time - (previousEnd ?? 0) >= paragraphGap
                 text.text = line.text
                 text.translation = line.translation.flatMap { $0.isEmpty ? nil : $0 }
                 text.transliteration = line.transliteration.flatMap { $0.isEmpty ? nil : $0 }
@@ -78,10 +93,6 @@ enum LyricsAdapter {
             .map(\.text)
         return lyrics
     }
-
-    /// 空到这个程度就算换了段落，段首行吃 `paragraphSpacing = 39`。
-    /// 原版由源数据直接声明 `isFirstLineOfParagraph`，QRC 没有，只能按空隙判。`[推]`
-    private static let paragraphGap: TimeInterval = 3
 
     // MARK: - 强调因子的合成 `[补]`
 
