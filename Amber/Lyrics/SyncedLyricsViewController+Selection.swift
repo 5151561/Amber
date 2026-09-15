@@ -174,18 +174,31 @@ extension SyncedLyricsViewController {
     /// 把焦点位挪到某一行，**不碰选中态**（选中态归 `selectLine` / `activateDueLines`）。
     /// 每帧的 `followScrollTarget` 用它：目标行完整可见就按 §9.3 就地那一支滚；
     /// 不完整可见照 §6.4 的四道闸走 `animating to` 的滚动部分（含 §2.8 的 delay 压缩）。
+    ///
+    /// - Parameter animation: `nil` 照本文件的老规矩是**瞬时落位**。句间空档为 0
+    ///   （上一句的 `endTime` 正好是下一句的`startTime`）时就是它：没有时间可占，
+    ///   原地换行，别假装在滚。
     func scrollFocus(to view: SyncedLyricsLineView,
-                     animation: SyncedLyricsLineLayer.SelectionAnimation) {
+                     animation: SyncedLyricsLineLayer.SelectionAnimation?) {
         guard let manager else { return }
         let visible = scrollView?.documentVisibleRect ?? .zero
         let fitsVertically = view.frame.minY >= visible.minY && view.frame.maxY <= visible.maxY
         guard !fitsVertically, let line = view.lineLayer?.line else {
-            scroll(toLineView: view, animation: animation, animated: true)
+            scroll(toLineView: view, animation: animation, animated: animation != nil)
             return
         }
         guard animateToDecision(targetLineFrame: view.frame) == .scroll else { return }
+        guard let animation else {
+            scroll(toLineView: view, animation: nil, animated: false)
+            return
+        }
         let elapsed = manager.currentElapsedTime()
-        let (spring, delay) = lineChangeSpring(for: line, baseOffset: elapsed - line.startTime)
+        // 底弹簧用调用方压好的那条（句间空档窄时它已经被压短了），而不是 specs 里那条原装的——
+        // 否则「提前量」是按空档算的、「跑完」还是按原装算的，两头对不上。
+        // 点击驱动那一支自有它的硬编码弹簧（§6.1），`lineChangeSpring` 里照旧优先。
+        let (spring, delay) = lineChangeSpring(for: line,
+                                               baseOffset: elapsed - line.startTime,
+                                               base: animation.spring)
         manager.needsTapHandling = false
         scroll(to: targetOrigin(for: view), spring: spring, delay: delay)
     }
@@ -195,14 +208,14 @@ extension SyncedLyricsViewController {
     /// 间奏展开那一路要单独指定锚点：那一批的目标行是**间奏行自己**，
     /// 而 `selectedLineViews.first` 在句与句交界处还是上一句。
     func scroll(toLineView view: SyncedLyricsLineView,
-                animation: SyncedLyricsLineLayer.SelectionAnimation,
+                animation: SyncedLyricsLineLayer.SelectionAnimation?,
                 animated: Bool) {
         guard let manager else { return }
         guard manager.mode == .regular, !isDragging,
               manager.allowAnimateToNextLineAfterScroll else { return }
 
         let origin = targetOrigin(for: view)
-        guard animated else { setScrollOrigin(origin); return }
+        guard animated, let animation else { setScrollOrigin(origin); return }
         scroll(to: origin, spring: animation.spring, delay: 0)
     }
 

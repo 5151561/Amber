@@ -47,7 +47,12 @@ extension SyncedLyricsLineLayer {
     func apply(selected: Bool, animation: SelectionAnimation?) {
         // [实测]：状态没变就立即返回，不重复起弹簧。
         // 这条必须留——每帧都会调进来，少了它弹簧会被反复重启。
-        guard selected != isSelected else { return }
+        guard selected != isSelected else {
+            if !selected {
+                (contentLayer as? SBS_TextContentLayer)?.cancelSungPreparation()
+            }
+            return
+        }
 
         // [实测]：仅「将要变成选中」且当前是聚焦行时，
         // 走失焦收尾。第一参数写死 `0`，

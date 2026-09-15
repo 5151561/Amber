@@ -47,18 +47,44 @@ extension SyncedLyricsManager {
 
     /// 下一行是否够格进选中集合。
     ///
-    /// [实测]：
-    /// `d11 = startTime - maxEndTimeOffset`，再 /——
-    /// `startTime - 0.5 >= elapsed` 就跳过，否则纳入。
+    /// 两条路，满足其一即可：
     ///
-    /// 即 **`elapsed > startTime - maxEndTimeOffset`**。
+    /// 1. **常规提前量**（[实测]）：
+    ///    `d11 = startTime - maxEndTimeOffset`，再 /——
+    ///    `startTime - 0.5 >= elapsed` 就跳过，否则纳入。即
+    ///    **`elapsed > startTime - maxEndTimeOffset`**。
     ///
-    /// 注意：`maxEndTimeOffset` 名字里带 end，实际是**减在下一行的`startTime` 上**，
-    /// 让新行提前 0.5 s 进场；不是让旧行延后 0.5 s 退场。两种写法看到的效果
-    /// 一样（句间不断亮），但照「旧行延后」实现的话，间奏前最后一句会多亮 0.5 s——
-    /// 因为没有下一行来接——原版不会。旧行的退场只由 `shouldEvictOldestSelectedLine` 管。
-    func shouldAdmit(line: any LyricsLine, elapsed: TimeInterval) -> Bool {
-        elapsed > line.startTime - configuration.maxEndTimeOffset
+    ///    注意：`maxEndTimeOffset` 名字里带 end，实际是**减在下一行的`startTime` 上**，
+    ///    让新行提前 0.5 s 进场；不是让旧行延后 0.5 s 退场。两种写法看到的效果
+    ///    一样（句间不断亮），但照「旧行延后」实现的话，间奏前最后一句会多亮 0.5 s——
+    ///    因为没有下一行来接——原版不会。旧行的退场只由 `shouldEvictOldestSelectedLine` 管。
+    ///
+    /// 2. **给焦点位让路**（`[补]`）：焦点位要在开唱前一整个滚动动画（`scrollLead`）
+    ///    就让过去，好让滚动跑完那一刻正好是开唱那一刻。而焦点位只在选中集合里挑，
+    ///    所以准入窗口至少要和 `scrollLead` 一样宽，否则那一行还没进来、滚不过去。
+    ///
+    ///    这条压着 `selectedCount < maxSelectedLines`：一次只多放一行进来。
+    ///    `scrollLead`（≈0.89 s）比密集说唱的句长还大，没有这道闸的话，短句歌里
+    ///    一帧能放进三四行，选中集合、焦点位、淘汰全乱。有了它，焦点位最多领先
+    ///    正在唱的那句一行——和 `scrollTargetLineView` 的规则 2 是同一条纪律。
+    ///
+    /// - Parameter selectedCount: 当前选中集合的条数，只给 2. 那道上限闸用。
+    ///   不传就只走 1.（`resync` 这类「按时刻一次算完」的路径）。
+    func shouldAdmit(line: any LyricsLine,
+                     elapsed: TimeInterval,
+                     selectedCount: Int = .max) -> Bool {
+        if elapsed > line.startTime - configuration.maxEndTimeOffset { return true }
+        guard selectedCount < maxSelectedLines else { return false }
+        return elapsed > line.startTime - configuration.scrollLead
+    }
+
+    /// 队首行当初是踩着哪个时刻进来的：两条准入路里更早的那个。`[补]`
+    ///
+    /// 只有倒带判据用它。`shouldAdmit` 那边还压着「选中集合没满」这道闸，所以真实的准入
+    /// 只会比这个时刻更晚——判倒带时宁可宽一点：判漏了下一帧照样能增量追上，
+    /// 判过头了却会把刚提前就位的下一句硬拽回上一句。
+    func admissionThreshold(for line: any LyricsLine) -> TimeInterval {
+        line.startTime - max(configuration.maxEndTimeOffset, configuration.scrollLead)
     }
 
     /// 行是否已唱完。[实测] /
@@ -97,8 +123,13 @@ extension SyncedLyricsManager {
         // 倒带：进度退到了当前选中集合之前，增量推进追不回来，整体重排。`[补]`
         // 原版靠 `jumping to`（§5.4）与时间源切换（§1.4）覆盖 seek，
         // Amber 这边进度条随时可拖，所以留一条自愈路径。
+        //
+        // 比的是队首的**准入门槛**，不是裸的 `startTime - maxEndTimeOffset`：
+        // 队首可能是「给焦点位让路」提前放进来的那条（`shouldAdmit` 的第 2 条路），
+        // 此刻 `elapsed` 本来就还没到它的`startTime`——照裸提前量判，每次提前让位之后
+        // 都会被认成倒带，刚让过去的焦点位又被拽回上一句，画面卡在那儿来回跳。
         if let first = selectedLines.first,
-           basis.elapsed < first.startTime - configuration.maxEndTimeOffset {
+           basis.elapsed < admissionThreshold(for: first) {
             resync(at: basis.elapsed)
             return basis
         }
@@ -120,10 +151,13 @@ extension SyncedLyricsManager {
         }
     }
 
-    /// 下一行准入。[实测]：`elapsed > startTime − maxEndTimeOffset`。
+    /// 下一行准入。判据见 `shouldAdmit`（常规提前量 0.5 s，或给焦点位让路的 `scrollLead`）。
     ///
     /// 循环是为了让快进后的追帧一次到位；每纳入一行都重跑一次淘汰，
     /// 于是选中集合始终不超过 `maxSelectedLines`，落点与逐帧推进一致。
+    ///
+    /// 判「是不是换歌 / 快进这类跨度」的那次预扫只用常规提前量（不传 `selectedCount:`）：
+    /// `scrollLead` 那条本来就一次只放一行，拿它去数「待纳入几行」会把短句歌全判成快进。
     private func admitUpcomingLines(elapsed: TimeInterval, cutoff: TimeInterval) {
         // 一次要纳入的行超过上限，说明是换歌 / 快进这类跨度，不该逐行发一遍
         // 「选中」——那会让视图侧把中间每一行都翻一次。整体重排一次到位。`[补]`
@@ -136,7 +170,9 @@ extension SyncedLyricsManager {
                 return
             }
         }
-        while let next = nextLine, shouldAdmit(line: next, elapsed: elapsed) {
+        while let next = nextLine, shouldAdmit(line: next,
+                                              elapsed: elapsed,
+                                              selectedCount: selectedLines.count) {
             advanceNextLine()
             selectedLines.append(next)
             delegate?.syncedLyricsManager(self, didSelect: next)

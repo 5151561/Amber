@@ -30,6 +30,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
 
     private(set) var isSelected = false
     private(set) var isScrolling = false
+    /// 是否已为开唱预热亮字层透明度。
+    private(set) var isSungPrepared = false
     /// 当前进度（全局时间轴上的秒数）。`setProgress` 的两级防抖比的就是它。
     private(set) var progress: Double = 0
 
@@ -125,7 +127,31 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     func setSelected(_ selected: Bool, animated: Bool) {
         guard selected != isSelected else { return }
         isSelected = selected
+        if !selected { isSungPrepared = false }
         applyColors(animated: animated)
+    }
+
+    /// 为逐字歌词预热亮字层透明度。遮罩（row.gradient）在未开唱时为 0 宽，
+    /// 将亮字层提前置 1 能保证开唱第一帧渐变扫过时亮字立即可见，避免 120ms 的淡入延迟。
+    func prepareSungOpacity() {
+        guard !isSungPrepared else { return }
+        isSungPrepared = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for row in rows {
+            row.sung.opacity = 1
+        }
+        transliterationSung.opacity = 1
+        CATransaction.commit()
+    }
+
+    /// 取消逐字歌词高亮透明度预热。
+    func cancelSungPreparation() {
+        guard isSungPrepared else { return }
+        isSungPrepared = false
+        if !isSelected {
+            applyColors(animated: false)
+        }
     }
 
     func setScrolling(_ scrolling: Bool, animated: Bool) {
@@ -167,7 +193,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         let base = LyricsSpecs.cgColor(baseColor, in: appearance)
         let sung = LyricsSpecs.cgColor(specs.lineProgressionGradientColor, in: appearance)
         // 浏览歌词只暂停自动跟随，不应关掉当前播放行的逐字高亮。
-        let sungOpacity: Float = isSelected ? 1 : 0
+        let sungOpacity: Float = (isSelected || isSungPrepared) ? 1 : 0
 
         for row in rows {
             // 换状态就把辉光打断（§8.1「去辉光的打断」）：这一行不再是当前播放行，
@@ -189,29 +215,40 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
                 pair.base.foregroundColor = LyricsSpecs.cgColor(translationColor, in: appearance)
                 pair.sung.foregroundColor = sung
             }
-            guard animated else { row.sung.opacity = sungOpacity; continue }
-            let animator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)
-            animator.layers = [row.sung]
-            animator.addAnimation(to: row.sung, keyPath: "opacity",
-                                  from: row.sung.presentation()?.opacity ?? row.sung.opacity,
-                                  to: sungOpacity,
-                                  frameRateRange: (min: 0, max: 0))
-            animator.finishDispatch { row.sung.opacity = sungOpacity }
+            // 逐字高亮由渐变遮罩（row.gradient）的 sweptWidth 随音频推进，
+            // 亮字层的整体 opacity 在选中时必须立即可见（1.0），绝不能套 120ms 的 ease-in 淡入动画——
+            // 否则在淡入期间（前数十毫秒几乎全透明）前一两个音节就已经被渐变扫过了，
+            // 导致视觉上「慢半拍、等唱了一两个字才突然冒出来并覆盖已唱内容」。
+            // 只有在取消选中（淡出）且 animated 时才走淡出动画。
+            if animated && !isSelected && !isSungPrepared {
+                let animator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)
+                animator.layers = [row.sung]
+                animator.addAnimation(to: row.sung, keyPath: "opacity",
+                                      from: row.sung.presentation()?.opacity ?? row.sung.opacity,
+                                      to: sungOpacity,
+                                      frameRateRange: (min: 0, max: 0))
+                animator.finishDispatch { row.sung.opacity = sungOpacity }
+            } else {
+                row.sung.opacity = sungOpacity
+            }
         }
         translationLayer.foregroundColor = LyricsSpecs.cgColor(translationColor, in: appearance)
         // 音译与主行同一套明暗：未唱走 `translationColor`（nil 时就是主行的暗色），
         // 已唱走 `lineProgressionGradientColor`。
         transliterationBase.foregroundColor = LyricsSpecs.cgColor(translationColor, in: appearance)
         transliterationSung.foregroundColor = sung
-        guard animated else { transliterationSung.opacity = sungOpacity; return }
-        let animator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)
-        animator.layers = [transliterationSung]
-        animator.addAnimation(to: transliterationSung, keyPath: "opacity",
-                              from: transliterationSung.presentation()?.opacity
-                                  ?? transliterationSung.opacity,
-                              to: sungOpacity,
-                              frameRateRange: (min: 0, max: 0))
-        animator.finishDispatch { self.transliterationSung.opacity = sungOpacity }
+        if animated && !isSelected && !isSungPrepared {
+            let animator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)
+            animator.layers = [transliterationSung]
+            animator.addAnimation(to: transliterationSung, keyPath: "opacity",
+                                  from: transliterationSung.presentation()?.opacity
+                                      ?? transliterationSung.opacity,
+                                  to: sungOpacity,
+                                  frameRateRange: (min: 0, max: 0))
+            animator.finishDispatch { self.transliterationSung.opacity = sungOpacity }
+        } else {
+            transliterationSung.opacity = sungOpacity
+        }
     }
 
     var baseColor: NSColor {
@@ -469,6 +506,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
 
     /// 换行 / 换歌时把上抬与进度清干净。
     func resetProgress() {
+        cancelSungPreparation()
         progress = 0
         CATransaction.begin()
         CATransaction.setDisableActions(true)

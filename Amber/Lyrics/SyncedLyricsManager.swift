@@ -16,6 +16,20 @@ final class SyncedLyricsManager {
         var animationDuration: @Sendable (TimeInterval) -> TimeInterval = { _ in 0.1 }
         var finishLineAnimationDuration: TimeInterval
         var maxEndTimeOffset: TimeInterval
+
+        /// 焦点位提前量：**一整个翻行滚动动画的时长**。`[补]`
+        ///
+        /// 焦点位在下一句开唱前这么久就让过去，滚动跑完那一刻正好是开唱那一刻
+        /// （见 `scrollTargetLineView`）。取的是`lineChangeSpringTimingParameters`
+        /// 的 `settlingDuration`——与`ScrollSpring` 真正跑的时长同一个数，
+        /// 所以是「滚完即开唱」而不是估出来的近似。弹簧参数改了它自己跟着变，
+        /// 不写死。
+        ///
+        /// 准入也要跟着放宽（见 `shouldAdmit`）：要滚过去，那一行得先在选中集合里。
+        ///
+        /// 默认 0 = 不提前，退回纯 [实测] 的那套时序。`init(specs:)` 才把它填上。
+        var scrollLead: TimeInterval = 0
+
         init(finishLineAnimationDuration: TimeInterval, maxEndTimeOffset: TimeInterval) {
             self.finishLineAnimationDuration = finishLineAnimationDuration
             self.maxEndTimeOffset = maxEndTimeOffset
@@ -26,6 +40,9 @@ final class SyncedLyricsManager {
                       maxEndTimeOffset: specs.maxEndTimeOffset)
             let headstart = specs.animationHeadstart
             self.animationDuration = { _ in headstart }
+            // 现算一次存下来：`settlingDuration` 要造一个 CASpringAnimation，
+            // 而读它的地方（焦点位、准入）都在每帧路径上。
+            self.scrollLead = specs.lineChangeSpringTimingParameters.settlingDuration
         }
     }
 

@@ -15,6 +15,39 @@ struct SpringTimingParameters: Sendable, Equatable {
     var angularFrequency: Double { (stiffness / mass).squareRoot() }
     /// 阻尼比 ζ = c / (2√(km))
     var dampingRatio: Double { damping / (2 * (stiffness * mass).squareRoot()) }
+
+    /// 这条弹簧跑完要多久。
+    ///
+    /// 与原版同一条路：造一个 `CASpringAnimation` 把`settlingDuration` 读回来
+    /// （§2.4 的工厂、`deselecting all`、`ScrollSpring.init` 三处都这么取）。
+    /// `ScrollSpring` 的收尾判据用的就是它——**滚动动画的时长按定义就是这个数**，
+    /// 不是另估一个「看起来停了」的时刻。
+    ///
+    /// 每次都现造一个 `CASpringAnimation`，别放进每帧路径；要按帧读就先存下来
+    /// （`SyncedLyricsManager.Configuration.scrollLead` 就是存好的那一份）。
+    var settlingDuration: TimeInterval {
+        CASpringAnimation(keyPath: "position", spring: self).settlingDuration
+    }
+
+    /// 把整条曲线在时间轴上压一压，使它跑完只要 `duration`。
+    ///
+    /// **只动 ω₀，不动 ζ**：`stiffness /= k²`、`damping /= k`（k = duration / 现有时长），
+    /// 因为 ω₀ = √(k_s/m) 变成 ω₀/k 而 ζ = c/(2√(k_s·m)) 原样不变。于是过冲多少、
+    /// 回不回弹这些「性格」一点不改，只是整条曲线快了——而`settlingDuration`
+    /// 与 ω₀ 成反比，正好落在 `duration` 上（实测误差 0）。
+    ///
+    /// 用在翻行上：句间空档比一整条弹簧还窄时，把这一次的滚动压进空档里，
+    /// 而不是换一条手调的弹簧。
+    ///
+    /// - Parameter current: 当前的 `settlingDuration`。调用方多半已经算过，
+    ///   传进来省一次 `CASpringAnimation` 构造。
+    func timeScaled(to duration: TimeInterval, from current: TimeInterval) -> SpringTimingParameters {
+        guard duration > 0, current > 0 else { return self }
+        let k = duration / current
+        return SpringTimingParameters(mass: mass,
+                                      stiffness: stiffness / (k * k),
+                                      damping: damping / k)
+    }
 }
 
 /// 48 字节，`LyricsAnimationCurve.spring` 的载荷。字段顺序由三个独立构造点

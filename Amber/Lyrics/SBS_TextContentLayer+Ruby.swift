@@ -192,7 +192,7 @@ extension SBS_TextContentLayer {
                     font: specs.font, lineHeight: layout.textHeight, specs: specs))
             row.gradient.frame = CGRect(x: 0, y: 0, width: 0, height: layout.height)
             row.sung.mask = row.gradient
-            row.sung.opacity = isSelected ? 1 : 0
+            row.sung.opacity = (isSelected || isSungPrepared) ? 1 : 0
 
             rows.append(row)
             layoutLines.append(layoutLine)
