@@ -92,17 +92,19 @@ extension SyncedLyricsVisualExperienceManager {
             selectedLineViews = []                                 //写空数组存储
         }
 
-        // 滚动与高亮分开：文字行准入（开唱前 `maxEndTimeOffset`）时**只入列**，
-        // 高亮与去模糊等到开唱那一刻由每帧的 `activateDueLines` 给，滚动由 `scrollTargetLineView` 另判。
+        // 三权分立：**去模糊跟着焦点位走、高亮跟着开唱走、滚动由 `scrollTargetLineView` 另判**。
+        // 文字行准入时只入列并去模糊（下面第五步），高亮与逐字进度等到开唱那一刻，
+        // 由每帧的 `activateDueLines` 给。
         // 两种例外立刻点亮：
         // - `deselectingOthers`（jump / 拖开后只换外观那一支）——目标必须当场亮；
         // - 间奏行——它的「高亮」就是三个点，而点阵的显隐、逐点点亮都看内容层自己的
         //   `isSelected`（`InstrumentalContentLayer.layoutSublayers` / 逐点淡入那道闸），
         //   `prepare(at:)` 又在准入时就把入场动画起了，晚 0.5 s 才置选中会让点在
         //   藏着的图层上跑完入场再突然冒出来。照原版：准入即选中，时序由点阵自己的状态机管。
+        let effectiveStart = (line as? TextLine)?.syllables.first?.startTime ?? line.startTime
         let isDue = deselectingOthers
             || line is InstrumentalLine
-            || currentElapsedTime() >= line.startTime
+            || currentElapsedTime() >= effectiveStart
 
         // 二、目标行进选中态。–
         if isDue {
@@ -132,16 +134,18 @@ extension SyncedLyricsVisualExperienceManager {
             }
         }
 
-        // 五、去模糊：传 `(target, true, 0.0)`。**跟着高亮走，不跟着准入走。**
+        // 五、去模糊：传 `(target, true, 0.0)`。**跟着焦点位走，不跟着高亮走。**
         //
-        // 准入是开唱前 `maxEndTimeOffset`（0.5 s）的入列。原版在那一刻连高亮一起给，
-        // 去模糊与点亮本来就是同一刻；Amber 把滚动与高亮拆开之后（`activateDueLines`），
-        // 这一步要是仍留在准入路径上，就成了「还没唱的那句先从糊变清」——
-        // 全表就它一行是清的，眼睛读到的就是「没唱就亮了」。
-        // 还没到点的行由 `activateDueLines` 在开唱那一刻一并去模糊（那里已经有同一句）。
-        if isDue {
-            setBlurRadius(0, on: target, animated: true)
-        }
+        // 准入即清晰。入列的行马上就会轮到焦点位（当前句一唱完就让位，见
+        // `scrollTargetLineView`），视口都滚过去了还糊着，等于让人对着一团模糊
+        // 等开唱——预读没了，翻行那一下还要再「清一次」，多一次视觉抖动。
+        // 「没唱就亮了」是**高亮**的事，那一条仍旧压在`isDue` 上（第二、三步）：
+        // 清晰但不点亮，与点亮是两种外观，不会混。
+        setBlurRadius(0, on: target, animated: true)
+
+        // 预热逐字歌词高亮透明度：遮罩在开唱前为 0 宽，提前让底层 opacity 就位，
+        // 确保开唱第一刻梯度遮罩扫过时立即露出高亮，无 120ms 的淡入滞后。
+        (target.lineLayer?.contentLayer as? SBS_TextContentLayer)?.prepareSungOpacity()
 
         // 六、入列。–是 `Array.append`
         //    （`_makeUniqueAndReserveCapacityIfNotUnique` + `_appendElementAssumeUniqueAndCapacity`），
@@ -151,19 +155,23 @@ extension SyncedLyricsVisualExperienceManager {
         // 起才打 "[SyncedLyricsDebug] selecting line …"，在所有副作用之后。
     }
 
-    /// 已入列但还没到开唱时刻的行，在这里补上外观：点亮、起逐字进度、去模糊。
-    /// **准入那一刻什么外观都不给**——给了就是「还没唱就亮了」。
+    /// 已入列但还没到开唱时刻的行，在这里补上**高亮**与逐字进度。
+    /// 准入那一刻只去模糊（清晰但不点亮），点亮压到开唱那一刻——
+    /// 提前点亮就是「还没唱就亮了」。
     func activateDueLines(at elapsed: TimeInterval) {
         for view in selectedLineViews {
             guard view.lineLayer?.isSelected == false,
-                  let line = view.lineLayer?.line,
-                  elapsed >= line.startTime else { continue }
+                  let line = view.lineLayer?.line else { continue }
+            let effectiveStart = (line as? TextLine)?.syllables.first?.startTime ?? line.startTime
+            guard elapsed >= effectiveStart else { continue }
 
             if view.isHighlighted { view.isHighlighted = false }
             view.setAccessibilitySelected(true)
             let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
             view.lineLayer?.apply(selected: true, animation: animation)
-            startWordProgress(on: view, animated: true)
+            startWordProgress(on: view, animated: false)
+            // 去模糊在准入时已经给过（`selectLine` 第五步），这里是兜底：
+            // 中途被 `.scroll` / 暂停那几条路径糊回去的行，开唱时要擦干净。
             setBlurRadius(0, on: view, animated: true)
         }
     }
@@ -172,46 +180,104 @@ extension SyncedLyricsVisualExperienceManager {
 
     /// 焦点位（§2.5 的锚点）该停在哪一行。
     ///
-    /// 滚动与高亮分开，滚动**不提前**（2026-09-15 定的行为）：
+    /// 一次焦点位让位的计划：滚向哪一行，以及**这一次滚动该跑多久**。
+    struct ScrollFocusPlan {
+        var view: SyncedLyricsLineView
+        /// 这次滚动的时长。它同时也是让位相对下一句开唱提前的量——同一个数，
+        /// 所以滚完那一刻正好是开唱那一刻。
+        var duration: TimeInterval
+    }
+
+    /// 焦点位（§2.5 的锚点）该停在哪一行，以及这次要滚多久。
+    ///
+    /// 滚动与高亮分开：**滚动提前整整一次翻行动画，好让它跑完那一刻正好是开唱那一刻**
+    /// （2026-09-16 定的行为）。
     /// 1. 正在唱的 = 已点亮的最后一行 `current`；一行都没亮（歌开头、seek 落在句前）就取第一条。
     ///    打开着的间奏行一律停住：它由展开动画落位、由 `deselectLine` 的收起带走（§16.6）。
     /// 2. 候选下一句 = `current` 之后第一条**未点亮**的选中行 `next`；没有就停在 `current`。
-    ///    准入（开唱前 `maxEndTimeOffset`）只是入列，不是滚动的理由——按「谁最新准入
-    ///    就滚向谁」，句子比提前量短时会连着往下翻，正在唱的那句被推出视口（当天的「行错位」）。
-    ///    于是焦点位最多领先正在唱的那句一行。
-    /// 3. 让位时刻 = `min(current.end, next.start)`：当前句唱完就切下一句；两句重叠的，
-    ///    下一句一开唱就滚过去（那一刻它也点亮，两句同亮），上一句唱完由淘汰路径模糊走人。
+    ///    准入本身不是滚动的理由——按「谁最新准入就滚向谁」，句子比提前量短时会连着往下翻，
+    ///    正在唱的那句被推出视口（2026-09-15 的「行错位」）。于是焦点位最多领先正在唱的那句一行。
+    /// 3. 让位时刻 = `next.startTime - 这次的时长`，时长由 `handoverDuration` 按句间空档现算。
     ///
     /// - Parameter views: 选中行集合。`select(_:)` 在新行入列**之前**调用，要把新行一起传进来。
-    func scrollTargetLineView(in views: [SyncedLyricsLineView],
-                              at elapsed: TimeInterval) -> SyncedLyricsLineView? {
+    func scrollFocusPlan(in views: [SyncedLyricsLineView],
+                         at elapsed: TimeInterval) -> ScrollFocusPlan? {
         guard let current = views.last(where: { $0.lineLayer?.isSelected == true }) else {
-            return views.first
+            return views.first.map { ScrollFocusPlan(view: $0, duration: scrollLead) }
         }
         guard current !== instrumentalBreakVisibleView,
               let currentIndex = views.firstIndex(where: { $0 === current }),
               let next = views[(currentIndex + 1)...].first(where: { $0.lineLayer?.isSelected != true }),
               let currentLine = current.lineLayer?.line,
               let nextLine = next.lineLayer?.line
-        else { return current }
-        let switchAt = min(currentLine.endTime, nextLine.startTime)
-        return elapsed >= switchAt ? next : current
+        else { return ScrollFocusPlan(view: current, duration: scrollLead) }
+
+        let duration = handoverDuration(from: currentLine, to: nextLine)
+        return elapsed >= nextLine.startTime - duration
+            ? ScrollFocusPlan(view: next, duration: duration)
+            : ScrollFocusPlan(view: current, duration: scrollLead)
+    }
+
+    /// 从 `current` 翻到`next` 这一次滚动该跑多久。**照句间空档现算，不是定值。**
+    ///
+    /// 上限是 `scrollLead`（翻行弹簧本来跑完要的时间）。空档比它还窄，就缩到空档那么宽：
+    /// 滚动从上一句唱完那一刻起跑、到下一句开唱那一刻落位，一秒都不占别人的。
+    /// **只缩不放**——空档再宽也不会比`scrollLead` 更慢，慢下去就成了拖沓。
+    ///
+    /// 空档窄到 0（上一句的 `endTime` 正好是下一句的`startTime`，一句话连着唱下来的
+    /// 那种）也照缩：时长跟着变 0，就是原地换行、不滚。**贴着不算重叠**——
+    /// 只有 `endTime` 真的越过了下一句的`startTime`（空档为负）才算，那时确实没有空档可占，
+    /// 照 `scrollLead` 提前滚，那一段两句同时亮着（§1.3 的`maxSelectedLines = 2`
+    /// 本来就允许两行同亮）。
+    ///
+    /// 比的是 `endTime` 而不是最后一个音节：行盒的结束就是这一行占住时间轴的范围，
+    /// 让位要让的也是这个范围。
+    func handoverDuration(from current: any LyricsLine,
+                          to next: any LyricsLine) -> TimeInterval {
+        let gap = next.startTime - current.endTime
+        guard gap >= 0 else { return scrollLead }      // 交错才算重叠
+        return min(scrollLead, gap)
+    }
+
+    func scrollTargetLineView(in views: [SyncedLyricsLineView],
+                              at elapsed: TimeInterval) -> SyncedLyricsLineView? {
+        scrollFocusPlan(in: views, at: elapsed)?.view
     }
 
     func scrollTargetLineView(at elapsed: TimeInterval) -> SyncedLyricsLineView? {
         scrollTargetLineView(in: selectedLineViews, at: elapsed)
     }
 
+    /// 焦点位提前量的**上限** = 一整条翻行弹簧跑完要的时间。存在
+    /// `SyncedLyricsManager.Configuration` 里（那边照`specs` 的翻行弹簧现算一次），
+    /// 与 `followScrollTarget` 下发的那条弹簧同源，所以「提前量」与「跑完」严格相等。
+    var scrollLead: TimeInterval { manager?.configuration.scrollLead ?? 0 }
+
     /// 每帧跟一次焦点位。规则 3 的让位时刻不一定落在准入 / 点亮 / 淘汰任何一个事件上，
     /// 所以按帧查；目标行没换就什么都不做，换了才滚一次。
     func followScrollTarget(at elapsed: TimeInterval) {
-        guard let viewController, let target = scrollTargetLineView(at: elapsed) else { return }
-        guard target !== scrollTargetView else { return }
-        scrollTargetView = target
+        guard let viewController,
+              let plan = scrollFocusPlan(in: selectedLineViews, at: elapsed) else { return }
+        guard plan.view !== scrollTargetView else { return }
+        scrollTargetView = plan.view
         // 打开着的间奏行由展开动画自己落位（动画期间视口不动），这里不抢。
-        guard target !== instrumentalBreakVisibleView else { return }
-        viewController.scrollFocus(to: target,
-                                   animation: makeLineChangeAnimation(speed: 0, useSpecsSpring: true))
+        guard plan.view !== instrumentalBreakVisibleView else { return }
+        viewController.scrollFocus(to: plan.view,
+                                   animation: makeLineChangeAnimation(settlingIn: plan.duration))
+    }
+
+    /// 把翻行弹簧压成「跑完只要 `duration`」的那一条。
+    ///
+    /// - 只压不放：`duration` 不比它本来的时长短就原样返回。
+    /// - `duration <= 0`（空档为 0，上一句的`endTime` 正好是下一句的`startTime`）
+    ///   返回 `nil`，照本文件的老规矩就是**瞬时落位**：没有时间可占，就别假装在滚。
+    func makeLineChangeAnimation(settlingIn duration: TimeInterval)
+        -> SyncedLyricsLineLayer.SelectionAnimation? {
+        guard duration > 0 else { return nil }
+        let base = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+        guard duration < base.settlingDuration else { return base }
+        return .init(spring: base.spring.timeScaled(to: duration, from: base.settlingDuration),
+                     settlingDuration: duration)
     }
 
     // MARK: - selecting
@@ -270,11 +336,11 @@ extension SyncedLyricsVisualExperienceManager {
             return .selectedInPlace
         }
 
-        // 焦点位轮不轮得到这一句，由 `scrollTargetLineView` 说了算（新行还没入列，一起传进去）。
+        // 焦点位轮不轮得到这一句，由 `scrollFocusPlan` 说了算（新行还没入列，一起传进去）。
         // 轮不到——正在唱的那句还没让位——就只换外观入列，滚动交给每帧的 `followScrollTarget`。
-        let target = scrollTargetLineView(in: selectedLineViews + [view], at: currentElapsedTime())
-        scrollTargetView = target
-        guard target === view else {
+        let plan = scrollFocusPlan(in: selectedLineViews + [view], at: currentElapsedTime())
+        scrollTargetView = plan?.view
+        guard plan?.view === view else {
             let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
@@ -300,7 +366,11 @@ extension SyncedLyricsVisualExperienceManager {
         let fitsVertically = view.frame.minY >= visible.minY && view.frame.maxY <= visible.maxY
         if fitsVertically {
             // 完全可见 → 不滚，就地换选中态。起
-            let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+            // 弹簧按这一次让位的时长压过（句间空档窄就跟着窄），与 `followScrollTarget` 同源。
+            // 这里的描述符同时管**行外观与行盒重排**，空档为 0 时也不该退化成瞬时——
+            // 视口不滚是一回事，行自己的外观切换是另一回事，所以兜底回原装那条。
+            let animation = makeLineChangeAnimation(settlingIn: plan?.duration ?? scrollLead)
+                ?? makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
             // 抓一份「当前与可视矩形相交的行」快照，
@@ -439,7 +509,7 @@ extension SyncedLyricsVisualExperienceManager {
     private func restoreBlurAfterPause() {
         guard mode == .regular else { return }
         let onScreen = Set((viewController?.visibleLineViews() ?? []).map(ObjectIdentifier.init))
-        let selected = litLineViewIDs
+        let selected = unblurredLineViewIDs
         for view in lineViews where !selected.contains(ObjectIdentifier(view)) {
             setBlurRadius(Self.deselectedBlurRadius, on: view,
                           animated: onScreen.contains(ObjectIdentifier(view)))
@@ -595,22 +665,23 @@ extension SyncedLyricsVisualExperienceManager {
         }
         guard specs.lineBlurEnabled,
               viewController?.isHighContrastAppearance != true else { return }
-        let selected = litLineViewIDs
+        let selected = unblurredLineViewIDs
         for view in lineViews where !selected.contains(ObjectIdentifier(view)) {
             setBlurRadius(Self.deselectedBlurRadius, on: view,
                           animated: onScreen.contains(ObjectIdentifier(view)))
         }
     }
 
-    /// 「该是清晰的」那一组：**已点亮**的行，不是已入列的行。
+    /// 「该是清晰的」那一组：**已入列**的行，外加当前焦点位那一行。
     ///
-    /// 准入（开唱前 `maxEndTimeOffset`）只入列，那一刻还轮不到它清晰——
-    /// 拿 `selectedLineViews` 当判据，暂停恢复与松手这两个时刻就会把还没唱的那句
-    /// 提前擦清楚，观感与「没唱就亮了」是同一件事。
-    var litLineViewIDs: Set<ObjectIdentifier> {
-        Set(selectedLineViews.lazy
-            .filter { $0.lineLayer?.isSelected == true }
-            .map(ObjectIdentifier.init))
+    /// 与 `selectLine` 第五步同一条纪律：去模糊跟着焦点位走，不跟着高亮走。
+    /// 拿「已点亮」当判据的话，暂停恢复（`restoreBlurAfterPause`）与松手
+    /// （`endScrollingAppearance`）这两个时刻会把**已经提前就位、视口正停在上面**
+    /// 的下一句重新糊回去——画面滚到了一句糊字上，比不滚还怪。
+    var unblurredLineViewIDs: Set<ObjectIdentifier> {
+        var ids = Set(selectedLineViews.map(ObjectIdentifier.init))
+        if let target = scrollTargetView { ids.insert(ObjectIdentifier(target)) }
+        return ids
     }
 
     // MARK: - 时间基准

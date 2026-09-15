@@ -108,13 +108,17 @@ extension SyncedLyricsViewController {
     /// [实测]（§6.1）：`needsTapHandling` 为真就地硬编码
     /// `(2, 260, 50)`、`delay = 0`，**不读`LyricsSpecs`**；否则用 specs 那条
     /// `(1, 100, 18)`，并在 §2.8 的 duration hack 命中时压掉起始延迟。
+    /// - Parameter base: 自动翻行用的底弹簧。默认是 specs 那条原装的；每帧的焦点位让位
+    ///   会传一条**按句间空档压短过**的进来（见`handoverDuration`），好让「提前量」
+    ///   与「跑完」始终是同一个数。点击驱动那一支不受影响，照旧走硬编码的 `.tapDriven`。
     func lineChangeSpring(for line: any LyricsLine,
-                          baseOffset: TimeInterval) -> (spring: SpringTimingParameters,
-                                                        delay: TimeInterval) {
+                          baseOffset: TimeInterval,
+                          base: SpringTimingParameters? = nil)
+        -> (spring: SpringTimingParameters, delay: TimeInterval) {
         guard manager?.needsTapHandling != true else {
             return (.tapDriven, 0)
         }
-        let spring = specs.lineChangeSpringTimingParameters
+        let spring = base ?? specs.lineChangeSpringTimingParameters
         let settling = CASpringAnimation(keyPath: "position", spring: spring).settlingDuration
         let lineTime = line.endTime - line.startTime
         guard DurationHack.isTriggered(lineTime: lineTime,
