@@ -19,7 +19,7 @@ import QuartzCore
 /// 「唱到就切色」：`lineProgressionGradientFeather = 30` 是 mask 前端那条定宽软边。
 ///
 /// 逐字单元按**音节**各自成层（原版 `Syllable` 就带自己的`frame`/`xOffset`），
-/// 这样 `syllableLift = 2` 的上抬才有落点。字形层（`Glyph`）只有`.emphasis`
+/// 这样 `syllableLift` 的上抬才有落点。字形层（`Glyph`）只有`.emphasis`
 /// 能力才用得上，Amber 的 QRC 源不声明这条能力，所以不建——公式仍在
 /// `SyllableEmphasis.glyphPosition` 里备着。
 final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextContentLayerProgress {
@@ -297,10 +297,14 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// [实测]：两级「值没变就不做」，第二级带一条倒退阈值——
     /// 往前永远下发，往回只有退超过 0.5 才下发。逐字进度每帧都在抖，
     /// 这条闸把抖动吃掉、只放行真正的 seek。
+    ///
+    /// 放行之后再问一句「这次是不是一次正常的帧步进」（`isContinuousAdvance`）：
+    /// 抬升只在连续推进时走弹簧，seek / 追平一律瞬间落位。
     func setProgress(_ progress: Double, animated: Bool) {
         guard Self.shouldForward(newProgress: progress, current: self.progress) else { return }
+        let continuous = Self.isContinuousAdvance(newProgress: progress, current: self.progress)
         self.progress = progress
-        applyProgress(animated: animated)
+        applyProgress(liftAnimated: animated && continuous)
     }
 
     /// 每帧走查：算出每个排版行扫到哪儿，顺手把该上抬的音节抬起来。
@@ -311,7 +315,10 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// - `CATransaction` 只开一次（原来每行一次、音译再一次，一行歌词折三行就是四次）；
     /// - 音节上抬留到事务外——`addAnimation` 在`CATransaction.disableActions()`
     ///   为真时会退化成直接赋值，包进去弹簧就没了。
-    func applyProgress(animated: Bool) {
+    ///
+    /// `liftAnimated` **只管抬升**（渐变、辉光、音译都是逐帧直写模型值）：
+    /// 真时那 2pt 由 (1, 14, 7) 那条弹簧慢慢飘上去，假时当场落位。
+    func applyProgress(liftAnimated: Bool) {
         let needsTransliteration = transliterationWidth > 0 && !transliterationSung.isHidden
         var totalWords = 0
         var doneWords = 0.0
@@ -363,7 +370,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         CATransaction.commit()
 
         for (row, layoutLine) in pendingLifts {
-            liftStartedSyllables(in: row, layoutLine: layoutLine, animated: animated)
+            liftStartedSyllables(in: row, layoutLine: layoutLine, animated: liftAnimated)
         }
     }
 
@@ -435,7 +442,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             specs: specs)
     }
 
-    /// `syllableLift = 2`：被唱到的音节整体上抬 2pt，由 (1, 14, 7) 那条弹簧走完。
+    /// `syllableLift`：被唱到的音节整体上抬那么多，由 (1, 14, 7) 那条弹簧走完。
     /// **是常量位移不是动画幅度**（§8.1：它是直接从纵向落点里减掉的），抬起来之后保持。
     ///
     /// 同一趟还带上 §8.1 的**强调缩放**（`emphasizingScaleRange = 1.0…1.14`，
@@ -495,6 +502,11 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
 
     /// 把一个音节层推到「已唱」或「未唱」那一端。位移是增量（抬起来是负的），
     /// 缩放是绝对值（`nil` 表示这个词没有强调数据，整条不碰`transform`）。
+    ///
+    /// **位移走叠加式动画**（§6.5）：模型值当场写成真值，动画只把「旧 − 新」
+    /// 这个 2pt 偏移在时间上退回 0。常规的 `from = 旧 / to = 新` 在飘的那 0.7 秒里
+    /// 把层放在一套临时坐标里，期间一次重排（改窗宽、开关翻译 / 发音会重建`rows`）
+    /// 就会让它从旧坐标起飞。
     private func emphasize(_ layer: CALayer,
                            lift: CGFloat,
                            scale: Double?,
@@ -517,9 +529,10 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         let animator = LayerPropertyAnimator(curve: curve)
         animator.layers = [layer]
         if lift != 0 {
-            animator.addAnimation(to: layer, keyPath: "position",
-                                  from: layer.position, to: position,
-                                  frameRateRange: (min: 0, max: 0))
+            // `offset = 旧 − 新 = −lift`：抬升时 lift 是 −2，动画从 +2 退回 0。
+            animator.addAdditiveAnimation(to: layer, keyPath: "position",
+                                          offset: CGPoint(x: 0, y: -lift),
+                                          frameRateRange: (min: 0, max: 0))
         }
         if let transform {
             animator.addAnimation(to: layer, keyPath: "transform",

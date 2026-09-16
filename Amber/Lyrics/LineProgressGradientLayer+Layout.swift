@@ -34,11 +34,18 @@ extension LineProgressGradientLayer {
                               width: featherWidth,
                               height: h + 2 * pad)
 
-        // 实心部分：严格贴合 bounds，盖的是已经唱过的字，不会再被强调放大。
+        // 实心部分：纵向同样外扩 pad。
+        //
+        // [实测] 这里是`y: 0, height: h`——严格贴合 bounds，理由是「盖的是已经唱过的
+        // 字，不会再被强调放大」。但**抬升会**：音节层整体上移`syllableLift`，
+        // 贴合 bounds 的实心区会把已唱字的顶端切掉，露出底下那层暗字。
+        // 2pt 时刚好擦着字形上沿过去，调到 [PX] 的 4pt 就切进墨里了。
+        // 外扩量与软边条取同一个 pad（§7.3 的余量本来就是「强调 / 辉光超出正文多少」），
+        // 没有溢出时多出来的那一圈落在空白上，是个纯无害的放宽。`[补]`
         let fill = CGRect(x: isRightToLeft ? featherWidth : min(0, w - featherWidth),
-                          y: 0,
+                          y: -pad,
                           width: max(0, w - featherWidth),
-                          height: h)
+                          height: h + 2 * pad)
 
         var padding: CGRect?
         if let outer = outerPadding {

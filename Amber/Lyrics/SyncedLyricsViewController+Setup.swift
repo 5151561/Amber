@@ -399,8 +399,13 @@ extension SyncedLyricsViewController {
 
         // 逐字渐变每帧推进（原版的走查）。喂进去的时间是
         // §1.2 的前两步（扣掉空间音频偏移），**不含**第三步那个提前量。
+        //
+        // `animated: true` 说的是**抬升**那一条（`SBS_TextContentLayer.applyProgress`
+        // 只把这个标志喂给`liftStartedSyllables`）：逐帧推进才是「这个字轮到了」
+        // 的那一刻，那 2pt 该由 (1, 14, 7) 慢慢飘上去。假的话每个音节开唱时是
+        // 2pt 瞬移，观感就是逐字弹跳。seek 由`isContinuousAdvance` 那道闸挡掉。
         for view in visual.selectedLineViews {
-            view.lineLayer?.startProgress(at: basis.elapsed, animated: false)
+            view.lineLayer?.startProgress(at: basis.elapsed, animated: true)
         }
         // 间奏点阵的状态机也按帧推进（§3.3）。
         if let instrumental = visual.instrumentalBreakVisibleView,

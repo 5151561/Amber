@@ -145,7 +145,14 @@ struct LyricsSpecs {
 
     // MARK: 逐字
 
-    var syllableLift: CGFloat = 2                                 //[实测] .lift 能力
+    /// 被唱到的音节上抬多少。
+    ///
+    /// ASM 里读出来的是 **2**；[PX] 对着播放中的 Music 逐像素量，已唱字比未唱高
+    /// **3.5…4.2pt**（半高顶端 +3.50、质心 +4.21，`AM-ANTI/Reports/lyrics-logic.md`
+    /// 那一节），两者之差当时归因给取样字形的上沿不同。实机对比后取实测区间的中值
+    /// **4**——ASM 那个 2 是在 Music 自己的字形落点公式里减掉的，
+    /// Amber 没有字形层、减在音节层上，同一个数字给出的观感并不等价。
+    var syllableLift: CGFloat = 4                                 //[PX] .lift 能力
     var vocalGroupWidthCoefficient: CGFloat = 0.85                //[实测]
     var lineTapProgressFreezeDuration: TimeInterval = 0.1         //[实测]
     var lineFinishProgressAnimationDuration: TimeInterval = 0.25  //[实测] 行末补完剩余进度
