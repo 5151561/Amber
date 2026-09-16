@@ -232,9 +232,16 @@ final class PlaylistDetailViewController: TrackTableViewController {
     /// 页脚传 0 算全部、搜索栏传 1 只算筛选命中；`lastFilterString` 为空时状态文案返回 nil。
     /// spec 的复刻要点原话是「这两处应共用一个格式化器，不要写成两份」。
     /// Amber 这边只有页脚一处，那就让它跟着筛选结果走：不筛选＝全部，筛选中＝命中那几首。
+    ///
+    /// 页头也要跟着换名单：页头 ••• 里的「插播 / 加入待播 / 下载 / 移除下载 / 勾选」
+    /// 与第三枚键的 ✓/↓ 图标算的都是 `Content.tracks`，那是建 Content 那一刻的**全量**。
+    /// 250 首的歌单里搜「周」，页脚说 3 首、▶ 播 3 首，••• 里的下载却把 250 首全开下——
+    /// 就是这一处漏掉的。只换名单、不重建页头（页头整块重 apply 会把简介的展开态、
+    /// 按宽度量出来的行数一起丢掉）。
     private func reapplyOrder() {
         let tracks = displayTracks()
         rebindPlayback(to: tracks)
+        header?.updateTracks(tracks)
         updateFooter(for: tracks)
         apply(tracks: tracks)
     }
@@ -336,14 +343,25 @@ final class PlaylistDetailViewController: TrackTableViewController {
     /// 这一件照样在（退回窗口那份兜底菜单），不会闪进闪出。
     override var pageShowsToolbarActions: Bool { true }
 
-    /// 传进来的是**在屏那一批**的下标，排过序或筛过之后它与资料库里那份数组对不上，
-    /// 所以先取出那一行是哪首歌，再回资料库里按 id 找它真正的位置。
-    override func removeTrack(at index: Int) {
-        guard let editablePlaylistID, tracks.indices.contains(index) else { return }
-        let track = tracks[index]
-        guard let playlist = appState.library.playlist(id: editablePlaylistID),
-              let real = playlist.tracks.firstIndex(where: { $0.id == track.id }) else { return }
-        appState.library.removeTracks(at: IndexSet(integer: real), fromPlaylist: editablePlaylistID)
+    /// 菜单交下来的是**在屏那一批**里的曲目，排过序或筛过之后它与资料库里那份数组对不上，
+    /// 所以按 id 回资料库里找它们真正的位置，一次删一批
+    /// （逐个删会边删边滑，第二首起就删错位）。
+    ///
+    /// 同一首歌在一份列表里可以出现多次：按「选中了几次就删几个」取前几个占位，
+    /// 不把同名的全清掉。
+    override func removeTracks(_ tracks: [Track]) {
+        guard let editablePlaylistID,
+              let playlist = appState.library.playlist(id: editablePlaylistID) else { return }
+        var wanted: [String: Int] = [:]
+        for track in tracks { wanted[track.id, default: 0] += 1 }
+        var offsets = IndexSet()
+        for (index, track) in playlist.tracks.enumerated() {
+            guard let count = wanted[track.id], count > 0 else { continue }
+            wanted[track.id] = count - 1
+            offsets.insert(index)
+        }
+        guard !offsets.isEmpty else { return }
+        appState.library.removeTracks(at: offsets, fromPlaylist: editablePlaylistID)
     }
 
     // MARK: 生命周期
@@ -511,6 +529,8 @@ final class PlaylistDetailViewController: TrackTableViewController {
         loadedTracks = tracks
         let display = displayTracks()
         rebindPlayback(to: display)
+        // 传进 `Content` 的是刚拿到的全量；页头的动作与图标要认在屏那一批，换过来。
+        header?.updateTracks(display)
         updateFooter(for: display)
         apply(header: header, tracks: display)
     }

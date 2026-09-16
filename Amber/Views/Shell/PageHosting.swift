@@ -227,9 +227,11 @@ final class LibraryPageModel: ObservableObject {
     @Published var favoritesOnly = false
     @Published var search = ""
     @Published var sort = LibraryGridSort()
-    /// 标题栏标题的覆盖值。只有「最近添加」用：它的标题跟着滚动联动当前段名
-    /// （nil = 用页名）。
-    @Published var displayTitle: String?
+    // 标题栏标题的覆盖值**不在这里**。那一位只有「最近添加」写（跟着滚动联动当前段名），
+    // 挂在四页共用的模型上就是把一次性显示态摆进共享状态：谁再把 `objectWillChange`
+    // 接成刷新，「滚过一个段头 = 整页重灌」就复发一次（批 A 只切断了页面那条订阅）。
+    // 现在它是那一页自己的字段 + 一条给工具栏的流，见
+    // `LibraryPageController.displayTitleSource` 与 `LibraryRecentlyAddedViewController`。
 
     /// 专辑页的排序是持久化的（原先两个 `@AppStorage`）。键名一字不改，旧偏好照读。
     let sortDefaultsKey: String?
@@ -325,7 +327,7 @@ enum ContentPageFactory {
             }
         case .allPlaylists:
             return LibraryAllPlaylistsViewController(appState: appState)
-        case .playlist(let id, _):
+        case .playlist(let id):
             return PlaylistDetailViewController(appState: appState, libraryPlaylistID: id)
         }
     }
@@ -355,12 +357,15 @@ enum ContentPageFactory {
             return CatalogRoomViewController(recentlyPlayedIn: appState)
         case .tagGroup(let group):
             return CatalogRoomViewController(appState: appState, tagGroup: group)
-        case .albumGrid(let title, let albums):
-            return CatalogRoomViewController(appState: appState, title: title, albums: albums)
-        case .playlistGrid(let title, let playlists):
-            return CatalogRoomViewController(appState: appState, title: title, playlists: playlists)
-        case .trackGrid(let title, let tracks):
-            return TrackListPageController(appState: appState, title: title, tracks: tracks,
+        // 三条「查看全部」：`key` 只用来认页面（见 `RouteCargo`），摆出来的是载荷。
+        case .albumGrid(_, let title, let albums):
+            return CatalogRoomViewController(appState: appState, title: title,
+                                             albums: albums.items)
+        case .playlistGrid(_, let title, let playlists):
+            return CatalogRoomViewController(appState: appState, title: title,
+                                             playlists: playlists.items)
+        case .trackGrid(_, let title, let tracks):
+            return TrackListPageController(appState: appState, title: title, tracks: tracks.items,
                                            style: .playlist, kind: .room,
                                            emptyMessage: "暂无曲目。",
                                            emptyImage: "music.note.list")

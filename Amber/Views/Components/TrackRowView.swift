@@ -40,6 +40,18 @@ protocol TrackRowContentInsetProviding: AnyObject {
     var trackRowContentInset: CGFloat { get }
 }
 
+/// 行的右键 / ••• 菜单由**表格**来造。
+///
+/// 「菜单作用于哪几首」（整份选中集还是只有被点的这一行）与「右键落在选区外先预选」
+/// 都只有页面看得全：行视图既不知道选中集里那些行号对应哪些曲目，也不该去改选区。
+/// 行只负责把「我这一行被右键了」转上去——`SongsTableController.menuTracks(forRow:)`
+/// + `TrackDisplayTableView.menu(for:)` 是仓库里这件事的正确形状，这里照它走。
+@MainActor
+protocol TrackRowMenuProviding: AnyObject {
+    /// 这一行要弹什么。`row` 是表格行号；nil = 不弹。
+    func trackRowMenu(forRow row: Int) -> NSMenu?
+}
+
 final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
 
     private typealias M = MusicMetrics.TrackRow
@@ -252,104 +264,126 @@ final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
 
     // MARK: - 建件
 
+    /// 换形态时**只按差异增删**，其余的件原样留着。
+    ///
+    /// `.detail` ↔ `.libraryAlbum` 只差一列星级（`TrackTableContract` 的`showsRating`），
+    /// 从前这里一上来就 `for view in subviews { removeFromSuperview() }`：专辑页点一次
+    /// 「添加到资料库」，整表 `reloadData()` 之后每个复用行还要把十几件子视图全拆全建。
+    /// 留下来的件由 `configure` 重填、`layout()` 重排——各列的 frame 只看形态、
+    /// 不看建的顺序，所以像素与全拆全建那一版一模一样。
     private func build(for style: TrackListStyle) {
-        guard self.style != style else { return }
+        let previous = self.style
+        guard previous != style else { return }
         self.style = style
-        for view in subviews { view.removeFromSuperview() }
-        favoriteButton = nil; leadingSlot = nil; artworkButton = nil; rankLabel = nil
-        titleLabel = nil; subtitleLabel = nil; artistLink = nil; albumLink = nil
-        albumLabel = nil; kindBadge = nil; ratingView = nil; addButton = nil
-        durationLabel = nil; moreButton = nil
 
-        // 收藏星：[PX] 实测 11.0×10.5，实心/空心**都是品牌红**（悬浮态的空心星不是灰的）。
-        let favorite = TrackRowGlyphButton(symbol: "star", pointSize: 10)
-        favorite.onClick = { [weak self] in
-            guard let self, let track = self.configuration?.track else { return }
-            self.appState?.library.toggleFavorite(track)
-            self.refreshLibraryState()
+        // 封面只有两套参数：歌单行暗罩 0.35 / 三角 15 bold / 未悬浮的当前曲在封面上摆电平，
+        // 丰富行暗罩 0.18 / 三角 12 semibold / 电平归首列那一格。所以只有跨「歌单 ↔ 丰富」
+        // 这条界才真要换一件，`.search` ↔ `.library` 之间照旧复用。
+        if previous == .playlist || style == .playlist {
+            artworkButton?.removeFromSuperview()
+            artworkButton = nil
         }
-        add(favorite, to: &favoriteButton)
 
-        let title = TrackRowKit.label(size: 13)
-        add(title, to: &titleLabel)
+        favoriteButton = part(favoriteButton, true) {
+            // 收藏星：[PX] 实测 11.0×10.5，实心/空心**都是品牌红**（悬浮态的空心星不是灰的）。
+            let favorite = TrackRowGlyphButton(symbol: "star", pointSize: 10)
+            favorite.onClick = { [weak self] in
+                guard let self, let track = configuration?.track else { return }
+                appState?.library.toggleFavorite(track)
+                refreshLibraryState()
+            }
+            return favorite
+        }
 
-        let duration = TrackRowKit.digitsLabel(size: 12, alignment: .right)
-        add(duration, to: &durationLabel)
+        titleLabel = part(titleLabel, true) { TrackRowKit.label(size: 13) }
 
-        let more = CatalogMoreButton()
-        more.onClick = { [weak self] in self?.showMenu() }
-        add(more, to: &moreButton)
+        durationLabel = part(durationLabel, true) {
+            TrackRowKit.digitsLabel(size: 12, alignment: .right)
+        }
 
-        if style != .playlist {
+        moreButton = part(moreButton, true) {
+            let more = CatalogMoreButton()
+            more.onClick = { [weak self] in self?.showMenu() }
+            return more
+        }
+
+        leadingSlot = part(leadingSlot, style != .playlist) {
             let slot = TrackRowLeadingSlot()
             slot.playButton.onClick = { [weak self] in self?.play() }
-            add(slot, to: &leadingSlot)
+            return slot
         }
 
-        if style.isRich {
-            // 歌单行的封面暗罩浓度 0.35、播放三角 15 bold，且未悬浮的当前曲在封面上摆电平；
-            // 丰富行的暗罩 0.18、三角 12 semibold，电平归首列那一格。
+        artworkButton = part(artworkButton, style.isRich) {
             let isPlaylist = style == .playlist
             let artwork = TrackRowArtworkButton(scrimOpacity: isPlaylist ? 0.35 : 0.18,
                                                 glyphSize: isPlaylist ? 15 : 12,
                                                 glyphWeight: isPlaylist ? .bold : .semibold,
                                                 showsLevels: isPlaylist)
             artwork.onClick = { [weak self] in self?.play() }
-            add(artwork, to: &artworkButton)
+            return artwork
         }
 
-        if style == .playlist {
-            let rank = TrackRowKit.digitsLabel(size: 13, color: .labelColor, alignment: .left)
-            add(rank, to: &rankLabel)
+        rankLabel = part(rankLabel, style == .playlist) {
+            TrackRowKit.digitsLabel(size: 13, color: .labelColor, alignment: .left)
+        }
 
+        artistLink = part(artistLink, style == .playlist) {
             let artist = TrackRowLinkButton(size: 13, color: .secondaryLabelColor)
             artist.onClick = { [weak self] in
                 guard let track = self?.configuration?.track else { return }
                 self?.appState?.goToArtist(of: track)
             }
-            add(artist, to: &artistLink)
+            return artist
+        }
 
+        albumLink = part(albumLink, style == .playlist) {
             let album = TrackRowLinkButton(size: 13, color: .secondaryLabelColor)
             album.onClick = { [weak self] in
                 guard let track = self?.configuration?.track,
                       let route = Route.album(of: track) else { return }
                 self?.appState?.push(route)
             }
-            add(album, to: &albumLink)
-        } else if style.isRich {
-            let subtitle = TrackRowKit.label(size: 11, color: .secondaryLabelColor)
-            add(subtitle, to: &subtitleLabel)
-
-            let album = TrackRowKit.label(size: 12, color: .secondaryLabelColor)
-            add(album, to: &albumLabel)
-
-            if style == .search {
-                let badge = TrackRowKindBadge()
-                add(badge, to: &kindBadge)
-            }
+            return album
         }
 
-        if style.showsRating {
+        // 丰富行（搜索 / 本地列表）：标题下的艺人第二行 + 专辑列；来源标只有搜索有。
+        let isRichList = style.isRich && style != .playlist
+        subtitleLabel = part(subtitleLabel, isRichList) {
+            TrackRowKit.label(size: 11, color: .secondaryLabelColor)
+        }
+        albumLabel = part(albumLabel, isRichList) {
+            TrackRowKit.label(size: 12, color: .secondaryLabelColor)
+        }
+        kindBadge = part(kindBadge, style == .search) { TrackRowKindBadge() }
+
+        ratingView = part(ratingView, style.showsRating) {
             let rating = TrackRowRatingView()
             rating.onRate = { [weak self] value in
                 guard let id = self?.configuration?.track.id else { return }
                 self?.appState?.library.setRating(value, for: id)
                 self?.ratingView?.setRating(self?.appState?.library.rating(for: id) ?? 0)
             }
-            add(rating, to: &ratingView)
+            return rating
         }
 
-        if style.isAlbumTable || style == .playlist {
+        addButton = part(addButton, style.isAlbumTable || style == .playlist) {
             // Music 在星级右侧留了一列 16pt：不在资料库时是「+」，已入库后变成「下载」。
-            let add0 = TrackRowGlyphButton(symbol: "plus", pointSize: 13)
-            add0.onClick = { [weak self] in self?.toggleLibrary() }
-            add(add0, to: &addButton)
+            let button = TrackRowGlyphButton(symbol: "plus", pointSize: 13)
+            button.onClick = { [weak self] in self?.toggleLibrary() }
+            return button
         }
     }
 
-    private func add<V: NSView>(_ view: V, to slot: inout V?) {
+    /// 这一件在新形态里还要不要：要就留着已有的（没有才造），不要就摘掉。
+    private func part<V: NSView>(_ existing: V?, _ wanted: Bool, make: () -> V) -> V? {
+        guard wanted else {
+            existing?.removeFromSuperview()
+            return nil
+        }
+        if let existing { return existing }
+        let view = make()
         addSubview(view)
-        slot = view
+        return view
     }
 
     // MARK: - 版式
@@ -680,30 +714,17 @@ final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
         return nil
     }
 
-    /// Music 的菜单对**整份选中集**生效：本行在选中集里且不止一行，就把选中的那些全交给菜单；
-    /// 否则只算本行（与歌曲表 `menuTracks(forRow:)` 同一条）。
-    ///
-    /// 行号 → 曲目下标的偏移由本行行号与 `playContext.index` 之差推出来
-    /// （表格第 0 行是头部，歌单形态第 1 行还是列头；那两行换算出来的下标是负的，直接落空）。
-    private func menuTracks() -> [Track] {
-        guard let configuration else { return [] }
-        guard let table = tableView else { return [configuration.track] }
-        let row = table.row(for: self)
-        guard row >= 0, table.selectedRowIndexes.contains(row),
-              table.selectedRowIndexes.count > 1 else { return [configuration.track] }
-        let offset = row - configuration.playContext.index
-        let tracks = configuration.playContext.tracks
-        return table.selectedRowIndexes.compactMap { selected in
-            let index = selected - offset
-            return tracks.indices.contains(index) ? tracks[index] : nil
-        }
-    }
-
+    /// 菜单归表格造（`TrackRowMenuProviding`）：作用集与「右键先预选」是页面级事实，
+    /// 行只把事件转上去。表格不认这条协议时才退回只算本行——那是给契约里
+    /// 自带 `remove` 的调用点留的兜底，两条路不会同时生效。
     private func makeMenu() -> NSMenu? {
+        if let table = tableView as? TrackRowMenuProviding, let row = tableView?.row(for: self),
+           row >= 0 {
+            return table.trackRowMenu(forRow: row)
+        }
         guard let appState, let configuration else { return nil }
-        let tracks = menuTracks()
-        guard !tracks.isEmpty else { return nil }
-        return TrackRowRegistry.menu(for: tracks, playContext: configuration.playContext,
+        return TrackRowRegistry.menu(for: [configuration.track],
+                                     playContext: configuration.playContext,
                                      removeTitle: configuration.removeTitle,
                                      remove: configuration.remove,
                                      appState: appState)

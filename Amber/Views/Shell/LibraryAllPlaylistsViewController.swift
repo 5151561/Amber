@@ -22,6 +22,10 @@ final class LibraryAllPlaylistsViewController: LibraryPageController,
     private var collectionView: LibraryGridCollectionView!
     private var entries: [Entry] = []
     private var laidOutItemWidth: CGFloat = 0
+    /// 同一轮 runloop 里的多次请求合并成一次（见 `setNeedsRefresh`）。
+    private var pendingRefresh = false
+    /// 被 `isHidden` 收着期间攒下的刷新，等 `pageDidAppear()` 补。
+    private var needsRefreshWhenShown = false
 
     init(appState: AppState) {
         super.init(nativePage: appState, model: LibraryPageModel(),
@@ -58,12 +62,39 @@ final class LibraryAllPlaylistsViewController: LibraryPageController,
         scroll.documentView = collectionView
         view = scroll
         refresh()
-        appState.library.objectWillChange
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+        // 这一页读的是播放列表集合；另加心水这一位，因为置顶那张「心水歌曲」卡上
+        // 印的是 `favoriteTracks.count`（见下面的数据源）。除此之外的资料库改动
+        // 与它无关——从前订 `library.objectWillChange`，入库一首歌也要重灌一次网格。
+        appState.library.changes(affecting: [.playlists, .favorites])
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
         model.objectWillChange
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
+    }
+
+    /// 刷新入口：合批 + 可见性闸，写法与其余四页同一条
+    /// （见 `LibraryAlbumsViewController.setNeedsRefresh` 上的原委）。
+    private func setNeedsRefresh() {
+        guard let view = viewIfLoaded, !view.isHiddenOrHasHiddenAncestor else {
+            needsRefreshWhenShown = true
+            return
+        }
+        guard !pendingRefresh else { return }
+        pendingRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh = false
+            self.refresh()
+        }
+    }
+
+    /// 切回来：被压住期间攒下的那次变动在这里补上。
+    override func pageDidAppear() {
+        super.pageDidAppear()
+        guard needsRefreshWhenShown else { return }
+        needsRefreshWhenShown = false
+        refresh()
     }
 
     /// 规则与旧 `LibraryAllPlaylistsPage` 一字不差：

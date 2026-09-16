@@ -23,7 +23,9 @@ final class AppStateForwardingTests: XCTestCase {
         // 选中的源来自设置里的默认源，且必须是启用中的源
         XCTAssertEqual(state.selectedProvider, state.providerSettings.defaultProvider)
         XCTAssertTrue(state.enabledProviders.contains(state.selectedProvider))
-        XCTAssertNil(state.playerInspector)
+        XCTAssertFalse(state.isInspectorOpen)
+        // 收起时档位仍然记着（默认档是歌词），见下面那条测试
+        XCTAssertEqual(state.inspectorMode, .lyrics)
     }
 
     func testSidebarDestinationsHaveStableIdentityAndTitles() {
@@ -39,8 +41,10 @@ final class AppStateForwardingTests: XCTestCase {
             (.store, "store", "iTunes Store"),
             (.allPlaylists, "all-playlists", "所有播放列表"),
             (.favorites, "favorites", "心水歌曲"),
-            // 资料库里的每份播放列表也是一个侧栏落点，id 带列表 id、标题就是列表名
-            (.playlist(id: "local:abc", name: "开车听的"), "playlist:local:abc", "开车听的"),
+            // 资料库里的每份播放列表也是一个侧栏落点，id 带列表 id。
+            // **标题给空串**：列表名不进身份（见下一条测试），那一行的标题由侧栏
+            // 直接取 `LibraryPlaylist.name`，不经 `SidebarItem.title`。
+            (.playlist(id: "local:abc"), "playlist:local:abc", ""),
         ]
 
         for (item, id, title) in destinations {
@@ -49,18 +53,57 @@ final class AppStateForwardingTests: XCTestCase {
         }
     }
 
+    /// 播放列表改名**不换身份**。
+    ///
+    /// 从前 `SidebarItem.playlist` 的载荷带着列表名，合成的`Hashable` 把它算进了`==`
+    /// 与 `hash`，而它自己的`id` 不含——一个类型上两套身份。后果是改名之后
+    /// `appState.sidebarSelection` 还持旧名那一份，侧栏拿新 entries 去找匹配找不到，
+    /// 于是 `deselectAll`：内容页还开着这份列表，侧栏却一行都不亮
+    /// （design-ref/reactive-ui-review.md 故障 4）。另外三处「删的是不是当前这页」的
+    /// 判断（歌单页头、网格卡菜单、侧栏右键）也一起失效。
+    func testRenamingPlaylistKeepsSidebarIdentity() {
+        let before = SidebarItem.playlist(id: "local:abc")
+        let after = SidebarItem.playlist(id: "local:abc")
+        XCTAssertEqual(before, after)
+        XCTAssertEqual(before.hashValue, after.hashValue)
+        XCTAssertEqual(before.id, after.id)
+        // 不同的列表仍然是不同的身份
+        XCTAssertNotEqual(before, SidebarItem.playlist(id: "local:xyz"))
+        // 能当字典键用（`ContentNavigationController.rootPages` 就是这么存的）
+        var pages: [SidebarItem: String] = [before: "详情页"]
+        pages[after] = "改名之后还是同一页"
+        XCTAssertEqual(pages.count, 1)
+    }
+
+    /// 主窗那条面板列的两颗键：点当前档 = 收起，点另一档 = 换档并保持展开。
+    ///
+    /// **收起不忘档位**是这一版的核心：从前「开着没有」与「哪一档」挤在一个
+    /// `playerInspector: PlayerInspector?` 里，nil 既表示收起也抹掉了档位，
+    /// 于是拖收一次面板就忘了上次看的是哪一档；整窗播放器那两个布尔又与它完全不通，
+    /// 后者默认 true ⇒ 第一次开「播放中」永远是歌词抽屉
+    /// （design-ref/reactive-ui-review.md §2.1「多份真相」）。
     @MainActor
-    func testInspectorButtonsAreMutuallyExclusiveAndToggleClosed() {
+    func testInspectorKeepsModeWhenToggledClosed() {
         let state = makeState()
 
         state.toggleInspector(.lyrics)
-        XCTAssertEqual(state.playerInspector, .lyrics)
+        XCTAssertTrue(state.isInspectorOpen)
+        XCTAssertEqual(state.inspectorMode, .lyrics)
 
+        // 点另一档：换档，仍然开着
         state.toggleInspector(.queue)
-        XCTAssertEqual(state.playerInspector, .queue)
+        XCTAssertTrue(state.isInspectorOpen)
+        XCTAssertEqual(state.inspectorMode, .queue)
 
+        // 点当前档：收起，但档位留着
         state.toggleInspector(.queue)
-        XCTAssertNil(state.playerInspector)
+        XCTAssertFalse(state.isInspectorOpen)
+        XCTAssertEqual(state.inspectorMode, .queue, "收起不该把档位一起抹掉")
+
+        // 再点同一档：原样开回去
+        state.toggleInspector(.queue)
+        XCTAssertTrue(state.isInspectorOpen)
+        XCTAssertEqual(state.inspectorMode, .queue)
     }
 
     @MainActor

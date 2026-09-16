@@ -64,7 +64,10 @@ enum InfoPanelTimeKind: Equatable { case start, stop }
 enum InfoPanelFieldAction: Equatable { case resetPlayCount }
 
 /// 一件字段控件。frame 全是实测绝对坐标。
-enum InfoPanelControl {
+///
+/// `Equatable` 是给 `InfoPanelFormView.describes(_:)` 用的：异步回调回来时要先问
+/// 「现在这张表单描述的还是同一组行吗」，是就只回写值、不重建（见 `refreshValues`）。
+enum InfoPanelControl: Equatable {
     /// 单行文本框
     case text(NSRect, key: WritableKeyPath<InfoPanelDraft, String>)
     /// 数字输入框（年份 / bpm）
@@ -103,7 +106,7 @@ enum InfoPanelControl {
 }
 
 /// 表里的一行。
-struct InfoPanelField {
+struct InfoPanelField: Equatable {
     /// 标签文案。nil ＝ 这一行没有静态标签（详细信息页首行）。
     var label: String?
     /// [AX] 标签自己的 y（与控件 y 不一定相等，实测常差 3~4pt）
@@ -143,8 +146,10 @@ protocol InfoPanelFormHost: AnyObject {
     func perform(_ action: InfoPanelFieldAction)
     /// 动作办不办得到（办不到就把按钮置灰，而不是摆一颗按了没反应的键）
     func isEnabled(_ action: InfoPanelFieldAction) -> Bool
-    /// 首行字段选择器切了「标题 ↔ 作品名称」，整页要重建
-    func formNeedsRebuild()
+    /// 表单里的值可能已经与草稿对不上了，请宿主刷新一遍。
+    /// **不是「重建」**：宿主走的是「把值写回已有控件」那条（`InfoPanelFormView.refreshValues`），
+    /// 只有行数真变了才退回整块换 `documentView`。
+    func formValuesDidChange()
 }
 
 // MARK: - 构建器
@@ -165,6 +170,14 @@ final class InfoPanelFormView: NSView {
     private weak var host: InfoPanelFormHost?
     /// 反查用：控件 → 字段序号，`controlTextDidChange` 那条路要用
     private var textViewFields: [ObjectIdentifier: Int] = [:]
+    /// 已装上的控件，键沿用 tag 那套编码（`index * slotBase + slot`）：
+    /// slot 0 = 主控件，slot 1 = 副控件（数对的第二格、时间行的勾选框、
+    /// 首行那颗弹出菜单、播放次数右边的「重设」）。
+    ///
+    /// `refreshValues()` 按它定位要回写的那一件——**不靠 `viewWithTag`**：
+    /// 静态标签、数对中间那条「/」、只读格都不设 tag（默认 0），
+    /// 会跟 0 号字段的主控件撞上；而按钮那两件的 tag 本来就只带 index、不带 slot。
+    private var installed: [Int: NSView] = [:]
 
     override var isFlipped: Bool { true }
 
@@ -205,22 +218,22 @@ final class InfoPanelFormView: NSView {
         }
         switch field.control {
         case let .text(frame, key):
-            addSubview(makeTextField(frame, index: index, slot: 0,
-                                     value: host.map { $0.draft[keyPath: key] } ?? ""))
+            mount(makeTextField(frame, index: index, slot: 0,
+                                value: host.map { $0.draft[keyPath: key] } ?? ""), index)
         case let .number(frame, key):
-            addSubview(makeTextField(frame, index: index, slot: 0,
-                                     value: Self.string(host?.draft[keyPath: key] ?? nil)))
+            mount(makeTextField(frame, index: index, slot: 0,
+                                value: Self.string(host?.draft[keyPath: key] ?? nil)), index)
         case let .numberPair(first, second, _, slash, firstKey, secondKey):
-            addSubview(makeTextField(first, index: index, slot: 0,
-                                     value: Self.string(host?.draft[keyPath: firstKey] ?? nil)))
+            mount(makeTextField(first, index: index, slot: 0,
+                                value: Self.string(host?.draft[keyPath: firstKey] ?? nil)), index)
             // [AX] 「/」是一个独立的 AXStaticText，宽 5
             let divider = NSTextField(labelWithString: "/")
             divider.font = Self.bodyFont
             divider.textColor = .secondaryLabelColor
             divider.frame = place(slash)
             addSubview(divider)
-            addSubview(makeTextField(second, index: index, slot: 1,
-                                     value: Self.string(host?.draft[keyPath: secondKey] ?? nil)))
+            mount(makeTextField(second, index: index, slot: 1,
+                                value: Self.string(host?.draft[keyPath: secondKey] ?? nil)), index, 1)
         case let .checkBox(frame, title, key):
             let box = NSButton(checkboxWithTitle: title, target: self,
                                action: #selector(checkBoxChanged(_:)))
@@ -234,7 +247,7 @@ final class InfoPanelFormView: NSView {
             var box_frame = place(frame)
             box_frame.size.width = max(box_frame.width, box.intrinsicContentSize.width.rounded(.up))
             box.frame = box_frame
-            addSubview(box)
+            mount(box, index)
         case let .comboBox(frame, key):
             let combo = NSComboBox(frame: place(frame))
             combo.font = Self.bodyFont
@@ -251,9 +264,9 @@ final class InfoPanelFormView: NSView {
             combo.addItems(withObjectValues: host?.genreOptions() ?? [])
             combo.numberOfVisibleItems = 12
             combo.stringValue = host?.draft[keyPath: key] ?? ""
-            addSubview(combo)
+            mount(combo, index)
         case let .popUp(frame, kind):
-            addSubview(makePopUp(frame, kind: kind, index: index))
+            mount(makePopUp(frame, kind: kind, index: index), index)
         case let .timeToggle(check, _, fieldFrame, enabledKey, time):
             // [AX] 勾选框在左、16×16 无标题；时间框在右
             let box = NSButton(checkboxWithTitle: "", target: self,
@@ -261,7 +274,7 @@ final class InfoPanelFormView: NSView {
             box.tag = index * Self.slotBase + 1
             box.state = (host?.draft[keyPath: enabledKey] ?? false) ? .on : .off
             box.frame = place(check)
-            addSubview(box)
+            mount(box, index, 1)
             let value: String
             switch time {
             case .start: value = Self.timeString(host?.draft.info.startTime ?? 0)
@@ -269,7 +282,7 @@ final class InfoPanelFormView: NSView {
             }
             let text = makeTextField(fieldFrame, index: index, slot: 0, value: value)
             text.isEnabled = box.state == .on
-            addSubview(text)
+            mount(text, index)
         case let .slider(frame, key):
             let slider = NSSlider(frame: place(frame))
             slider.minValue = Double(M.volumeAdjustmentRange.lowerBound)
@@ -281,7 +294,7 @@ final class InfoPanelFormView: NSView {
             slider.tag = index * Self.slotBase
             slider.target = self
             slider.action = #selector(sliderChanged(_:))
-            addSubview(slider)
+            mount(slider, index)
         case let .rating(frame):
             // [AX] subrole `AXRatingIndicator`、0…5 整星 ⇒ 就是 NSLevelIndicator 的 rating 样式
             let stars = NSLevelIndicator(frame: place(frame))
@@ -294,11 +307,11 @@ final class InfoPanelFormView: NSView {
             stars.tag = index * Self.slotBase
             stars.target = self
             stars.action = #selector(ratingChanged(_:))
-            addSubview(stars)
+            mount(stars, index)
         case let .textArea(frame, key):
-            addSubview(makeTextArea(frame, index: index,
-                                    value: host.map { $0.draft[keyPath: key] } ?? "",
-                                    editable: true))
+            mount(makeTextArea(frame, index: index,
+                               value: host.map { $0.draft[keyPath: key] } ?? "",
+                               editable: true), index)
         case let .firstField(popUpFrame, fieldFrame):
             // [AX] ITID 65534，实测**只有两项**：标题 / 作品名称。
             let popUp = NSPopUpButton(frame: place(popUpFrame), pullsDown: false)
@@ -307,15 +320,15 @@ final class InfoPanelFormView: NSView {
             popUp.selectItem(at: (host?.draft.info.useWorkAndMovement ?? false) ? 1 : 0)
             popUp.target = self
             popUp.action = #selector(firstFieldSelectorChanged(_:))
-            addSubview(popUp)
+            mount(popUp, index, 1)
             let useWork = host?.draft.info.useWorkAndMovement ?? false
             let value = useWork ? (host?.draft.info.workName ?? "")
                                 : (host?.draft.info.title ?? "")
-            addSubview(makeTextField(fieldFrame, index: index, slot: 0, value: value))
+            mount(makeTextField(fieldFrame, index: index, slot: 0, value: value), index)
         case let .readOnly(frame, kind):
-            addSubview(makeReadOnly(frame, text: host?.readOnlyText(kind) ?? "", kind: kind))
+            mount(makeReadOnly(frame, text: host?.readOnlyText(kind) ?? "", kind: kind), index)
         case let .readOnlyWithButton(frame, kind, buttonFrame, title, action):
-            addSubview(makeReadOnly(frame, text: host?.readOnlyText(kind) ?? "", kind: kind))
+            mount(makeReadOnly(frame, text: host?.readOnlyText(kind) ?? "", kind: kind), index)
             let button = NSButton(title: title, target: self,
                                   action: #selector(fieldButtonClicked(_:)))
             button.bezelStyle = .rounded
@@ -323,13 +336,144 @@ final class InfoPanelFormView: NSView {
             button.frame = place(buttonFrame)
             button.isEnabled = host?.isEnabled(action) ?? false
             fieldActions[index] = action
-            addSubview(button)
+            mount(button, index, 1)
         case let .pathBreadcrumb(frame):
-            addSubview(makeBreadcrumb(frame))
+            mount(makeBreadcrumb(frame), index)
         }
     }
 
     private var fieldActions: [Int: InfoPanelFieldAction] = [:]
+
+    /// 装一件控件并记下位置。静态标签、数对中间那条「/」不记——它们没有值要回写。
+    private func mount(_ view: NSView, _ index: Int, _ slot: Int = 0) {
+        installed[index * Self.slotBase + slot] = view
+        addSubview(view)
+    }
+
+    private func mounted(_ index: Int, _ slot: Int = 0) -> NSView? {
+        installed[index * Self.slotBase + slot]
+    }
+
+    // MARK: 就地回写（§1 故障 8）
+
+    /// 这张表单描述的还是不是同一组行。
+    ///
+    /// 目前唯一会变的是文件页的行数（`hasLocalFile` 翻转 → 多出位速率 / 采样速率 / 声道
+    /// 三行，其后各行整体下移）。逐条比而不是只比个数：以后再加「媒体种类 × Tab」的
+    /// 变体表时，同样行数不同形状不会被悄悄当成「没变」。
+    func describes(_ other: [InfoPanelField]) -> Bool { fields == other }
+
+    /// 把宿主草稿里的值写回**已有控件**——一件视图都不建、不拆。
+    ///
+    /// 为什么要有这条路：面板上的异步回调（音源流派、文件属性探测）和「重设播放次数」
+    /// 这类动作回来时，原先一律整块换 `scrollView.documentView`。正在编辑的文本框连同
+    /// field editor 一起没了——输入焦点丢失、输入法正在组的字被吞、滚动位置顶回顶部
+    /// （design-ref/reactive-ui-review.md §1 故障 8）。切 Tab 仍然整块换：那是用户主动的，
+    /// 也是 spec §6-2 建议的做法。
+    ///
+    /// **正在编辑的那一件跳过。** 用户改过的值本来就在草稿里（文本框是边打边进草稿的，
+    /// 见 `controlTextDidChange`），回写只会写回同一个字符串；但输入法的组字还没进
+    /// `stringValue`，动一下 field editor 就把它吞了。这与`probeGenreIfNeeded` 那条
+    /// 「只回填、不覆盖」是同一个态度：用户手上的东西不动。
+    func refreshValues() {
+        guard let host else { return }
+        for (index, field) in fields.enumerated() {
+            switch field.control {
+            case let .text(_, key):
+                setText(index, 0, host.draft[keyPath: key])
+            case let .number(_, key):
+                setText(index, 0, Self.string(host.draft[keyPath: key]))
+            case let .numberPair(_, _, _, _, firstKey, secondKey):
+                setText(index, 0, Self.string(host.draft[keyPath: firstKey]))
+                setText(index, 1, Self.string(host.draft[keyPath: secondKey]))
+            case let .checkBox(_, _, key):
+                setState(index, 0, host.draft[keyPath: key])
+            case let .comboBox(_, key):
+                guard let combo = mounted(index) as? NSComboBox, !isEditing(combo) else { break }
+                let options = host.genreOptions()
+                if (combo.objectValues as? [String]) != options {
+                    combo.removeAllItems()
+                    combo.addItems(withObjectValues: options)
+                }
+                let value = host.draft[keyPath: key]
+                if combo.stringValue != value { combo.stringValue = value }
+            case let .popUp(_, kind):
+                guard let popUp = mounted(index) as? NSPopUpButton else { break }
+                switch kind {
+                case .mediaKind:
+                    let all = TrackInfo.MediaKind.allCases
+                    popUp.selectItem(at: all.firstIndex(of: host.draft.info.mediaKind) ?? 0)
+                case .equalizer:
+                    popUp.selectItem(withTitle: host.draft.info.equalizerPreset
+                                     ?? EqualizerPreset.names.first ?? "无")
+                }
+            case let .timeToggle(_, _, _, enabledKey, time):
+                let on = host.draft[keyPath: enabledKey]
+                setState(index, 1, on)
+                switch time {
+                case .start: setText(index, 0, Self.timeString(host.draft.info.startTime))
+                case .stop: setText(index, 0, host.draft.info.stopTime.map(Self.timeString) ?? "")
+                }
+                (mounted(index) as? NSTextField)?.isEnabled = on
+            case let .slider(_, key):
+                (mounted(index) as? NSSlider)?.doubleValue = Double(host.draft[keyPath: key])
+            case .rating:
+                (mounted(index) as? NSLevelIndicator)?.doubleValue = Double(host.draft.rating)
+            case let .textArea(_, key):
+                setTextArea(index, host.draft[keyPath: key])
+            case .firstField:
+                let useWork = host.draft.info.useWorkAndMovement
+                (mounted(index, 1) as? NSPopUpButton)?.selectItem(at: useWork ? 1 : 0)
+                setText(index, 0, useWork ? host.draft.info.workName : host.draft.info.title)
+            case let .readOnly(_, kind):
+                setReadOnly(index, kind, host.readOnlyText(kind))
+            case let .readOnlyWithButton(_, kind, _, _, action):
+                setReadOnly(index, kind, host.readOnlyText(kind))
+                (mounted(index, 1) as? NSButton)?.isEnabled = host.isEnabled(action)
+            case .pathBreadcrumb:
+                // 面包屑没有「值」可写：它是按路径段现算的一串标签。段没变就一件都不动，
+                // 变了也只重填这一个容器，整张表单照旧留着。
+                guard let container = mounted(index) else { break }
+                let names = host.pathComponents()
+                guard container.subviews.compactMap({ ($0 as? NSTextField)?.stringValue }) != names
+                else { break }
+                container.subviews.forEach { $0.removeFromSuperview() }
+                fillBreadcrumb(container, names)
+            }
+        }
+    }
+
+    /// 正在编辑的控件绝不能被写回覆盖（理由见 `refreshValues`）。
+    private func isEditing(_ view: NSView?) -> Bool {
+        if let control = view as? NSControl { return control.currentEditor() != nil }
+        if let scroll = view as? NSScrollView, let textView = scroll.documentView as? NSTextView {
+            return textView.window?.firstResponder === textView
+        }
+        return false
+    }
+
+    private func setText(_ index: Int, _ slot: Int, _ value: String) {
+        guard let field = mounted(index, slot) as? NSTextField,
+              !isEditing(field), field.stringValue != value else { return }
+        field.stringValue = value
+    }
+
+    private func setState(_ index: Int, _ slot: Int, _ on: Bool) {
+        guard let box = mounted(index, slot) as? NSButton else { return }
+        box.state = on ? .on : .off
+    }
+
+    private func setTextArea(_ index: Int, _ value: String) {
+        guard let scroll = mounted(index) as? NSScrollView,
+              let textView = scroll.documentView as? NSTextView,
+              !isEditing(scroll), textView.string != value else { return }
+        textView.string = value
+    }
+
+    /// 只读格：版权那一行是 `AXTextArea`（装的是滚动视图），其余是文本框。
+    private func setReadOnly(_ index: Int, _ kind: InfoPanelReadOnlyField, _ text: String) {
+        if kind == .copyright { setTextArea(index, text) } else { setText(index, 0, text) }
+    }
 
     // MARK: 各类控件
 
@@ -422,8 +566,14 @@ final class InfoPanelFormView: NSView {
     /// 每段宽度随文字变、高 28 —— 不是一行文本。
     private func makeBreadcrumb(_ frame: NSRect) -> NSView {
         let container = NSView(frame: place(frame))
+        fillBreadcrumb(container, host?.pathComponents() ?? [])
+        return container
+    }
+
+    /// 段是现算的，所以填段这一半单拎出来：文件属性探回来时只重填这一个容器
+    /// （见 `refreshValues`），不动整张表单。
+    private func fillBreadcrumb(_ container: NSView, _ components: [String]) {
         var x: CGFloat = 1   // [AX] 首段 110 相对 AXList 的 109，左内缩 1
-        let components = host?.pathComponents() ?? []
         for name in components {
             let segment = NSTextField(labelWithString: name)
             segment.font = Self.bodyFont
@@ -434,7 +584,6 @@ final class InfoPanelFormView: NSView {
             container.addSubview(segment)
             x += width
         }
-        return container
     }
 
     // MARK: 取值 / 写回
@@ -533,8 +682,9 @@ final class InfoPanelFormView: NSView {
         host?.draft.info.useWorkAndMovement = sender.indexOfSelectedItem == 1
         // [缺口] Music 切到「作品名称」后会展开乐章名 / 乐章编号那几行（spec §4.1 的
         // `0x49` / `0x3c` / `0x3d`+`0x3e`），但**实测没采到那个形态**（样本是流行乐）。
-        // 这里只把首行改绑到 `workName`，不编一套没量过的行。
-        host?.formNeedsRebuild()
+        // 这里只把首行改绑到 `workName`，不编一套没量过的行——**行数不变**，
+        // 所以这一下只要把首行那个文本框的值换掉，整张表单原样留着。
+        host?.formValuesDidChange()
     }
 
     private func decode(_ tag: Int) -> (index: Int, slot: Int) {

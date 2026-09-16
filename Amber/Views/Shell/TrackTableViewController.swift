@@ -95,7 +95,9 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
     /// （[实测] playqueue spec §2.1 `continuePlayingSource` / §2.4 的可点击判定）。
     /// 子类给页面自己的名字与落点；返回 nil 就不摆那一行。
     var queueSource: PlayerController.QueueSource? { nil }
-    func removeTrack(at index: Int) {}
+    /// 「从播放列表中删除」。收的是**曲目**不是下标：菜单对整份选中集生效，
+    /// 而下标一边删一边往前滑，逐个删会删错位（子类按 id 一次定位一批）。
+    func removeTracks(_ tracks: [Track]) {}
     /// 页脚与它距末行的空白；nil = 不摆页脚。
     func makeFooterView() -> NSView? { nil }
     var footerTopSpacing: CGFloat { 0 }
@@ -217,6 +219,7 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
 
     /// 子类拿到数据后调这一句：换头部、换曲目，重建行结构。
     func apply(header: (any TrackTableHeaderView)?, tracks: [Track]) {
+        let selection = selectedTrackIDs()
         if let header, header !== headerView {
             headerView?.removeFromSuperview()
             headerView = header
@@ -229,24 +232,26 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         }
         self.tracks = tracks
         state = .content
-        rebuildRows()
+        rebuildRows(restoringSelection: selection)
     }
 
     func apply(state: PageState) {
+        let selection = selectedTrackIDs()
         self.state = state
         if case .content = state {} else {
             tracks = []
             headerView?.removeFromSuperview()
             headerView = nil
         }
-        rebuildRows()
+        rebuildRows(restoringSelection: selection)
     }
 
     /// 曲目变了但头部那块还是同一件（本地播放列表增删歌、心水歌曲变化）。
     func apply(tracks: [Track]) {
+        let selection = selectedTrackIDs()
         self.tracks = tracks
         state = .content
-        rebuildRows()
+        rebuildRows(restoringSelection: selection)
     }
 
     /// 空态与曲目表 / 页脚是**互斥**的三块，一条布尔管全部。
@@ -261,7 +266,12 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
     ///
     /// Amber 这里用「摆不摆行」代替 KVO 显隐，语义等价：`tracks.isEmpty` 为真只摆 header + empty，
     /// 列头 / 曲目 / 页脚一个都不摆；为假则反过来不摆空态。不需要为此改成绑定。
-    private func rebuildRows() {
+    ///
+    /// 选区在这里**按身份存取**：`rows` 里的`.track(Int)` 带的是下标，
+    /// 换一个排序键、在搜索框里敲一个字之后同一个下标已经是另一首歌，
+    /// `reloadData()` 之后照下标恢复等于把高亮指到别的歌上（⌘I、回车播放、右键菜单随之全错）。
+    /// 与歌曲表 `SongsTableController.selectedTrackIDs()` /`restore(selection:)` 同一条。
+    private func rebuildRows(restoringSelection selection: Set<String>) {
         var rows: [RowKind] = []
         if headerView != nil { rows.append(.header) }
         switch state {
@@ -280,6 +290,25 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         self.rows = rows
         updateOverlay()
         tableView.reloadData()
+        restore(selection: selection)
+    }
+
+    /// 当前选中的是哪几首（按 id）。重建行结构**之前**取。
+    private func selectedTrackIDs() -> Set<String> {
+        Set(selectedTracks().map(\.id))
+    }
+
+    /// 按 id 把选区找回来。找不到的（被筛掉了、被删了）自然就不选了。
+    private func restore(selection ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        var found = IndexSet()
+        for (row, kind) in rows.enumerated() {
+            guard case .track(let index) = kind, tracks.indices.contains(index),
+                  ids.contains(tracks[index].id) else { continue }
+            found.insert(row)
+        }
+        guard !found.isEmpty else { return }
+        tableView.selectRowIndexes(found, byExtendingSelection: false)
     }
 
     /// 页脚文案变了（曲目增删）时子类调它重造。
@@ -474,7 +503,13 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
             isChart: isChart,
             playContext: TrackPlayContext(tracks: tracks, index: index),
             removeTitle: trackRemoveTitle,
-            remove: trackRemoveTitle == nil ? nil : { [weak self] in self?.removeTrack(at: index) },
+            // 契约里这一对只剩「行自己兜底造菜单」那条路在用（表格不认菜单时），
+            // 所以它天然只管这一行。页面上真正弹出来的那份由 `contextMenu(forRow:)` 造，
+            // 作用集是整份选中集。
+            remove: trackRemoveTitle == nil ? nil : { [weak self] in
+                guard let self, tracks.indices.contains(index) else { return }
+                removeTracks([tracks[index]])
+            },
             showsDivider: index < tracks.count - 1)
     }
 
@@ -489,8 +524,13 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         appState.player.play(tracks, startAt: index, source: queueSource)
     }
 
-    /// 右键落在哪一行就用哪一行；落在已选中的行上时整份选中集一起进菜单
-    /// （与 Music 一致：右键先预选）。
+    /// 行的右键 / ••• 菜单**只在这一处造**。
+    ///
+    /// 「作用集是哪几首」与「右键先预选」都是页面级事实——只有页面同时看得见
+    /// 选中集与行↔曲目的对应关系。从前这件事有两份实现：行视图那份自己按
+    /// 行号差推下标算整份选中集，页面这份却在多选时把「从播放列表中删除」整条摘掉，
+    /// 于是选 5 首右键，播放/下载/删库作用于 5 首、唯独删除只删被点的那一首。
+    /// 现在行视图只把事件转上来（`TrackRowMenuProviding`），这里一处说了算。
     private func contextMenu(forRow row: Int) -> NSMenu? {
         guard row >= 0, row < rows.count, case .track(let index) = rows[row] else { return nil }
         let selected = tableView.selectedRowIndexes
@@ -501,16 +541,17 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
                 return nil
             }
         } else {
+            // 与 Music 一致：右键落在选区之外先把这一行预选上，菜单作用的就是眼前高亮的那些。
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             indexes = [index]
         }
-        let selectedTracks = indexes.map { tracks[$0] }
+        let picked = indexes.compactMap { tracks.indices.contains($0) ? tracks[$0] : nil }
+        guard !picked.isEmpty else { return nil }
         return TrackRowRegistry.menu(
-            for: selectedTracks,
+            for: picked,
             playContext: TrackPlayContext(tracks: tracks, index: index),
-            removeTitle: indexes.count == 1 ? trackRemoveTitle : nil,
-            remove: indexes.count == 1 && trackRemoveTitle != nil
-                ? { [weak self] in self?.removeTrack(at: index) } : nil,
+            removeTitle: trackRemoveTitle,
+            remove: trackRemoveTitle == nil ? nil : { [weak self] in self?.removeTracks(picked) },
             appState: appState)
     }
 
@@ -564,16 +605,17 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         }
     }
 
-    /// 可见曲目行重配一遍；头部那几件（喜爱星、入库键、星级）也跟着刷。
+    /// 在场的曲目行重配一遍；头部那几件（喜爱星、入库键、星级）也跟着刷。
+    ///
+    /// 走 `enumerateAvailableRowViews` 而不是按`visibleRect` 算行号：可视区之外表格还留着
+    /// 一圈已装配好的行，滚回来时**不会**再问一次`rowViewForRow`，漏掉它们就会看到
+    /// 旧状态滚进视野（专辑页入库换形态那一路尤其明显——那一整列星级就是这么补上的）。
     func refreshVisibleRows() {
         headerView?.refreshLibraryState()
-        let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.length > 0 else { return }
-        for row in visible.location..<(visible.location + visible.length) {
-            guard row >= 0, row < rows.count, case .track(let index) = rows[row] else { continue }
-            guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false)
-                    as? TrackRowViewConfigurable else { continue }
-            rowView.configure(configuration(at: index), appState: appState)
+        tableView.enumerateAvailableRowViews { rowView, row in
+            guard row >= 0, row < rows.count, case .track(let index) = rows[row],
+                  let configurable = rowView as? TrackRowViewConfigurable else { return }
+            configurable.configure(configuration(at: index), appState: appState)
         }
     }
 }
@@ -589,13 +631,16 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
 /// `AmberApplication` 的类型注释）。落到这里的空格只剩一档：**没有正在播的曲目**时
 /// 那条菜单项是禁用的，`performKeyEquivalent` 返回 false，事件才回到响应链——
 /// 这时按回车的语义办，播选中的这一首。
-final class TrackTableView: NSTableView, TrackRowContentInsetProviding {
+final class TrackTableView: NSTableView, TrackRowContentInsetProviding, TrackRowMenuProviding {
 
     /// 页面左右留白，交给批 A 的行（`TrackRowRegistry.makeRow(in:)` 会来读）。
     var trackRowContentInset: CGFloat = 0
 
     var onActivate: ((Int) -> Void)?
     var onContextMenu: ((Int) -> NSMenu?)?
+
+    /// 行视图（右键与 •••）把事件转上来，菜单由页面一处造。
+    func trackRowMenu(forRow row: Int) -> NSMenu? { onContextMenu?(row) }
 
     override func keyDown(with event: NSEvent) {
         let characters = event.charactersIgnoringModifiers ?? ""
@@ -608,11 +653,13 @@ final class TrackTableView: NSTableView, TrackRowContentInsetProviding {
         super.keyDown(with: event)
     }
 
+    /// 右键落在行视图之外（列头、页脚、表底空白）时才走这条；落在曲目行上时
+    /// 命中测试先到行视图，由它经 `trackRowMenu(forRow:)` 转回来（见`TrackRowView.menu(for:)`）。
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         guard row >= 0 else { return super.menu(for: event) }
-        return onContextMenu?(row)
+        return trackRowMenu(forRow: row)
     }
 }
 

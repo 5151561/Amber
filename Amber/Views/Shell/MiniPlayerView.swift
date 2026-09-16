@@ -516,9 +516,12 @@ final class MiniPlayerView: NSView {
             .sink { [weak self] time in self?.updateTime(time) }
             .store(in: &cancellables)
 
-        appState.$playerInspector.removeDuplicates()
+        // 高亮 = 「主窗面板开着」且「开的正是这一档」。两位分开之后这两颗键才与
+        // 迷你窗抽屉的档位说同一件事（reactive-ui-review §2.1「多份真相」）。
+        appState.$inspectorMode.removeDuplicates().map { _ in () }
+            .merge(with: appState.$isInspectorOpen.removeDuplicates().map { _ in () })
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateInspectorButtons() }
+            .sink { [weak self] in self?.updateInspectorButtons() }
             .store(in: &cancellables)
 
         library.$favoriteTracks
@@ -598,8 +601,9 @@ final class MiniPlayerView: NSView {
     }
 
     private func updateInspectorButtons() {
-        apply(lyricsButton, active: appState.playerInspector == .lyrics)
-        apply(queueButton, active: appState.playerInspector == .queue)
+        let open = appState.isInspectorOpen
+        apply(lyricsButton, active: open && appState.inspectorMode == .lyrics)
+        apply(queueButton, active: open && appState.inspectorMode == .queue)
     }
 
     /// 上一首/下一首没有激活态，只随「有没有歌」换档。

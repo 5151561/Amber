@@ -69,12 +69,33 @@ struct TrackSectionsPlatter: View {
         }
     }
 
+    /// 这块盘上的行。身份取 `PlayQueueModel` 那一套（`"曲目 id:第几次出现"`，下标故意不进，
+    /// 理由见 `PlayQueueItem` 的注释）——同一份队列在侧栏面板与这里必须是同一套身份。
+    ///
+    /// 从前这里按数组下标认行（`id: \.offset` + `.id(index)`）：队列中间插一首或去掉一首，
+    /// 插入点之后**每一行**的 id 都对应到了另一首歌，行里`ArtworkView` 的 `.task(id:)`
+    /// 因此整批重跑（其中有一句 `image = nil`），没命中内存缓存的当场清空——
+    /// 整块盘从插入点往下刷一片渐变占位块再逐个淡回来。按身份走之后是一行滑进来、其余不动。
+    private var items: [PlayQueueItem] {
+        PlayQueueModel.items(queue: player.queue, origins: player.queueOrigins,
+                             currentIndex: player.currentIndex)
+    }
+
+    /// 当前曲在这份清单里的身份。滚动定位按它走，不再按下标
+    /// （下标滚到的那一行在插删之后已经是另一首歌了）。
+    private var currentItemID: PlayQueueItem.ID? {
+        guard let index = player.currentIndex else { return nil }
+        return items.first { $0.queueIndex == index }?.id
+    }
+
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(player.queue.enumerated()), id: \.offset) { index, track in
-                        row(index: index, track: track).id(index)
+                    // `PlayQueueItem` 是 `Identifiable`，`ForEach` 直接吃它的 `id`，
+                    // 也就是 `proxy.scrollTo` 认的那个 id，不必再挂一层 `.id(…)`。
+                    ForEach(items) { item in
+                        row(item)
                     }
                 }
                 .padding(.vertical, M.platterInnerSpacing)
@@ -90,20 +111,21 @@ struct TrackSectionsPlatter: View {
                     ],
                     startPoint: .top, endPoint: .bottom))
             .onAppear {
-                guard let current = player.currentIndex else { return }
-                proxy.scrollTo(current, anchor: .center)
+                guard let id = currentItemID else { return }
+                proxy.scrollTo(id, anchor: .center)
             }
-            .onChange(of: player.currentIndex) { _, index in
-                guard let index else { return }
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(index, anchor: .center) }
+            .onChange(of: player.currentIndex) { _, _ in
+                guard let id = currentItemID else { return }
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
 
-    private func row(index: Int, track: Track) -> some View {
-        let isCurrent = player.currentIndex == index
+    private func row(_ item: PlayQueueItem) -> some View {
+        let track = item.track
+        let isCurrent = player.currentIndex == item.queueIndex
         return Button {
-            player.playTrack(at: index)
+            player.playTrack(at: item.queueIndex)
         } label: {
             HStack(spacing: M.platterRowSpacing) {
                 ArtworkView(url: track.artworkURL, tint: Color.tint(for: track.kind),

@@ -13,7 +13,20 @@ final class AppState: ObservableObject {
     // `toggleSidebar(_:)`（AppKit 的标准动作，连折叠动画和 autosave 一起给）。
     // 再在这里放一份 @Published 只会变成两处真值，早晚对不上。
     @Published var selectedProvider: ProviderKind
-    @Published var playerInspector: PlayerInspector?
+    /// 面板（歌词 / 待播清单）显示**哪一档**。
+    ///
+    /// **全局一份、永不为 nil**：收起期间也记着上次那一档，下次在任何一个宿主里
+    /// 把面板打开都是这一档。「开着没有」是另一件事，每个宿主各持一份
+    /// （主窗是下面那一位、迷你窗是 `MiniPlayerContentView.currState`、
+    /// 整窗播放器是 `NowPlayingViewModel.isInspectorOpen`）——从前这两件挤在一个
+    /// `PlayerInspector?` 里（nil = 收起），于是「收起」顺手把档位也抹掉，
+    /// 而各宿主为了不互相掀开面板只好单向同步，长期对不上
+    /// （design-ref/reactive-ui-review.md §2.1「多份真相」）。
+    @Published var inspectorMode: PlayerInspector = .lyrics
+    /// **主窗**那条面板列开着没有。真正的收合是 `NSSplitViewItem.isCollapsed`，
+    /// 这一位是它的模型侧对应物：胶囊上那两颗键的高亮、⌃⌘-那类命令都读它，
+    /// 用户直接拖收分隔线时由 `MainSplitViewController` 回灌（AppKit 不为拖动通知模型）。
+    @Published var isInspectorOpen = false
     @Published var showingNowPlaying = false
     @Published var showingQQLogin = false
     @Published var toastMessage: String?
@@ -703,9 +716,17 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 歌词与待播清单共用 Music.app 右侧 Inspector；再次点击当前按钮即关闭。
+    /// 主窗面板（歌词 / 待播清单）那两颗键：点当前这一档 = 收起，点另一档 = 换档并保持展开。
+    ///
+    /// 收起时**只改「开着没有」，不动档位**——`inspectorMode` 要记着上次那一档，
+    /// 下次不管在哪个宿主打开都还是它。
     func toggleInspector(_ inspector: PlayerInspector) {
-        playerInspector = playerInspector == inspector ? nil : inspector
+        if isInspectorOpen, inspectorMode == inspector {
+            isInspectorOpen = false
+        } else {
+            inspectorMode = inspector
+            isInspectorOpen = true
+        }
     }
 }
 
@@ -724,7 +745,7 @@ enum SidebarItem: Hashable, Identifiable {
     case allPlaylists
     case favorites
     /// 资料库里的一份播放列表（侧栏「播放列表」组逐条列出，Music 同形）
-    case playlist(id: String, name: String)
+    case playlist(id: String)
 
     var id: String {
         switch self {
@@ -739,7 +760,7 @@ enum SidebarItem: Hashable, Identifiable {
         case .store: return "store"
         case .allPlaylists: return "all-playlists"
         case .favorites: return "favorites"
-        case .playlist(let id, _): return "playlist:\(id)"
+        case .playlist(let id): return "playlist:\(id)"
         }
     }
 
@@ -756,7 +777,10 @@ enum SidebarItem: Hashable, Identifiable {
         case .store: return "iTunes Store"
         case .allPlaylists: return "所有播放列表"
         case .favorites: return "心水歌曲"
-        case .playlist(_, let name): return name
+        // **`.playlist` 给空串**：列表名不是身份的一部分（改名不该换身份，
+        // 见 design-ref/reactive-ui-review.md 故障 4）。侧栏那一行的标题由
+        // `SidebarEntry.playlist` 直接取 `LibraryPlaylist.name`，不经这里。
+        case .playlist: return ""
         }
     }
 }
@@ -782,90 +806,4 @@ enum PlayerInspector: String, Hashable, Identifiable {
 enum PlaylistNamePrompt: Equatable {
     case rename(playlistID: String)
     case create(tracks: [Track])
-}
-
-/// 本地拼出来的曲目列表。音源没有对应歌单可落的段（「音乐回忆」）用它当落点。
-struct LocalTrackList: Hashable {
-    let id: String
-    let title: String
-    let tracks: [Track]
-}
-
-enum Route: Hashable {
-    case playlist(Playlist)
-    /// 资料库里的播放列表（本地自建 / 加进来的音源歌单 / 账号同步来的）
-    case libraryPlaylist(id: String)
-    case album(Album)
-    case artist(Artist)
-    case localTracks(LocalTrackList)
-    /// 「最近播放 ›」的网格二级页。**无载荷**：那一页自己去读资料库的容器台账。
-    ///
-    /// 早先是靠 `.localTracks` 的 id/标题字符串匹配路由的，用户新建一份叫「最近播放」的
-    /// 本地列表就会被劫持；顺带也让导航栈里不用再塞一份最多 200 条 Track 的载荷
-    /// （每次 `Hashable` 比较都要整份走一遍）。
-    case recentlyPlayed
-    /// 「探索更多」的落点：音源分类分组的浏览页
-    case tagGroup(CatalogTagGroup)
-    /// 目录页分段「查看全部」的专辑网格二级页
-    case albumGrid(title: String, albums: [Album])
-    /// 目录页分段「查看全部」的歌单网格二级页
-    case playlistGrid(title: String, playlists: [Playlist])
-    /// 目录页分段「查看全部」的曲目列表二级页
-    case trackGrid(title: String, tracks: [Track])
-
-    /// 曲目 →「所属专辑」的落点。
-    ///
-    /// 网易云播客单集的 albumId 是电台节目本身（`ne:djradio:<id>`，见 parseDJProgram），
-    /// 拿去打专辑接口必回 400；那个 id 归歌单详情管（NeteaseAPI.playlistDetail 认这个前缀），
-    /// 所以这里改落到电台节目单。曲目没有专辑就返回 nil，调用方据此不挂链接。
-    static func album(of track: Track) -> Route? {
-        guard let albumId = track.albumId, !albumId.isEmpty else { return nil }
-        if albumId.contains(":djradio:") {
-            return .playlist(Playlist(id: albumId, kind: track.kind,
-                                      name: track.albumName.isEmpty ? track.artistName : track.albumName,
-                                      coverURL: track.artworkURL,
-                                      creatorName: track.artistName))
-        }
-        return .album(Album(id: albumId, kind: track.kind, name: track.albumName,
-                            artistName: track.artistName, artistId: track.artistId,
-                            artworkURL: track.artworkURL, publishDate: nil,
-                            trackCount: 0, description: nil))
-    }
-}
-
-/// 「这一首该收进哪个格子」——最近播放台账的映射规则，见 `RecentContainer`。
-///
-/// 住在这里而不是 Models 层：它要认 `Route`，而`RecentContainer` 不该知道导航，
-/// `Services`（`LibraryStore` 所在的那层）全层也没有一个文件引用过`Route`，
-/// 别在这里破例。写成 static 纯函数、不碰 `AppState` 实例，才好单测。
-extension RecentContainer {
-    /// `source` 是起播那份列表的来源（队列面板「来自《…》」用的就是它）。
-    /// 自动连播续上的歌不属于起播那份列表，调用处传 nil，于是走回落。
-    static func resolve(track: Track, source: PlayerController.QueueSource?) -> RecentContainer {
-        guard let route = source?.route else { return fallback(track: track) }
-        switch route {
-        case .playlist(let playlist):
-            return .playlist(playlist)
-        case .libraryPlaylist(let id):
-            return .libraryPlaylist(id: id)
-        case .localTracks(let list) where list.id == "favorites":
-            return .favorites
-        // 资料库派生艺人（`library-artist:` 前缀）没有艺人页可去，收成艺人卡点了没处落，回落。
-        case .artist(let artist) where !artist.isLibraryDerived:
-            return .artist(id: artist.id, kind: artist.kind, name: artist.name,
-                           avatarURL: artist.avatarURL)
-        default:
-            return fallback(track: track)
-        }
-    }
-
-    /// 回落：按这首歌自己的归属收。**复用 `Route.album(of:)`**——「网易播客单集的
-    /// `albumId` 其实是电台节目、得落到歌单」那条特判就此只剩那一处，不再各抄一份。
-    private static func fallback(track: Track) -> RecentContainer {
-        switch Route.album(of: track) {
-        case .album(let album)?: return .album(album)
-        case .playlist(let playlist)?: return .playlist(playlist)
-        default: return .track(track)
-        }
-    }
 }

@@ -58,6 +58,10 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
     /// 去抖与竞态的世代号。语义与 SwiftUI 版的 `searchGeneration` 完全一致：
     /// 每次词条变动 +1，去抖醒来时对不上就丢弃。
     private var searchGeneration = 0
+    /// 上一次在线检索**五路全败**时的提示；非 nil = 页面停在 `.error` 上。
+    /// 从前五路一律 `try?`，「真的没有」与「一条都没打通」混成同一个空结果，
+    /// 断网时页面显示「无结果」，而那一页没有「重试」——用户唯一的出路是改词或切范围。
+    private var failureMessage: String?
     /// 资料库派生艺人的真实头像缓存（艺人名 → 头像地址）。
     private var resolvedArtistAvatars: [String: String] = [:]
     private var cancellables = Set<AnyCancellable>()
@@ -185,12 +189,18 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
             committedTerm = ""
             committedScope = nil
             results = SearchResults()
+            failureMessage = nil
             publish()
             return
         }
         // 同词去重（sameSearchString: §4.1.4）：同词同范围才跳过；
         // 换范围（segmentedControlChanged → 这里）即使同词也要按新范围重新分派。
-        guard term != committedTerm || scope != committedScope else { return }
+        //
+        // **上一次是整批失败时这道闸要放行**：断网那一下停在 `.error` 上，
+        // 用户对着同一个词按回车必须能重发——否则回车毫无反应，而「重试」按钮
+        // 只在 `.error` 态出现、页面又还停在那儿，两条路互相指望着对方。
+        guard term != committedTerm || scope != committedScope || failureMessage != nil
+        else { return }
         committedTerm = term
         committedScope = scope
         recordRecentSearch(term)
@@ -219,6 +229,7 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
         committedTerm = ""
         committedScope = nil
         results = SearchResults()
+        failureMessage = nil
         publish()
         page.focusToken += 1
     }
@@ -265,6 +276,8 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
         results = SearchResults(tracks: matchedTracks, albums: matchedAlbums, artists: artists)
         committedTerm = term
         committedScope = .library
+        // 本地过滤不会失败：上一次在线检索留下的错误态到这里就算翻篇。
+        failureMessage = nil
         publish()
         Task { await resolveLibraryArtistAvatars(artists) }
     }
@@ -305,6 +318,21 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
         guard scope == .online,
               providerKind == appState.selectedProvider,
               term == committedTerm else { return }
+        // `try?` 的 nil 与 `.some([])` 是两件事：前者是这一路**抛了**（断网、限流、
+        // 接口挂了），后者是音源明说「没有」。
+        //
+        // **五路全抛才算这一页失败。** 只挂一两路时照旧把拿到的那几段摆出来——
+        // 音源经常有某一路长期 400（网易的 MV、QQ 的歌单），为那一路把整页换成
+        // 错误页反而更糟；而断网时五路必定一起抛，那正是要出「重试」的时刻。
+        let failures = [fetched.0 == nil, fetched.1 == nil, fetched.2 == nil,
+                        fetched.3 == nil, fetched.4 == nil]
+        if failures.allSatisfy({ $0 }) {
+            // 结果原样留着（下一次成功时整份替换）：这一页现在由 `failureMessage` 说了算。
+            failureMessage = "无法连接到「\(providerKind.shortName)」，请检查网络后重试。"
+            publish()
+            return
+        }
+        failureMessage = nil
         results = SearchResults(tracks: fetched.0 ?? [], albums: fetched.1 ?? [],
                                 artists: fetched.2 ?? [], playlists: fetched.3 ?? [],
                                 mvs: fetched.4 ?? [])
@@ -342,6 +370,12 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
     /// 每次 `results` / `committedTerm` 变动之后都要走这一句：状态机的输出只有这两条。
     private func publish() {
         showsLanding = committedTerm.isEmpty
+        if let failureMessage, !committedTerm.isEmpty {
+            // 目录页引擎的错误页自带「重试」，点它走 `reload()`——那条不经过上面的
+            // 同词去重闸，重跑的就是当前这个词。
+            state = .error(failureMessage)
+            return
+        }
         state = .content(title: title, sections: committedTerm.isEmpty ? [] : sections())
     }
 

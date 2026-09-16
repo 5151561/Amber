@@ -54,7 +54,7 @@ struct LibraryPlaylistMenu: View {
             Button("刷新账号歌单") { Task { await appState.syncAccountPlaylists(manual: true) } }
         }
         Button("从资料库中删除") {
-            if appState.sidebarSelection == .playlist(id: playlist.id, name: playlist.name) {
+            if appState.sidebarSelection == .playlist(id: playlist.id) {
                 appState.sidebarSelection = .allPlaylists
             }
             library.deletePlaylist(id: playlist.id)

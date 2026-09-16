@@ -755,7 +755,7 @@ final class ArtistReleaseCardView: CatalogCardContentView {
             total += row.height + (index > 0 ? M.releaseLineSpacing : 0)
         }
         var top = (bounds.height + total) / 2
-        for (index, row) in rows.enumerated() {
+        for row in rows {
             top -= row.height
             row.field.frame = NSRect(x: fieldX, y: top, width: fieldWidth, height: row.height)
             top -= M.releaseLineSpacing

@@ -328,14 +328,23 @@ class CatalogPageViewController: ContentPageController {
     // MARK: - 工具栏：音乐源切换胶囊
 
     /// 音乐源切换器放标题栏右端（与搜索页的范围分段控件同一形制），不再占页面标题行。
+    ///
+    /// **「只剩一个源就不摆」这条判据在标识符这一层。** 从前它恒为
+    /// `[.flexibleSpace, .amberProvider]`、摆不摆由`makePageToolbarItem` 返回 nil 决定；
+    /// 工具栏那边按标识符比对看不出任何变化，于是设置里开关音乐源只能靠
+    /// 「清空缓存、整条强拆重造」才跟得上（见 `MainWindowController.refreshPageToolbar`）。
+    /// 判据挪到这里之后，标识符自己就变了，工具栏走普通那条路即可。
     override var pageToolbarItemIdentifiers: [NSToolbarItem.Identifier] {
-        followsSelectedProvider ? [.flexibleSpace, .amberProvider] : []
+        guard followsSelectedProvider,
+              appState.providerSettings.orderedEnabled.count > 1 else { return [] }
+        return [.flexibleSpace, .amberProvider]
     }
 
     override func makePageToolbarItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
         guard followsSelectedProvider, identifier == .amberProvider else { return nil }
         let kinds = appState.providerSettings.orderedEnabled
-        // 只剩一个源就没得切，整件不摆（旧版 `ProviderPicker` 同）。
+        // 只剩一个源就没得切，整件不摆（旧版 `ProviderPicker` 同）。上面那条标识符
+        // 已经把这一件摘掉了，这里留着当兜底：`itemForItemIdentifier` 允许返回 nil。
         guard kinds.count > 1 else { return nil }
         let item = NSToolbarItem(itemIdentifier: identifier)
         let control = NSSegmentedControl(labels: kinds.map(\.shortName),
@@ -357,6 +366,19 @@ class CatalogPageViewController: ContentPageController {
         appState.selectedProvider = kinds[sender.selectedSegment]
     }
 
+    /// 设置里开关了音乐源，而这一件**还该摆着**（剩的源仍多于一个）：就地改段，不换件。
+    /// 剩一个源那一档由标识符负责（那一件整件撤掉），这里什么都不做。
+    private func refreshProviderControl() {
+        guard let control = providerControl else { return }
+        let kinds = appState.providerSettings.orderedEnabled
+        guard kinds.count > 1 else { return }
+        control.segmentCount = kinds.count
+        for (index, kind) in kinds.enumerated() {
+            control.setLabel(kind.shortName, forSegment: index)
+        }
+        control.selectedSegment = kinds.firstIndex(of: appState.selectedProvider) ?? 0
+    }
+
     private weak var providerControl: NSSegmentedControl?
 
     override func viewDidLoad() {
@@ -364,13 +386,18 @@ class CatalogPageViewController: ContentPageController {
         makeDataSource()
 
         if followsSelectedProvider {
-            // 设置里开关了音乐源 → 胶囊要出现/消失/换段，标识符没变，得强制重造工具栏。
+            // 设置里开关了音乐源 → 胶囊的**段**要跟着换。这里只改在场那颗控件自己
+            //（`providerControl` 就在手上，改段不换件）；那一件**摆不摆**由
+            // `pageToolbarItemIdentifiers` 反映，工具栏那边按标识符比对自己会重建。
+            //
+            // 从前这条挂的是 `refreshPageToolbar()`（清缓存、整条强拆重造），而三个目录
+            // 根页都是缓存着的、永远活着，也不判自己是不是栈顶：一次开关就把整条工具栏
+            // 拆光重建三遍；栈顶要是歌曲页、用户正在标题栏搜索框里打字，
+            // 搜索框会被拔出来重插、焦点当场丢。那条订阅已经收到窗口去了（一份、判栈顶）。
             appState.providerSettings.$enabled
                 .dropFirst()
                 .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in
-                    (self?.view.window?.windowController as? MainWindowController)?.refreshPageToolbar()
-                }
+                .sink { [weak self] _ in self?.refreshProviderControl() }
                 .store(in: &cancellables)
 
             // 别处改了音乐源（设置窗、另一页）→ 胶囊的选中段跟着走。
@@ -410,6 +437,32 @@ class CatalogPageViewController: ContentPageController {
                 }
                 self.model.refreshLocalSections()
             }
+            .store(in: &cancellables)
+
+        // 心水星：点一下改的是资料库，而卡上那颗星是**建卡那一刻**的快照
+        // （`CatalogItem.isFavorite`，见 `CatalogFeedModel.recentItems`）。不订这一条，
+        // 点了星库里真改了、星却原地不动，再点一次又加回去——这颗键看着完全失灵；
+        // 反向（曲目右键菜单里心水）货架上的卡也不长星。
+        // 台账没动，所以不重灌快照：只把受影响的那几件**就地重配**（见 `reconfigure(_:)`）。
+        appState.library.$favoriteTracks
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshFavoriteCards() }
+            .store(in: &cancellables)
+
+        // 入库态 / 下载态 / 收藏这位艺人：艺人页那张「最新發行」卡的 ＋ 与 hero 上那枚 ★
+        // 同样是建卡那一刻的快照，而它们各自只在自己动手之后刷新。不订这一条，
+        // 在下面「專輯」货架的卡上右键入库之后，「最新發行」卡仍显示 ＋；再点它会
+        // **再拉一次 `albumDetail`、再 `addAlbumToLibrary` 一次、再弹一次 toast**。
+        //
+        // 只挑 `.release` / `.artistHero` 两种卡型：别的卡一笔都不画入库/下载态，
+        // 跟着 `downloads.$states` 走的话主页一屏几十张专辑卡会随下载进度每百分点重配一轮。
+        Publishers.MergeMany(
+            appState.library.$libraryAlbums.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            appState.library.$favoriteArtistIDs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            appState.downloads.$states.dropFirst().map { _ in () }.eraseToAnyPublisher())
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.refreshLibraryStateCards() }
             .store(in: &cancellables)
 
         model.statePublisher
@@ -670,7 +723,7 @@ class CatalogPageViewController: ContentPageController {
             }
             for item in renderItems(of: section) {
                 let id = entry(item.id)
-                itemsByID[id] = item
+                itemsByID[id] = withLiveFavorite(item)
                 ids.append(id)
             }
             for track in renderTracks(of: section) {
@@ -721,6 +774,69 @@ class CatalogPageViewController: ContentPageController {
                 + "\(renderItems(of: section).count)|\(renderTracks(of: section).count)")
         }
         return parts.joined(separator: "\n")
+    }
+
+    // MARK: - 就地重配（身份没变、内容变了）
+
+    /// 把这几件的卡**复用原来那张**再装一遍数据。
+    ///
+    /// **AppKit 的 `NSDiffableDataSourceSnapshot` 没有`reconfigureItems(_:)`**——那一条是
+    /// UIKit 独有的（macOS 26 目标下编译探针核过：`reloadItems` 在、`reconfigureItems` 不在），
+    /// 所以这件事只能手写。两者的差别正是这里要的：
+    ///
+    /// - `reloadItems`：把 cell **销毁重建**（走 delete + insert），封面重新异步取、
+    ///   悬浮态与滚动中的动画一起丢，界面上就是闪一下；
+    /// - reconfigure：**复用已有 cell，只把数据重新装一遍**，视图一个都不拆。
+    ///
+    /// 做法是按身份问数据源要 indexPath、再问 collection view 要那一件。
+    /// `item(at:)` 只对**已经造出来**的件给非 nil，没在屏的件不用管——`itemsByID` 已经是
+    /// 新值，它下次出队时装的就是新的。
+    private func reconfigure(_ ids: [CatalogEntryID]) {
+        guard !ids.isEmpty, dataSource != nil else { return }
+        for id in ids {
+            guard let indexPath = dataSource.indexPath(for: id),
+                  let model = itemsByID[id],
+                  let cell = collectionView.item(at: indexPath) as? CatalogCardConfigurable
+            else { continue }
+            cell.configure(with: model, appState: appState)
+        }
+    }
+
+    /// 心水星是**资料库的当前事实**，不是建卡那一刻的快照。模型交上来的那一位可能已经
+    /// 过期：`CatalogFeedModel.refreshLocalSections` 在卡片 id 没变时故意不替换整段
+    ///（免得白重灌一次快照），于是段里留着的还是上一次建卡时的值。灌快照时统一对齐一次，
+    /// 之后由下面那条 `refreshFavoriteCards` 增量跟着走。
+    private func withLiveFavorite(_ item: CatalogItem) -> CatalogItem {
+        guard let track = item.track else { return item }
+        var item = item
+        item.isFavorite = appState.library.isFavorite(track)
+        return item
+    }
+
+    /// 资料库的心水集变了：把带曲目上下文的卡里那一位对齐，变了的就地重配。
+    private func refreshFavoriteCards() {
+        var changed: [CatalogEntryID] = []
+        for (id, item) in itemsByID {
+            guard let track = item.track,
+                  item.isFavorite != appState.library.isFavorite(track) else { continue }
+            changed.append(id)
+        }
+        guard !changed.isEmpty else { return }
+        for id in changed { itemsByID[id]?.isFavorite.toggle() }
+        reconfigure(changed)
+    }
+
+    /// 入库 / 下载 / 收藏艺人这三样变了：只有这两种卡会画它们。
+    /// 状态由卡自己按 `DownloadStore.action(inLibrary:tracks:)` 现算（`apply` 里那一句），
+    /// 所以这里不用改 `itemsByID`，把卡重配一遍就够了。
+    private func refreshLibraryStateCards() {
+        let ids = itemsByID.compactMap { entry -> CatalogEntryID? in
+            switch entry.value.kind {
+            case .release, .artistHero: return entry.key
+            default: return nil
+            }
+        }
+        reconfigure(ids)
     }
 
     private enum OverlayKind { case none, loading, error, empty }

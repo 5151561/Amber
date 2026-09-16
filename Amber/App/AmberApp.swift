@@ -535,8 +535,14 @@ extension AppDelegate {
         // 右侧面板（歌词 / 待播清单）：胶囊上那两颗键没有菜单命令，实机验收点不到，
         // 所以给一个与 `-songs` / `-nowplaying` 同族的直达口子，配`-dumpviews`
         // 就能量到「面板开着时工具栏各件的 x」（跟踪分隔件是否生效看这个）。
-        if arguments.contains("-lyrics") { appState.playerInspector = .lyrics }
-        if arguments.contains("-queue") { appState.playerInspector = .queue }
+        if arguments.contains("-lyrics") {
+            appState.inspectorMode = .lyrics
+            appState.isInspectorOpen = true
+        }
+        if arguments.contains("-queue") {
+            appState.inspectorMode = .queue
+            appState.isInspectorOpen = true
+        }
         // `-panelafter lyrics|queue <秒>`：**开着面板再切档**。上面两条是开窗前就把值设好，
         // 走的是「面板第一次渲染」那条路；胶囊上点一下走的是「已经开着再换一档」那条，
         // 两条会分家（面板里那片 SwiftUI 跟不跟得上状态，只有后者验得出来）。
@@ -544,7 +550,10 @@ extension AppDelegate {
             let mode = PlayerInspector(rawValue: arguments[index + 1])
             let delay = Double(arguments[index + 2]) ?? 3
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                appState.playerInspector = mode
+                // 档位与「开着没有」现在是两件事：认得出的档就换档并保证开着，
+                // 认不出（比如 `-panelafter none 3`）就只收起，档位留着。
+                if let mode { appState.inspectorMode = mode }
+                appState.isInspectorOpen = mode != nil
             }
         }
         // `-providerafter <源> <秒>`：**页面已经铺好之后再换音乐源**。标题栏那枚切换胶囊

@@ -80,6 +80,17 @@ final class MainWindowController: NSWindowController {
         window.toolbar = toolbar
 
         navigation?.onStackChanged = { [weak self] in self?.rebuildToolbar() }
+        // 设置里开关了音乐源：目录页右端那颗切换胶囊要出现 / 消失。
+        // **订阅只此一份，且只认栈顶那一页**——`makeIdentifiers()` 问的就是栈顶。
+        // 从前这一条挂在每个**缓存住的目录根页**上（主页/新发现/广播三页都缓存着、
+        // 永远活着），也不判自己是不是栈顶：一次开关就把整条工具栏拆光重建三遍；
+        // 此刻栈顶要是歌曲页、用户正在标题栏搜索框里打字，
+        // 搜索框会被拔出来重插、焦点当场丢。
+        appState.providerSettings.$enabled
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshPageToolbar() }
+            .store(in: &cancellables)
         // 「播放中」展开时页面项全部让位（Music 那时工具栏是空的），红绿灯照旧。
         // 用推来的值，不回读属性：`@Published` 在 willSet 发布，回读拿到的是上一次的值，
         // 开合一次之后工具栏的显隐就整个反过来。
@@ -140,11 +151,14 @@ final class MainWindowController: NSWindowController {
         return ids
     }
 
-    /// 页面项的**内容**变了（比如设置里多开了一个音乐源、切换胶囊该出现了）但标识符
-    /// 没变：强制拆了重造一遍。
+    /// 页面项的构成可能变了（设置里开关了音乐源），但导航栈没动：重算一次标识符。
+    ///
+    /// 曾经这条是「清空缓存、强拆重造整条」，因为那颗切换胶囊摆不摆由
+    /// `makePageToolbarItem` 返回 nil 决定、标识符恒定，这边看不出任何变化。
+    /// 判据已经挪进了 `CatalogPageViewController.pageToolbarItemIdentifiers`，
+    /// 标识符自己会变，走普通那条路就够了——**强拆是有代价的**：
+    /// 正在打字的搜索框会被整件拔出来重插，焦点当场丢。
     func refreshPageToolbar() {
-        currentIdentifiers = []
-        currentTopPage = nil
         rebuildToolbar()
     }
 
@@ -152,12 +166,19 @@ final class MainWindowController: NSWindowController {
         guard let toolbar = window?.toolbar else { return }
         let ids = makeIdentifiers()
         let topPage = navigation?.top
-        guard ids != currentIdentifiers || topPage !== currentTopPage else {
+        let pageChanged = topPage !== currentTopPage
+        currentTopPage = topPage
+        // **标识符没变就不动 `toolbar.items`。** 从前这道闸还带一条
+        // `|| topPage !== currentTopPage`，于是「标识符一模一样、只是换了一页」
+        // （歌单 A → 歌单 B、资料库各页互切）也整条拆重建。换页时该换的只是
+        // **归页面所有**的那几件，走下面的就地重换；窗口自己那几件（返回 / 共享 /
+        // 更多 / 跟踪分隔件）本来就是每次用时才问栈顶那一页，一动都不用动。
+        guard ids != currentIdentifiers else {
+            if pageChanged { replacePageOwnedItems(in: toolbar) }
             applyToolbarVisibility()
             return
         }
         currentIdentifiers = ids
-        currentTopPage = topPage
         while !toolbar.items.isEmpty {
             toolbar.removeItem(at: toolbar.items.count - 1)
         }
@@ -176,6 +197,42 @@ final class MainWindowController: NSWindowController {
             toolbar.insertItem(withItemIdentifier: id, at: toolbar.items.count)
         }
         applyToolbarVisibility()
+    }
+
+    /// 形态没变、只是换了一页：把**归页面所有**的那几件（标题、筛选 ☰、页内搜索框、
+    /// 范围分段控件、音乐源胶囊）就地换成新那一页的，别整条拆重建。
+    ///
+    /// 只能「换件」不能「搬值」：这几件的视图是页面自己持有的实例
+    /// （`SearchFieldBinder.field`、各页自己的 `NSMenu`），而且`makePageToolbarItem`
+    /// 带副作用（`LibraryToolbarPageController` 会把造出来的标题件记在`titleItem` 上，
+    /// 好让「最近添加」的标题跟着滚动改字）——造一件只为抄值再丢掉，那条订阅就会写进
+    /// 一件没装到工具栏上的孤儿。所以这里走 remove + insert，让委托重新问新那一页要件。
+    ///
+    /// **跟踪分隔件绝不能碰**：它一拆一装就是一次跟踪约束重建，前面各件的 x 会抖
+    /// （同 `applyToolbarVisibility` 里那条）。
+    ///
+    /// 下标每轮按标识符重找，不缓存：`makePageToolbarItem` 允许返回 nil，
+    /// 那一件插不回去，后面的下标就会整体前移（越界会让 `NSToolbar` 抛断言，
+    /// 后果见上面那段）。
+    private func replacePageOwnedItems(in toolbar: NSToolbar) {
+        let pageIDs = toolbar.items.map(\.itemIdentifier).filter(Self.isPageOwned)
+        for id in pageIDs {
+            guard let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == id })
+            else { continue }
+            toolbar.removeItem(at: index)
+            toolbar.insertItem(withItemIdentifier: id, at: index)
+        }
+    }
+
+    /// 这一件是不是由栈顶那一页造的（＝ `itemForItemIdentifier` 落到 `default:` 那一支）。
+    private static func isPageOwned(_ identifier: NSToolbarItem.Identifier) -> Bool {
+        switch identifier {
+        case .amberBack, .amberShare, .amberMore, .amberPanelSeparator,
+             .flexibleSpace, .space:
+            return false
+        default:
+            return true
+        }
     }
 
     /// 「播放中」是整窗覆盖，而工具栏由 AppKit 画在它之上，页面项会穿帮。

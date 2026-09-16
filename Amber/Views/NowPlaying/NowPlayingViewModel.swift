@@ -202,7 +202,11 @@ struct NowPlayingMetadata {
     var item: Track?
     var controls: PlayerControlsState
     var duration: TimeInterval
-    var isFavorite: Bool
+    /// 心水那一位**只有元数据那一行用得上**，所以给了默认值：时间行、徽标、封面
+    /// 那几处也拿这个值对象，但它们不该为了一个用不到的字段把整份 `LibraryStore`
+    /// 拉进自己的依赖集（reactive-ui-review §2.1）。填它的是 `MetadataLabels`，
+    /// 那是全屏播放器里唯一观察资料库的一小块。
+    var isFavorite = false
     var isLossless: Bool
 
     /// [实测] §4.2 `primaryTitle`：远控别的设备且设备名非空 → 标题位显示设备名；
@@ -296,10 +300,30 @@ final class NowPlayingViewModel: ObservableObject {
 
     /// 歌词桥。[实测] §8.1 `Lyrics`：
     /// 面板自己持 viewModel + options + footerButton，播放器只经它开合。
+    ///
+    /// **这一层不转发它的 `objectWillChange`**：要听歌词内容的子视图自己
+    /// `@ObservedObject` 它（`FullWindowHostedContentView`、底栏那颗翻译键）。
+    /// 从前 `LyricsOptions` → `NowPlayingLyrics` → 这里三级人肉转发，
+    /// 末端是整棵 `NowPlayingView` 重算（reactive-ui-review §2.1）。
     let lyrics = NowPlayingLyrics()
 
-    /// [实测] §2.2 `queueClicked` 与`keyPathsForValuesAffectingIsQueueOpen`。
-    @Published private(set) var isQueueOpen = false
+    /// **整窗播放器这一扇**的「抽屉开着没有」。[实测] §2.2 `lyricsClicked` / `queueClicked`。
+    ///
+    /// 「开着没有」一扇窗一份（主窗是 `AppState.isInspectorOpen`、迷你窗是
+    /// `MiniPlayerContentView.currState`），「开的是哪一档」全局一份
+    /// （`AppState.inspectorMode`）。从前这里是`isQueueOpen` + `LyricsOptions.isVisible`
+    /// 两个各自为政的布尔、且与全局那一位完全不通，于是后者默认 true ⇒
+    /// 不管用户上次选的是待播清单还是把面板关了，**第一次开「播放中」永远是歌词抽屉**。
+    @Published private(set) var isInspectorOpen = false
+
+    /// 面板档位的**只读窄镜像**，真值在 `AppState.inspectorMode`。
+    ///
+    /// 为什么要镜一份：SwiftUI 的 `@EnvironmentObject` 只认整份`objectWillChange`，
+    /// 让整窗播放器直接观察 `AppState` 等于把 toast、导航意图那几位也收进依赖集
+    /// ——弹一句「已加入待播清单」就重算整屏。窄化只能发生在某一层，放在这里最省；
+    /// 它是 `removeDuplicates` 的单向跟随，写入一律回全局那一份（见`inspectorClicked`），
+    /// 所以不会与真值分叉。
+    @Published private(set) var inspectorMode: PlayerInspector = .lyrics
 
     /// [实测] §3.2 `showTotalInsteadOfRemaining`（`doTimeRemainingClicked:` 翻转它）。
     /// AppKit 那块盘只有「剩余 / 总时长」两态；SwiftUI 侧的
@@ -325,31 +349,44 @@ final class NowPlayingViewModel: ObservableObject {
 
     private var rolloverTask: Task<Void, Never>?
     private var rolloverDeadline = Date.distantPast
-    private var lyricsObserver: AnyCancellable?
+    private weak var appState: AppState?
+    private var modeObserver: AnyCancellable?
     private var isPresented = false
 
-    init() {
-        // 歌词桥是嵌套的 ObservableObject，变化不会自己往上冒泡。
-        // 不转发的话「歌词开关」翻了，宿主这层不重画——底栏那颗键与右半区都停在旧样子。
-        lyricsObserver = lyrics.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
+    /// 接上全局那份档位。视图 `onAppear` 调一次，重复调只认第一次。
+    func bind(to appState: AppState) {
+        guard modeObserver == nil else { return }
+        self.appState = appState
+        inspectorMode = appState.inspectorMode
+        // `@Published` 发的就是**新值**，直接用，不必 `receive(on:)` 再读回属性。
+        modeObserver = appState.$inspectorMode
+            .removeDuplicates()
+            .sink { [weak self] mode in self?.inspectorMode = mode }
     }
 
-    var isLyricsOpen: Bool { lyrics.options.isVisible }
+    var isLyricsOpen: Bool { isInspectorOpen && inspectorMode == .lyrics }
+    var isQueueOpen: Bool { isInspectorOpen && inspectorMode == .queue }
 
     // MARK: 抽屉开合
 
-    /// [实测] §2.2 `lyricsClicked`。菜单项`validate_doShowHideLyrics:`
-    /// 恒返回 1（§1.1）——**这个开关永远可用**，没歌词时由面板自己兜底显示空态。
-    func lyricsClicked() {
-        lyrics.options.isVisible.toggle()
+    /// 底栏那两颗键：点当前这一档 = 收起，点另一档 = 换档并保持展开
+    /// （与主窗 `AppState.toggleInspector` 同一条语义，只是「开着没有」记在本宿主上）。
+    ///
+    /// [实测] §2.2 `lyricsClicked` / `queueClicked`；菜单项`validate_doShowHide*`
+    /// 恒返回 1（§1.1）——**这两个开关永远可用**，没内容时由面板自己兜底显示空态。
+    func inspectorClicked(_ inspector: PlayerInspector) {
+        if isInspectorOpen, inspectorMode == inspector {
+            isInspectorOpen = false          // 收起不动档位：全局那一份要记着上次这一档
+        } else {
+            appState?.inspectorMode = inspector
+            inspectorMode = inspector        // 没 bind 过也要能用（预览 / 测试）
+            isInspectorOpen = true
+        }
     }
 
-    /// [实测] §2.2 `queueClicked`。同样永远可用。
-    func queueClicked() {
-        isQueueOpen.toggle()
-    }
+    func lyricsClicked() { inspectorClicked(.lyrics) }
+
+    func queueClicked() { inspectorClicked(.queue) }
 
     // MARK: rollover
 

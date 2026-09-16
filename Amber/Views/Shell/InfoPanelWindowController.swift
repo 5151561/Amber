@@ -272,6 +272,28 @@ final class InfoPanelWindowController: NSWindowController, NSWindowDelegate, Inf
         updateFooterSlot()
     }
 
+    /// 异步回调 / 动作回来之后刷新内容区。**不换 `documentView`。**
+    ///
+    /// 描述符驱动的四个 Tab 一律走「把值写回已有控件」那条
+    /// （`InfoPanelFormView.refreshValues`）：正在编辑的文本框、它的 field editor、
+    /// 输入法正在组的字、滚动位置全部原样留着（§1 故障 8）。上面那条整块换
+    /// `documentView` 的路只留给用户主动切 Tab / 切曲目。
+    ///
+    /// 只有**行数真的变了**才退回重建：文件页的 `hasLocalFile` 一翻转就多出
+    /// 位速率 / 采样速率 / 声道三行、其后各行整体下移，旧控件与新表对不上了。
+    /// 今天这一条走不到（`facts().fileURL` 是同步就知道的，探测不改它），
+    /// 留着是为了让「什么时候才允许重建」这件事写在代码里。
+    private func refreshFormValues() {
+        guard tab.isDescriptorDriven else { return }
+        let fields = InfoPanelTabs.fields(for: tab, hasLocalFile: facts().fileURL != nil)
+        guard let form = scrollView.documentView as? InfoPanelFormView,
+              form.describes(fields) else {
+            reloadContent()
+            return
+        }
+        form.refreshValues()
+    }
+
     // MARK: 插图页（sample §4.2，交互部分是 [推]）
 
     /// [AX] 内容区只有一个 `AXScrollArea`（AXTitle「专辑插图」）套一个同名
@@ -472,8 +494,8 @@ final class InfoPanelWindowController: NSWindowController, NSWindowDelegate, Inf
                   self.track.id == current.id, self.draft.info.genre.isEmpty else { return }
             self.draft.info.genre = genre
             self.book.keep(self.draft, for: current.id)
-            // 只有正看着「详细信息」页时才值得重建——那一格就在这一页上。
-            if self.tab == .details { self.reloadContent() }
+            // 「类型」那一格就在详细信息页上，别的页没什么可刷。
+            if self.tab == .details { self.refreshFormValues() }
         }
     }
 
@@ -683,7 +705,7 @@ final class InfoPanelWindowController: NSWindowController, NSWindowDelegate, Inf
             if let bytes { self.cloudBytes[current.id] = bytes }
             // 面板这会儿可能已经翻到别的曲目 / 别的页了，那就只留着缓存，不动界面
             guard self.track.id == current.id, self.tab == .file else { return }
-            self.reloadContent()
+            self.refreshFormValues()
         }
     }
 
@@ -711,7 +733,7 @@ final class InfoPanelWindowController: NSWindowController, NSWindowDelegate, Inf
             //（getinfo spec §7 缺口 #5），但它与其它字段的差别是明摆着的：
             // 别的字段是「改一个值」，它是一条动作，摆在字段行外面。
             appState.library.resetPlayCount(for: track.id)
-            reloadContent()
+            refreshFormValues()
         }
     }
 
@@ -722,7 +744,7 @@ final class InfoPanelWindowController: NSWindowController, NSWindowDelegate, Inf
         }
     }
 
-    func formNeedsRebuild() { reloadContent() }
+    func formValuesDidChange() { refreshFormValues() }
 }
 
 // MARK: - 歌词文本域回写

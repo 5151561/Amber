@@ -32,6 +32,11 @@ class DetailHeaderView: NSView {
     /// 简介展开 / 收起后调一次，页面据此 `noteHeightOfRows(withIndexesChanged:)`。
     var onHeightChanged: (() -> Void)?
 
+    /// 可展开简介那一块（两种头部共用一份存放，建法各自给）。
+    private(set) var descriptionView: ExpandableTextView?
+    /// 现在这件装的是哪段文字。一样就不重建，见 `syncDescription(_:make:)`。
+    private var descriptionText: String?
+
     /// 头部按「从上往下」排：与 `MusicMetrics.Detail` 里那串 [AX] 数（窗口坐标、原点左上）
     /// 直接对得上，不用每处再翻一次 y 轴。
     override var isFlipped: Bool { true }
@@ -49,6 +54,25 @@ class DetailHeaderView: NSView {
 
     /// 资料库状态（喜爱 / 入库 / 评分）变了，重画依赖它的那几件。
     func refreshLibraryState() {}
+
+    /// 简介文字**没变就留着原来那件**。
+    ///
+    /// `ExpandableTextView` 是有内部状态的（展开与否、按当前宽度量出来的行数），
+    /// 整块换新等于全丢。而这条路走得很勤：往**别的**播放列表加一首歌，
+    /// `LibraryStore.$playlists` 一响，资料库歌单页就重走一次`apply(_:)`
+    /// （`PlaylistDetailViewController.libraryPlaylistsChanged()`），
+    /// 正展开着的简介会当场收回去。
+    func syncDescription(_ text: String?, make: (String) -> ExpandableTextView) {
+        let wanted = (text?.isEmpty == false) ? text : nil
+        guard wanted != descriptionText else { return }
+        descriptionText = wanted
+        descriptionView?.removeFromSuperview()
+        descriptionView = nil
+        guard let wanted else { return }
+        let view = make(wanted)
+        addSubview(view)
+        descriptionView = view
+    }
 }
 
 // MARK: - 操作键
@@ -109,6 +133,17 @@ final class DetailActionButton: NSButton {
             self.attributedTitle = attributedTitle
         }
         needsDisplay = true
+    }
+}
+
+/// 盖在字形上、只收点击不画东西的透明键（专辑页头的艺人名那一枚）。
+///
+/// 右键落在它身上时要弹**页头那份**菜单：`NSView.menu(for:)` 默认只报自己那一份，
+/// 不给就是「名字上右键不弹菜单」。从前是把页头缓存的那份 `NSMenu` 挂过来，
+/// 页头改成现造之后没有可挂的实例了，改成把这一问转给宿主。
+final class DetailHeaderTransparentButton: NSButton {
+    override func menu(for event: NSEvent) -> NSMenu? {
+        superview?.menu(for: event) ?? super.menu(for: event)
     }
 }
 
@@ -367,7 +402,6 @@ final class PlaylistHeaderView: DetailHeaderView {
                                                     color: .secondaryLabelColor, lines: 1)
     private let calloutLabel = CatalogCardKit.label(size: M.playlistMetaSize,
                                                     color: .secondaryLabelColor, lines: 1)
-    private var descriptionView: ExpandableTextView?
     /// 头部就这三枚键，**没有独立的分享键**。
     ///
     /// [AX] `design-ref/ui-spec/pages/playlist-detail.json` 实测：随机播放 38×38 @543.5、
@@ -449,10 +483,8 @@ final class PlaylistHeaderView: DetailHeaderView {
         calloutLabel.stringValue = content.callout ?? ""
         calloutLabel.isHidden = (content.callout ?? "").isEmpty
 
-        descriptionView?.removeFromSuperview()
-        descriptionView = nil
-        if let description = content.description, !description.isEmpty {
-            let view = ExpandableTextView(text: description,
+        syncDescription(content.description) { text in
+            let view = ExpandableTextView(text: text,
                                           fontSize: M.playlistMetaSize,
                                           actionFontSize: M.playlistMetaSize,
                                           lineSpacing: Self.descriptionLineSpacing,
@@ -463,8 +495,7 @@ final class PlaylistHeaderView: DetailHeaderView {
             }
             // 与专辑页同：「更多」不在原地展开，弹那张介绍卡。
             view.onMore = { [weak self] in self?.presentAbout() }
-            addSubview(view)
-            descriptionView = view
+            return view
         }
 
         // 播放 / 随机：判据是「有没有条目」，与 `playButtonState` 一致。
@@ -481,6 +512,21 @@ final class PlaylistHeaderView: DetailHeaderView {
         }
         refreshLibraryState()
         needsLayout = true
+    }
+
+    /// 排序 / 页内筛选换了：页头的动作与图标认的是**在屏那一批**，不是建 `Content` 那一刻的全量。
+    ///
+    /// `content.tracks` 是 ••• 里「插播 / 加入待播 / 下载 / 移除下载 / 勾选」的作用集，
+    /// 也是第三枚键 ✓/↓ 图标的判据。只换这一份名单与使能，**一个像素都不动**——
+    /// 版式只看标题/策展人/说明/简介，那几样这一路都没变。
+    func updateTracks(_ tracks: [Track]) {
+        guard content.tracks != tracks else { return }
+        content.tracks = tracks
+        content.isEmpty = tracks.isEmpty
+        for button in [shuffleButton, playButton] {
+            button.isEnabled = !content.isEmpty
+        }
+        refreshLibraryState()
     }
 
     /// 旧版 `ExpandableText(lineSpacing: 3, lineLimit: 2)`
@@ -629,7 +675,7 @@ final class PlaylistHeaderView: DetailHeaderView {
             if appState.library.isPlaylistInLibrary(playlist) {
                 actions.deleteFromLibrary = { [weak self] in
                     guard let self else { return }
-                    deletePlaylistFromLibrary(id: playlist.id, name: playlist.name)
+                    deletePlaylistFromLibrary(id: playlist.id)
                     refreshLibraryState()
                 }
             } else {
@@ -651,7 +697,7 @@ final class PlaylistHeaderView: DetailHeaderView {
                 actions.syncAccount = { Task { await appState.syncAccountPlaylists(manual: true) } }
             }
             actions.deleteFromLibrary = { [weak self] in
-                self?.deletePlaylistFromLibrary(id: playlist.id, name: playlist.name)
+                self?.deletePlaylistFromLibrary(id: playlist.id)
             }
         case .download:
             // 心水歌曲：改不了名、删不掉、也没有音源网页版那一页可分享，所以这一路
@@ -663,8 +709,8 @@ final class PlaylistHeaderView: DetailHeaderView {
     }
 
     /// 删之前若侧栏正停在这一项，先切回「所有播放列表」，否则删完侧栏指着一份不存在的列表。
-    private func deletePlaylistFromLibrary(id: String, name: String) {
-        if appState.sidebarSelection == .playlist(id: id, name: name) {
+    private func deletePlaylistFromLibrary(id: String) {
+        if appState.sidebarSelection == .playlist(id: id) {
             appState.sidebarSelection = .allPlaylists
         }
         appState.library.deletePlaylist(id: id)
@@ -894,14 +940,18 @@ final class AlbumHeaderView: DetailHeaderView {
     /// （`hitTest` 返回 nil），而表格只把点击转给 `NSControl`（见`SongsRichCellView` 那条），
     /// 所以摆一枚 `isTransparent` 的按钮盖在**字形**上——不画任何东西、只收这一下，
     /// 标签那边一个像素不动。
-    private let artistButton = NSButton()
+    private let artistButton = DetailHeaderTransparentButton()
     private let metadataLabel = CatalogCardKit.label(size: M.albumMetaSize,
                                                      color: .secondaryLabelColor, lines: 1)
     private let losslessDot = CatalogCardKit.label(size: M.albumMetaSize,
                                                    color: .secondaryLabelColor, lines: 1)
+    /// 无损徽标与星级两枚 SwiftUI 叶子的宿主：**建一次就留着**，在场与否只切 `isHidden`，
+    /// 星级变化只换 `rootView`（理由见`refreshLibraryState()`）。
     private var losslessHost: NSView?
-    private var ratingHost: NSView?
-    private var descriptionView: ExpandableTextView?
+    private var ratingHost: NSHostingView<AnyView>?
+    /// 这两件在不在场（在场＝进信息行的行高与排布）。宿主视图本身一直在。
+    private var showsLossless = false
+    private var showsRating = false
     private let shuffleButton: DetailActionButton
     private let playButton: DetailActionButton
     private let trailingButton: DetailActionButton
@@ -972,9 +1022,22 @@ final class AlbumHeaderView: DetailHeaderView {
         trailingButton.target = self
         trailingButton.action = #selector(trailingTapped)
 
-        // 头部右键菜单（旧版 `.contextMenu`）由`refreshLibraryState()` 按当前状态重建，
-        // 项序走 `CollectionActions`。
+        // 头部右键菜单不存成 `menu` 属性：每次弹之前由`menu(for:)` 现造（与歌单页头同解）。
         apply(content)
+    }
+
+    /// 页头的右键菜单：**每次弹之前现造**。
+    ///
+    /// 从前它是 `refreshLibraryState()` 里`menu = collectionActions(…).makeMenu()` 造好存着的，
+    /// 而那个方法由 `player.$isPlaying` / `$currentIndex` / `$queue` 那组订阅驱动
+    /// （`TrackTableViewController.subscribeRowState`）——每按一次播放/暂停、每跳一首歌
+    /// 就重造一整棵 `NSMenu`（里头「添加到播放列表 ▸」还要枚举所有播放列表）。
+    /// 与歌单页头 `PlaylistHeaderView.menu(for:)` 同一条：[实测] §6.0 无 sender 的
+    /// `actionMenu` 恒 nil，菜单只由`actionMenuFromSender:` 现场构建，没有缓存那一份。
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let library = appState.library
+        return collectionActions(isFavorite: library.isFavoriteAlbum(content.album),
+                                 isInLibrary: library.isAlbumInLibrary(content.album)).makeMenu()
     }
 
     // MARK: 内容
@@ -991,10 +1054,8 @@ final class AlbumHeaderView: DetailHeaderView {
         artistButton.setAccessibilityLabel(content.artist)
         artistButton.toolTip = content.artist
 
-        descriptionView?.removeFromSuperview()
-        descriptionView = nil
-        if let description = content.description, !description.isEmpty {
-            let view = ExpandableTextView(text: description,
+        syncDescription(content.description) { text in
+            let view = ExpandableTextView(text: text,
                                           fontSize: M.albumDescriptionSize,
                                           actionFontSize: M.albumMoreSize,
                                           lineSpacing: M.albumDescriptionLineSpacing,
@@ -1005,19 +1066,20 @@ final class AlbumHeaderView: DetailHeaderView {
             }
             // 专辑的简介不在原地展开：「更多」弹那张介绍卡（与艺人页 ⓘ 同一张）。
             view.onMore = { [weak self] in self?.presentAbout() }
-            addSubview(view)
-            descriptionView = view
+            return view
         }
 
-        losslessHost?.removeFromSuperview()
-        losslessHost = nil
-        if content.hasLossless {
+        // 无损徽标建一次就留着，不在场只是收起来——它是叶子里最便宜的一件，但整块换新
+        // 同样要重建一棵 SwiftUI 树，而 `apply(_:)` 这条路每次加歌/改名都会走。
+        showsLossless = content.hasLossless
+        if showsLossless, losslessHost == nil {
             let host = appState.hostingView { LosslessBadge() }
             host.translatesAutoresizingMaskIntoConstraints = true
             addSubview(host)
             losslessHost = host
         }
-        losslessDot.isHidden = !content.hasLossless
+        losslessHost?.isHidden = !showsLossless
+        losslessDot.isHidden = !showsLossless
 
         for button in [shuffleButton, playButton, trailingButton] {
             button.isEnabled = !content.isEmpty
@@ -1026,10 +1088,20 @@ final class AlbumHeaderView: DetailHeaderView {
         needsLayout = true
     }
 
+    /// 这个方法由 `player.$isPlaying` / `$currentIndex` / `$queue` 那组订阅驱动
+    /// （`TrackTableViewController.subscribeRowState`）：**每按一次播放/暂停、
+    /// 每跳一首歌都要跑一遍**。所以它只准改属性，一件视图都不许拆。
+    ///
+    /// 从前这里每次都 `ratingHost?.removeFromSuperview()` + 新建一个`NSHostingView`，
+    /// 还顺手重造一整棵 `NSMenu`。点星评分那一下正好触发同一条链
+    /// （`setRating` → `library.$ratings` → 重刷），鼠标抬起时落在已被销毁的视图上——
+    /// 连着改两次评分、或按住拖过五颗星，第二下经常没反应。
     override func refreshLibraryState() {
         let library = appState.library
         let isFavorite = library.isFavoriteAlbum(content.album)
         let isInLibrary = library.isAlbumInLibrary(content.album)
+        // 只有这两样会改版式（标题列的可用宽、信息行的高），别的都只是换图换字。
+        let layoutChanged = favoriteStar.isHidden != !isFavorite || showsRating != isInLibrary
         favoriteStar.isHidden = !isFavorite
 
         // 这一枚的形态走 `DownloadStore.action(inLibrary:tracks:)`——与资料库艺人页的
@@ -1041,26 +1113,31 @@ final class AlbumHeaderView: DetailHeaderView {
         trailingButton.toolTip = albumAction.label
 
         // 目录形态的信息行没有星级（Music 实测：只有「曲风 • 年份」+ Lossless）。
-        ratingHost?.removeFromSuperview()
-        ratingHost = nil
+        // 宿主建一次就留着，评分变化只把新的根视图**推**进去——换 `rootView` 是 AppKit
+        // 主动送一次状态，视图本身不动（`PageHosting.swift` 的`hostingRoot` 就是为这件事留的）。
+        showsRating = isInLibrary
         if isInLibrary {
             let album = content.album
-            let host = appState.hostingView {
+            let root = appState.hostingRoot {
                 RatingStars(rating: library.rating(for: album.id),
                             starSize: MusicMetrics.Rating.headerStarSize,
                             spacing: MusicMetrics.Rating.headerStarSpacing,
                             setRating: { library.setRating($0, for: album.id) })
             }
-            host.translatesAutoresizingMaskIntoConstraints = true
-            addSubview(host)
-            ratingHost = host
+            if let ratingHost {
+                ratingHost.rootView = root
+            } else {
+                // 与 `AppState.hostingView` 同一套（铁律 2：定尺寸槽 +`sizingOptions = []`），
+                // 只是根视图已经由 `hostingRoot` 注好了环境，不必再包一层。
+                let host = NSHostingView(rootView: root)
+                host.sizingOptions = []
+                addSubview(host)
+                ratingHost = host
+            }
         }
+        ratingHost?.isHidden = !isInLibrary
 
-        menu = collectionActions(isFavorite: isFavorite, isInLibrary: isInLibrary).makeMenu()
-        // 艺人名上盖着那枚透明键，右键落在它身上：`NSView.menu(for:)` 默认只报自己那份，
-        // 不给就是「名字上右键不弹菜单」。同一份挂过去，页头哪儿右键都一样。
-        artistButton.menu = menu
-
+        guard layoutChanged else { return }
         needsLayout = true
     }
 
@@ -1251,8 +1328,9 @@ final class AlbumHeaderView: DetailHeaderView {
 
     private var metaRowHeight: CGFloat {
         var height = ceil(metadataLabel.fittingSize.height)
-        if losslessHost != nil { height = max(height, Self.losslessSlot.height) }
-        if ratingHost != nil { height = max(height, Self.ratingSlot.height) }
+        // 判据是「在不在场」而不是「宿主建没建」：宿主一旦建起来就不再拆，只是收起来。
+        if showsLossless { height = max(height, Self.losslessSlot.height) }
+        if showsRating { height = max(height, Self.ratingSlot.height) }
         return height
     }
 
@@ -1342,7 +1420,7 @@ final class AlbumHeaderView: DetailHeaderView {
         metadataLabel.frame = NSRect(x: metaX, y: metaY + (metaHeight - ceil(metadataLabel.fittingSize.height)) / 2,
                                      width: min(metadataWidth, column.width), height: ceil(metadataLabel.fittingSize.height))
         metaX += min(metadataWidth, column.width)
-        if let losslessHost {
+        if showsLossless, let losslessHost {
             metaX += M.albumMetaSpacing
             let dotWidth = ceil(losslessDot.fittingSize.width)
             losslessDot.frame = NSRect(x: metaX,
@@ -1353,7 +1431,7 @@ final class AlbumHeaderView: DetailHeaderView {
                                         width: Self.losslessSlot.width, height: Self.losslessSlot.height)
             metaX += Self.losslessSlot.width
         }
-        if let ratingHost {
+        if showsRating, let ratingHost {
             metaX += M.albumMetaSpacing
             ratingHost.frame = NSRect(
                 x: metaX,

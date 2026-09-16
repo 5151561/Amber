@@ -156,13 +156,18 @@ final class MiniPlayerContentView: NSView {
     private var cancellables = Set<AnyCancellable>()
     private var track: Track?
 
-    /// `inspectorContainer.mode` 的等价物：抽屉这一槽当前摆的是歌词还是待播清单。
-    /// 这一位是**本窗自己的**（Music 那边也是容器实例的字段，一扇窗一份），
-    /// 不回写 `appState.playerInspector`——不然在迷你窗里点歌词会把主窗的面板列一起掀开。
+    /// 抽屉这一槽当前该摆歌词还是待播清单。
     ///
-    /// 只读镜像：真值在 `inspectorController.mode`，改档一律走`setPanelMode(_:animated:)`
-    ///（要带 animated，didSet 里拿不到那一位）。
-    private var panelMode: PlayerInspector = .lyrics
+    /// **档位是全局一份**（`AppState.inspectorMode`，永不为 nil），本窗不再各存一份镜像：
+    /// 从前这里是本类的存储属性、且**故意不回写**全局那一位（回写会把主窗的面板列一起
+    /// 掀开），于是主窗胶囊上那两颗键的高亮与本窗抽屉的档位长期对不上
+    ///（design-ref/reactive-ui-review.md §2.1「多份真相」）。
+    /// 两位拆开之后回写是安全的：「开着没有」各宿主自持——本窗是 `currState`
+    ///（{1,5,8} 歌词 / {2,4,7} 队列 / {0,3,6} 收着），主窗是 `AppState.isInspectorOpen`。
+    ///
+    /// 抽屉收着时读到的就是「上次那一档」，`miniBarPanelState` / `windowedPanelState`
+    /// 要的正是它。
+    private var panelMode: PlayerInspector { appState.inspectorMode }
 
     /// 抽屉里那台检查器容器（Music 的 `MPContentView.inspectorContainer` +88，
     /// **与主窗那条列是同一个类** `MusicInspectorContainer`——inspector spec §4 抬头
@@ -287,7 +292,6 @@ final class MiniPlayerContentView: NSView {
         self.appState = appState
         self.inspectorController = InspectorContainerViewController(appState: appState)
         super.init(frame: NSRect(origin: .zero, size: M.initialContentSize))
-        panelMode = appState.playerInspector ?? .lyrics
         buildViews()
         bind()
         updateTrack(player.currentTrack, force: true)
@@ -1077,12 +1081,32 @@ final class MiniPlayerContentView: NSView {
         inspectorController.queue.displayStyle = MiniPlayerStates.queueDisplayStyle(state)
     }
 
-    /// 换档的唯一入口。真值在容器实例上（inspector spec §1.1 的 `mode` +16），
-    /// `panelMode` 只是本类留的镜像（状态归档、`miniBarPanelState` 那几个派生量要读它）。
+    /// 换档的唯一入口。两头各写一次、各自去重：
+    ///
+    /// - 视图层：容器实例上的 `mode`（inspector spec §1.1 的 +16），交叉淡入归它；
+    /// - 模型层：全局那一份 `AppState.inspectorMode`——主窗胶囊上那两颗键读它，
+    ///   下次在任何一个宿主打开面板也是这一档。写它**不会**掀开主窗的面板列，
+    ///   因为「开着没有」是 `AppState.isInspectorOpen` 那一位，本窗碰不到。
     private func setPanelMode(_ mode: PlayerInspector, animated: Bool) {
-        guard mode != panelMode else { return }
-        panelMode = mode
         inspectorController.setMode(mode, animated: animated)
+        if appState.inspectorMode != mode { appState.inspectorMode = mode }
+    }
+
+    /// 别的宿主（主窗胶囊、另一扇窗）换档时本窗跟上。
+    ///
+    /// 抽屉正开着就换成另一档——走的是「点另一颗键」那张跳表（1↔2 / 5↔4 / 8↔7，
+    /// 组不变、窗高不变）；抽屉收着就只把容器摆对，**不自己打开**：
+    /// 「开着没有」是本窗自己那一位。
+    private func syncPanelModeFromGlobal() {
+        let mode = appState.inspectorMode
+        guard isLyricsOpen || isQueueOpen else {
+            inspectorController.setMode(mode, animated: false)
+            return
+        }
+        guard (mode == .lyrics) != isLyricsOpen else { return }
+        apply(state: mode == .lyrics ? MiniPlayerStates.afterLyricsClick(currState)
+                                     : MiniPlayerStates.afterQueueClick(currState),
+              animated: true)
     }
 
     // MARK: - 约束与尺寸（窗口控制器用）
@@ -1134,7 +1158,9 @@ final class MiniPlayerContentView: NSView {
 
     private static let stateKey = "MPContentView.currState"
     private static let drawerKey = "MPContentView.drawerHeight"
-    private static let modeKey = "MPContentView.panelMode"
+    // 档位不再各窗归档一份：它是全局的 `AppState.inspectorMode`，
+    // 而 `currState` 本身就带着「开的是哪一档」（{1,5,8} 歌词 / {2,4,7} 队列），
+    // 恢复时由 `apply(state:)` → `syncInspector(for:)` 一并推回去。
 
     /// 窗口控制器的 `encodeRestorableStateWithCoder:` 会连本视图一起编
     /// （spec §2 的一次性迁移与 §6 的关窗归档都是「自己 + contents」两份）。
@@ -1142,18 +1168,12 @@ final class MiniPlayerContentView: NSView {
         super.encodeRestorableState(with: coder)
         coder.encode(currState, forKey: Self.stateKey)
         coder.encode(Double(drawerHeight), forKey: Self.drawerKey)
-        coder.encode(panelMode.rawValue as NSString, forKey: Self.modeKey)
     }
 
     override func restoreState(with coder: NSCoder) {
         super.restoreState(with: coder)
         if coder.containsValue(forKey: Self.drawerKey) {
             drawerHeight = CGFloat(coder.decodeDouble(forKey: Self.drawerKey))
-        }
-        if let raw = coder.decodeObject(of: NSString.self, forKey: Self.modeKey) as String?,
-           let mode = PlayerInspector(rawValue: raw) {
-            // 恢复不做动画（下面 `apply(state:)` 同理）。
-            setPanelMode(mode, animated: false)
         }
         if coder.containsValue(forKey: Self.stateKey) {
             // 恢复不做动画：窗口 frame 是同一批恢复的，动画会和它打架。
@@ -1210,15 +1230,11 @@ final class MiniPlayerContentView: NSView {
             .sink { [weak self] _ in self?.updateFavorite() }
             .store(in: &cancellables)
 
-        // 主窗那边切档时，本窗的 mode 跟着走（两台容器各一份 mode，但显示的该是同一档）。
-        appState.$playerInspector.removeDuplicates()
+        // 别处切档时本窗跟着走：档位是全局一份，两台容器显示的该是同一档。
+        // （`@Published` 在 willSet 发布，所以照例先 `receive(on:)` 再读属性。）
+        appState.$inspectorMode.removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] inspector in
-                guard let self, let inspector else { return }
-                guard self.panelMode != inspector else { return }
-                self.setPanelMode(inspector, animated: true)
-                self.onStateChanged?()
-            }
+            .sink { [weak self] _ in self?.syncPanelModeFromGlobal() }
             .store(in: &cancellables)
     }
 

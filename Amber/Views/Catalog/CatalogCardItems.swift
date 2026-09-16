@@ -554,6 +554,13 @@ class CatalogCardContentView: NSView, CatalogHoverTarget {
         self.appState = appState
         isInteractive = item.route != nil || item.onOpen != nil || item.onPlay != nil
         apply(item)
+        // 「身份没变、内容变了」时页面会拿**同一张**卡再 configure 一次
+        //（心水星、入库态，见 `CatalogPageViewController.reconfigure(_:)`）。
+        // `apply` 是照「刚出队」写的，会把悬浮那几件复位（播放键收掉、暗罩撤掉），
+        // 而此刻鼠标可能正停在这张卡上——不补这一下，用户会在鼠标没动的情况下
+        // 眼睁睁看着播放键消失。正常出队那条路 `prepareForReuse` 已经把`isHovering`
+        // 清成 false，走不到这里，所以不影响复用。
+        if isHovering { hoverDidChange(true, animated: false) }
         setAccessibilityLabel([item.eyebrow, item.title, item.subtitle]
             .compactMap { $0 }.joined(separator: "，"))
         needsLayout = true

@@ -31,10 +31,28 @@ final class LibrarySongsViewController: ContentPageController {
     private var scrollView: NSScrollView!
     private var tableView: TrackDisplayTableView!
     private var controller: SongsTableController!
-    private var emptyLibraryHost: NSView?
+    /// 空态那片叶子。**一片，不是三片**：三个空态分支只换 `rootView`，不拆视图重建。
+    private var emptyStateHost: NSHostingView<AnyView>?
 
     /// 同一轮 runloop 里的多次刷新请求合并成一次（见 `setNeedsRefresh`）。
     private var pendingRefresh = false
+    /// 被 `isHidden` 收着期间攒下的刷新，等 `pageDidAppear()` 补。
+    private var needsRefreshWhenShown = false
+
+    /// 这一页此刻是什么形态。**表格显不显示、空态显不显示、空态说什么**三件事
+    /// 由它一处决定：从前是两个手工保持相反的 `isHidden`，而且空态判据是
+    /// 「全库空不空」而不是「这一屏空不空」——搜一个库里没有的词、或者开了「仅喜爱」
+    /// 而一首都没心水时，用户看到的是带列头的一片纯空白、零文案（§1 故障 18）。
+    /// 形状照 `TrackTableViewController.PageState`（仓库里这件事的正确形状）。
+    private enum PageState: Equatable {
+        /// 资料库里一首歌都没有。
+        case emptyLibrary
+        /// 库里有歌，是筛选（仅喜爱 / 重复项）把它们全挡掉了。
+        case noFilterMatches
+        /// 库里有歌、筛选后也还有货，是搜索词一条都没留下。
+        case noSearchMatches
+        case content
+    }
 
     /// 「显示重复项目」的页面态：nil ＝ 不在重复视图，非 nil ＝ 正在看哪一档（spec §10.3）。
     ///
@@ -154,6 +172,11 @@ final class LibrarySongsViewController: ContentPageController {
 
     override func pageDidAppear() {
         super.pageDidAppear()
+        // 切回来：被压住期间攒下的那次变动在这里补上（见 `setNeedsRefresh`）。
+        if needsRefreshWhenShown {
+            needsRefreshWhenShown = false
+            refresh()
+        }
         // 每次进这一页都滚回第 0 行（Music 的 viewWillAppear 就是无条件
         // `scrollRowToVisible:0`，`[实测]`）。
         // 旧的 SwiftUI 宿主把这一句写在 `makeNSView` 里，只在建视图那一次生效；
@@ -174,8 +197,11 @@ final class LibrarySongsViewController: ContentPageController {
     /// 每一路都只调 `setNeedsRefresh()`：**`objectWillChange` 是在值变之前发的，
     /// 必须推迟到下一轮 runloop 再读值**，否则读到的还是旧的。
     private func bind() {
-        // 心水、评分、播放次数、加入日期都既进筛选也进排序
-        appState.library.objectWillChange
+        // 这一页读得最宽：曲目集合、心水（筛选）、评分 / 播放次数 / 加入日期（既进筛选
+        // 也进排序）、专辑（类型 / 专辑艺人 / 年份几列回查专辑）、勾选列与失联感叹号。
+        // 但**不**读播放列表、艺人喜爱、减少推荐——那三位不该把整张表重排一遍。
+        appState.library.changes(affecting: [.tracks, .albums, .favorites, .ratings,
+                                             .playbackStats, .checkmarks, .fileMissing])
             .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
 
@@ -194,13 +220,26 @@ final class LibrarySongsViewController: ContentPageController {
             .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
 
-        // 搜索词由标题栏那颗搜索框给（`SongsPageModel` + `SearchFieldBinder`）
+        // 搜索词由标题栏那颗搜索框给（`SongsPageModel` + `SearchFieldBinder`）。
+        // 改搜索词是**用户主动换了看法**，这一类才滚回选中行——排序与筛选那两条
+        // `SongsTableController` 自己看得见，搜索词它够不着，由这里置位
+        // （见 `SongsTableController.scrollsToSelectionOnNextUpdate`）。
         model.$search
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
+            .sink { [weak self] _ in
+                self?.controller.scrollsToSelectionOnNextUpdate = true
+                self?.setNeedsRefresh()
+            }
             .store(in: &cancellables)
     }
 
+    /// 合批 + 可见性闸。导航容器把访问过的根页全缓存着、切页只切 `isHidden`
+    /// （`ContentNavigationController.install`），隐藏的页重排一遍没人看得见，
+    /// 只记一笔等 `pageDidAppear()` 补。
     private func setNeedsRefresh() {
+        guard let view = viewIfLoaded, !view.isHiddenOrHasHiddenAncestor else {
+            needsRefreshWhenShown = true
+            return
+        }
         guard !pendingRefresh else { return }
         pendingRefresh = true
         DispatchQueue.main.async { [weak self] in
@@ -212,24 +251,36 @@ final class LibrarySongsViewController: ContentPageController {
 
     private func refresh() {
         let rows = visibleTracks()
-        if appState.library.libraryTracks.isEmpty {
-            scrollView.isHidden = true
-            showEmptyLibraryView()
-        } else {
-            scrollView.isHidden = false
-            emptyLibraryHost?.isHidden = true
-        }
+        render(pageState(rows: rows))
         controller.update(rows: rows)
     }
 
-    private func showEmptyLibraryView() {
-        if emptyLibraryHost == nil {
-            let host = appState.hostingView {
-                MusicEmptyState(title: "歌曲",
-                                message: "添加到资料库的歌曲会显示在这里。",
-                                systemImage: "music.note")
-            }
-            host.translatesAutoresizingMaskIntoConstraints = false
+    /// 判据是**这一屏**空不空（`rows`），不是全库空不空——见 `PageState` 上的原委。
+    private func pageState(rows: [Track]) -> PageState {
+        guard !appState.library.libraryTracks.isEmpty else { return .emptyLibrary }
+        guard rows.isEmpty else { return .content }
+        // 有搜索词就归给搜索：搜索排在筛选之后，能走到这儿说明筛选那一步还有货。
+        return model.search.trimmingCharacters(in: .whitespaces).isEmpty
+            ? .noFilterMatches : .noSearchMatches
+    }
+
+    /// 表格与空态的显隐**只在这一处一起给**。从前是两个各写各的 `isHidden`，
+    /// 靠人保持相反。
+    private func render(_ state: PageState) {
+        scrollView.isHidden = state != .content
+        guard state != .content else {
+            emptyStateHost?.isHidden = true
+            return
+        }
+        showEmptyState(state)
+    }
+
+    private func showEmptyState(_ state: PageState) {
+        if let host = emptyStateHost {
+            // 换分支只换 rootView，不拆视图重建（§2.4 就地复用）。
+            host.rootView = appState.hostingRoot { emptyStateContent(state) }
+        } else {
+            let host = appState.hostingView { emptyStateContent(state) }
             view.addSubview(host)
             NSLayoutConstraint.activate([
                 host.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -237,9 +288,41 @@ final class LibrarySongsViewController: ContentPageController {
                 host.topAnchor.constraint(equalTo: view.topAnchor),
                 host.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             ])
-            emptyLibraryHost = host
+            emptyStateHost = host
         }
-        emptyLibraryHost?.isHidden = false
+        emptyStateHost?.isHidden = false
+    }
+
+    /// 三档文案。空库那一档一个像素没动（页内大标题「歌曲」+ 图标 + 原文案）；
+    /// 另外两档从前**根本不存在**，用户看到的是一片纯空白。
+    @ViewBuilder
+    private func emptyStateContent(_ state: PageState) -> some View {
+        switch state {
+        case .noSearchMatches:
+            // [实测] 与搜索结果页同一句（`SearchResultsModel.emptyMessage`，
+            // 那句是对着 Music 抄下来的）：同一件事在两页说同一句话。
+            topAligned(MusicEmptyStateContent(message: "无结果\n检查拼写或尝试新搜索词。",
+                                              systemImage: "magnifyingglass"))
+        case .noFilterMatches:
+            // Amber 自拟：手头没有 Music 这一档的实测文案。句式跟着上面那句走。
+            topAligned(MusicEmptyStateContent(message: "没有符合筛选条件的歌曲。",
+                                              systemImage: "line.3.horizontal.decrease.circle"))
+        case .emptyLibrary, .content:
+            MusicEmptyState(title: "歌曲",
+                            message: "添加到资料库的歌曲会显示在这里。",
+                            systemImage: "music.note")
+        }
+    }
+
+    /// 空态的槽是四边钉死整页的，而 `MusicEmptyStateContent` 自己只有内容高——
+    /// 不垫这一下 SwiftUI 会把它在整页里竖直居中，与资料库其余几页
+    /// （专辑页给的是定高槽，见 `LibraryAlbumsViewController.updateEmptyState`）不一致。
+    /// 空库那一档不走这里：`MusicEmptyState` 自带`ScrollView` + 顶对齐的`VStack`。
+    private func topAligned(_ content: some View) -> some View {
+        VStack(spacing: 0) {
+            content
+            Spacer(minLength: 0)
+        }
     }
 
     // MARK: - 显示重复项目（spec §10.3）
@@ -258,6 +341,8 @@ final class LibrarySongsViewController: ContentPageController {
         }
         // Music 这时会在状态栏点亮「显示重复项目」（res 163 idx 39 / res 9008 idx 94）。
         // Amber 没有状态栏，这一处照实省掉——不自己发明一条状态栏，也不去改标题栏文案。
+        // 与改搜索词同类：这是用户主动换看法，滚回选中行。
+        controller.scrollsToSelectionOnNextUpdate = true
         setNeedsRefresh()
     }
 

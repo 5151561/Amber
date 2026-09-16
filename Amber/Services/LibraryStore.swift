@@ -1,5 +1,43 @@
 import AppKit
+import Combine
 import Foundation
+
+/// 资料库的一次改动动了哪几份数据。
+///
+/// `objectWillChange` 是**整座库的一个出口**：28 个`@Published` 加 5 处手工发声全打在它上面，
+/// 于是给一张专辑点一次喜爱 ★，资料库四页 + 歌曲页各自把全库重算一遍。
+/// 那个出口必须留着（仓库别处、SwiftUI 叶子还订着它），这一层是**叠在它旁边**的细分出口：
+/// 谁读哪几份就订哪几位，与自己无关的写入根本不会把它叫醒。
+///
+/// 位按「界面上哪几件会跟着变」划，不按存储字段划：`.playbackStats` 罩着的四份
+///（播放次数 / 上次播放 / 逐曲历史 / 容器台账）永远是同一次记账一起动的，
+/// 拆开只会逼每个消费方写四条一模一样的订阅。
+struct LibraryChange: OptionSet, Sendable {
+    let rawValue: Int
+    init(rawValue: Int) { self.rawValue = rawValue }
+
+    /// 资料库曲目集合：入库、退库，以及 `updateTrack` 改到的曲目字段。
+    static let tracks = LibraryChange(rawValue: 1 << 0)
+    /// 资料库专辑集合与 `albumAddedAt`（「最近添加」的分段键）。
+    static let albums = LibraryChange(rawValue: 1 << 1)
+    /// 播放列表集合：增删、改名、列表内曲目增删与重排、账号同步。
+    static let playlists = LibraryChange(rawValue: 1 << 2)
+    /// 心水歌曲（`favoriteTracks`）。
+    static let favorites = LibraryChange(rawValue: 1 << 3)
+    static let favoriteAlbums = LibraryChange(rawValue: 1 << 4)
+    static let favoriteArtists = LibraryChange(rawValue: 1 << 5)
+    /// 星级（曲目与专辑共用 `ratings` 一张表）。
+    static let ratings = LibraryChange(rawValue: 1 << 6)
+    /// 播放与跳过的记账：`playCounts` / `skipCounts` / `lastPlayedAt` / `lastSkippedAt` /
+    /// `recentTracks` / `recentContainers`。
+    static let playbackStats = LibraryChange(rawValue: 1 << 7)
+    /// 歌曲列表那一列复选框（`uncheckedTrackIDs`）。
+    static let checkmarks = LibraryChange(rawValue: 1 << 8)
+    /// 本地文件失联标记（`missingFileTrackIDs`）。
+    static let fileMissing = LibraryChange(rawValue: 1 << 9)
+    /// 「减少推荐」的本地镜像。
+    static let suggestLess = LibraryChange(rawValue: 1 << 10)
+}
 
 /// 本地资料库：资料库歌曲与专辑 + 心水 + 最近播放，JSON 持久化到 Application Support。
 ///
@@ -110,6 +148,30 @@ final class LibraryStore: ObservableObject {
     private var albumsByID: [String: Album] = [:]
     private var albumsByFallbackKey: [String: Album] = [:]
 
+    // MARK: 细分变更出口
+
+    /// 细分出口的底座（见 `LibraryChange`）。**私有**：消费方只能经`changes(affecting:)`
+    /// 报出「我读哪几份」才拿得到事件，不留一条「订上就什么都收」的口子——
+    /// 那条口子正是 `objectWillChange` 今天这副样子的由来。
+    private let changeSubject = PassthroughSubject<LibraryChange, Never>()
+
+    /// 订这几位里任意一位的变更。事件带的是**这一次**动到的完整集合，
+    /// 要按类别分支处理的消费方可以再看一眼。
+    ///
+    /// 与 `objectWillChange` 的时序差：这一层在值**落定之后**才发（`objectWillChange`
+    /// 是 `@Published` 的 willSet，在值变之前）。即便如此，界面侧仍应把响应合批到
+    /// 下一轮 runloop 再读——页面自己那份模型（搜索词、筛选、排序）还是 willSet 语义，
+    /// 两条路合到同一个刷新入口上时得按更严的那一条来。
+    func changes(affecting mask: LibraryChange) -> AnyPublisher<LibraryChange, Never> {
+        changeSubject.filter { !$0.isDisjoint(with: mask) }.eraseToAnyPublisher()
+    }
+
+    /// 发一次细出口。空集合（什么都没真的改）不发。
+    private func notify(_ change: LibraryChange) {
+        guard !change.isEmpty else { return }
+        changeSubject.send(change)
+    }
+
     private struct Storage: Codable {
         var favorites: [Track] = []
         var recents: [Track] = []
@@ -181,6 +243,7 @@ final class LibraryStore: ObservableObject {
         guard insert(track) else { return }
         onTracksAdded?([track])
         save()
+        notify(.tracks)
     }
 
     /// 只落数据，不落盘也不发通知。批量入库（整张碟、歌单同步）先各自收齐再一次性
@@ -196,10 +259,14 @@ final class LibraryStore: ObservableObject {
     func removeFromLibrary(_ track: Track) {
         guard libraryTrackIDs.remove(track.id) != nil else { return }
         libraryTracks.removeAll { $0.id == track.id }
-        pruneAfterLibraryRemoval([track.id])
-        pruneEmptyAlbums()
+        // 退库会顺带动到播放列表 / 心水 / 勾选 / 空碟，各自动没动由两个 prune 自己报，
+        // 别在这里一律按最坏情况发一整套（那就又退回「一个出口」了）。
+        var change: LibraryChange = .tracks
+        change.formUnion(pruneAfterLibraryRemoval([track.id]))
+        change.formUnion(pruneEmptyAlbums())
         onTracksRemoved?([track.id])
         save()
+        notify(change)
     }
 
     func toggleLibrary(_ track: Track) {
@@ -210,13 +277,18 @@ final class LibraryStore: ObservableObject {
 
     /// 加专辑等于把整张碟的歌一并入库——与 Music.app 的「添加到资料库」一致。
     func addAlbumToLibrary(_ album: Album, tracks: [Track]) {
+        var change: LibraryChange = []
         if !libraryAlbumIDs.contains(album.id) {
             libraryAlbumIDs.insert(album.id)
             libraryAlbums.insert(album, at: 0)
             rebuildAlbumIndex()
             albumAddedAt[album.id] = Date()
+            change.insert(.albums)
         } else {
-            if albumAddedAt[album.id] == nil { albumAddedAt[album.id] = Date() }
+            if albumAddedAt[album.id] == nil {
+                albumAddedAt[album.id] = Date()
+                change.insert(.albums)
+            }
             // 已经在库里的那张只补封面，别整条覆盖（用户改过的评分、喜爱都挂在原条目上）。
             // 本地导入常常是「先导了一首没封面的，回头又导了同碟里带内嵌图的那首」，
             // 补这一下，专辑页那格才不会一直空着。
@@ -225,6 +297,7 @@ final class LibraryStore: ObservableObject {
                libraryAlbums[index].artworkURL?.isEmpty != false {
                 libraryAlbums[index] = Self.copy(libraryAlbums[index], artworkURL: artwork)
                 rebuildAlbumIndex()
+                change.insert(.albums)
             }
         }
         // 逐首插到最前，倒序遍历后整张碟在「最近添加」里保持原曲序。
@@ -233,8 +306,12 @@ final class LibraryStore: ObservableObject {
             let stampedTrack = stamped(track, with: album)
             if insert(stampedTrack) { added.append(stampedTrack) }
         }
-        if !added.isEmpty { onTracksAdded?(added.reversed()) }
+        if !added.isEmpty {
+            onTracksAdded?(added.reversed())
+            change.insert(.tracks)
+        }
         save()
+        notify(change)
     }
 
     /// `Album.artworkURL` 是`let`，换封面只能整条重造一份。
@@ -263,9 +340,11 @@ final class LibraryStore: ObservableObject {
         let ids = Set(tracks.map(\.id))
         libraryTrackIDs.subtract(ids)
         libraryTracks.removeAll { ids.contains($0.id) }
-        pruneAfterLibraryRemoval(ids)
+        var change: LibraryChange = [.albums, .tracks]
+        change.formUnion(pruneAfterLibraryRemoval(ids))
         onTracksRemoved?(Array(ids))
         save()
+        notify(change)
     }
 
     /// 设置 › 高级那两条「添加与删除…」开关的**删除侧**：歌从资料库出去时，
@@ -273,29 +352,44 @@ final class LibraryStore: ObservableObject {
     ///
     /// 只清 `.local` 播放列表：音源歌单与账号歌单是只读镜像，本地删一首下次同步就回来了，
     /// 清了反而是「看起来生效、其实没有」。开关关着时两边互不相干（Music 同）。
-    private func pruneAfterLibraryRemoval(_ ids: Set<String>) {
+    ///
+    /// 返回值是**真被动到的那几位**，交给调用方并进它自己那一次细出口：
+    /// 两条开关都关着时这里其实什么都没做，不该让播放列表页与心水页跟着醒一次。
+    @discardableResult
+    private func pruneAfterLibraryRemoval(_ ids: Set<String>) -> LibraryChange {
+        var change: LibraryChange = []
         // 勾选状态不受那两条开关管：歌都不在资料库里了，留着「它没勾」这条记录
         // 只会在同一首歌被重新加进来时把上次的取消勾选带回来。
-        uncheckedTrackIDs.subtract(ids)
+        if !uncheckedTrackIDs.isDisjoint(with: ids) {
+            uncheckedTrackIDs.subtract(ids)
+            change.insert(.checkmarks)
+        }
         let values = AppSettings.shared.values
         if values.syncPlaylistSongsWithLibrary {
             for index in playlists.indices where playlists[index].origin == .local {
+                let before = playlists[index].tracks.count
                 playlists[index].tracks.removeAll { ids.contains($0.id) }
+                if playlists[index].tracks.count != before { change.insert(.playlists) }
             }
         }
         if values.syncFavoriteSongsWithLibrary {
-            favoriteTracks.removeAll { ids.contains($0.id) }
-            favoriteTrackIDs.subtract(ids)
+            if !favoriteTrackIDs.isDisjoint(with: ids) {
+                favoriteTracks.removeAll { ids.contains($0.id) }
+                favoriteTrackIDs.subtract(ids)
+                change.insert(.favorites)
+            }
         }
+        return change
     }
 
     /// 歌移出资料库后，若所属专辑在资料库里已经没有任何歌了，连带把这张空碟也移出资料库，
     /// 避免资料库留下幽灵专辑（无曲目占位、或者本地导入后删除了所有曲目残留的空碟）。
-    private func pruneEmptyAlbums() {
+    @discardableResult
+    private func pruneEmptyAlbums() -> LibraryChange {
         let emptyAlbums = libraryAlbums.filter { album in
             !libraryTracks.contains { Self.belongs($0, to: album) }
         }
-        guard !emptyAlbums.isEmpty else { return }
+        guard !emptyAlbums.isEmpty else { return [] }
         let emptyIDs = Set(emptyAlbums.map(\.id))
         libraryAlbumIDs.subtract(emptyIDs)
         libraryAlbums.removeAll { emptyIDs.contains($0.id) }
@@ -303,6 +397,7 @@ final class LibraryStore: ObservableObject {
             albumAddedAt.removeValue(forKey: id)
         }
         rebuildAlbumIndex()
+        return .albums
     }
 
     // MARK: - 播放列表
@@ -319,6 +414,7 @@ final class LibraryStore: ObservableObject {
         let playlist = LibraryPlaylist.local(name: name, tracks: tracks)
         playlists.insert(playlist, at: 0)
         save()
+        notify(.playlists)
         return playlist
     }
 
@@ -338,6 +434,7 @@ final class LibraryStore: ObservableObject {
               playlists[index].isEditable else { return }
         playlists[index].name = trimmed
         save()
+        notify(.playlists)
     }
 
     /// 从资料库里删掉一份列表。账号同步来的要记一笔，否则下次同步又冒出来。
@@ -348,6 +445,7 @@ final class LibraryStore: ObservableObject {
         }
         playlists.remove(at: index)
         save()
+        notify(.playlists)
     }
 
     /// 往本地列表里加歌。Music 允许同一首在一份列表里出现多次，这里跟它一致，不去重。
@@ -355,14 +453,19 @@ final class LibraryStore: ObservableObject {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable, !tracks.isEmpty else { return }
         playlists[index].tracks.append(contentsOf: tracks)
+        var change: LibraryChange = .playlists
         // 设置 › 高级 ›「添加与删除播放列表歌曲」：加进本地列表的歌同时进资料库
         //（Music 那条开关的正向语义）。关着时列表与资料库互不相干。
         if AppSettings.shared.values.syncPlaylistSongsWithLibrary {
             var added: [Track] = []
             for track in tracks.reversed() where insert(track) { added.append(track) }
-            if !added.isEmpty { onTracksAdded?(added.reversed()) }
+            if !added.isEmpty {
+                onTracksAdded?(added.reversed())
+                change.insert(.tracks)
+            }
         }
         save()
+        notify(change)
     }
 
     func removeTracks(at offsets: IndexSet, fromPlaylist id: String) {
@@ -370,6 +473,7 @@ final class LibraryStore: ObservableObject {
               playlists[index].isEditable else { return }
         playlists[index].tracks.remove(atOffsets: offsets)
         save()
+        notify(.playlists)
     }
 
     func moveTracks(fromOffsets offsets: IndexSet, toOffset destination: Int, inPlaylist id: String) {
@@ -377,6 +481,7 @@ final class LibraryStore: ObservableObject {
               playlists[index].isEditable else { return }
         playlists[index].tracks.move(fromOffsets: offsets, toOffset: destination)
         save()
+        notify(.playlists)
     }
 
     // MARK: 音源歌单进资料库
@@ -390,6 +495,7 @@ final class LibraryStore: ObservableObject {
         dismissedAccountPlaylistIDs.remove(playlist.id)
         playlists.insert(.from(playlist, origin: .added), at: 0)
         save()
+        notify(.playlists)
     }
 
     /// 把登录账号在音源里的歌单并进资料库。
@@ -438,6 +544,7 @@ final class LibraryStore: ObservableObject {
         mutate(&working)
         playlists = working
         save()
+        notify(.playlists)
     }
 
     // MARK: - 心水与评分
@@ -459,6 +566,8 @@ final class LibraryStore: ObservableObject {
             if AppSettings.shared.values.syncFavoriteSongsWithLibrary { addToLibrary(track) }
         }
         save()
+        // 入库那一声由 `addToLibrary` 自己发（它发的是 `.tracks`），这里只报心水这一位。
+        notify(.favorites)
     }
 
     // MARK: - 歌曲列表复选框
@@ -484,6 +593,7 @@ final class LibraryStore: ObservableObject {
         objectWillChange.send()
         uncheckedTrackIDs = updated
         save()
+        notify(.checkmarks)
     }
 
     // MARK: - 本地文件失联（spec §10.1）
@@ -508,6 +618,7 @@ final class LibraryStore: ObservableObject {
         //（与 `setChecked` 同一条路，`LibrarySongsViewController.bind` 订的就是`objectWillChange`）。
         objectWillChange.send()
         missingFileTrackIDs.insert(trackID)
+        notify(.fileMissing)
     }
 
     /// 撤标记：重新指路成功、或者批量查找把它找回来了。
@@ -515,6 +626,7 @@ final class LibraryStore: ObservableObject {
         guard missingFileTrackIDs.contains(trackID) else { return }
         objectWillChange.send()
         missingFileTrackIDs.remove(trackID)
+        notify(.fileMissing)
     }
 
     /// 扫一遍资料库里的本地曲目，返回**此刻确实找不到文件**的那些，并把标记对齐到这份结果。
@@ -575,6 +687,7 @@ final class LibraryStore: ObservableObject {
         if missing != missingFileTrackIDs {
             objectWillChange.send()
             missingFileTrackIDs = missing
+            notify(.fileMissing)
         }
         return result
     }
@@ -634,10 +747,13 @@ final class LibraryStore: ObservableObject {
             return changed ? updated : nil
         }
 
-        var changed = false
-        if let updated = rewritten(libraryTracks) { libraryTracks = updated; changed = true }
-        if let updated = rewritten(favoriteTracks) { favoriteTracks = updated; changed = true }
-        if let updated = rewritten(recentTracks) { recentTracks = updated; changed = true }
+        // 五处各属不同的细出口：改到哪一处就只叫醒读那一处的页面（改一条本地曲目的
+        // 标题，专辑网格没有任何理由重排一次）。`changed` 仍是「有没有任何一处真改了」，
+        // 语义与从前一字不差——它现在等价于「这次的变更集合非空」。
+        var change: LibraryChange = []
+        if let updated = rewritten(libraryTracks) { libraryTracks = updated; change.insert(.tracks) }
+        if let updated = rewritten(favoriteTracks) { favoriteTracks = updated; change.insert(.favorites) }
+        if let updated = rewritten(recentTracks) { recentTracks = updated; change.insert(.playbackStats) }
         // 第五处：台账里的散曲格。其余 case 的载荷（专辑 / 歌单 / 艺人 / 心水）
         // 不含可变的曲目字段，改不到它们头上。不补这一处的话，本地文件改名或重新指路之后，
         // 货架上那张散曲卡还是旧标题、还指着老路。
@@ -653,7 +769,7 @@ final class LibraryStore: ObservableObject {
         }
         if containersChanged {
             recentContainers = workingContainers
-            changed = true
+            change.insert(.playbackStats)
         }
         var workingPlaylists = playlists
         var playlistsChanged = false
@@ -665,9 +781,11 @@ final class LibraryStore: ObservableObject {
         }
         if playlistsChanged {
             playlists = workingPlaylists
-            changed = true
+            change.insert(.playlists)
         }
+        let changed = !change.isEmpty
         if changed { save() }
+        notify(change)
         return changed
     }
 
@@ -688,6 +806,9 @@ final class LibraryStore: ObservableObject {
         // 只有 `@Published` 那三处没动、单纯撤标记时才要手动发——否则`updateTrack`
         // 里的赋值已经发过了（落盘也已经由它排过）。
         if !changed { objectWillChange.send() }
+        // 细出口这一位跟 `changed` 无关：撤了标记就是失联这一位变了，
+        // 而曲目字段那几位（如果动了）已经由 `updateTrack` 自己报过。
+        if hadMark { notify(.fileMissing) }
     }
 
     /// 按 id 找一条本地曲目（重新指路之后要拿改完的那份去更新下载索引）。
@@ -737,6 +858,7 @@ final class LibraryStore: ObservableObject {
         objectWillChange.send()
         suggestLessTrackIDs = updated
         save()
+        notify(.suggestLess)
     }
 
     func setSuggestedLessArtist(_ artistID: String, _ on: Bool) {
@@ -746,6 +868,7 @@ final class LibraryStore: ObservableObject {
         objectWillChange.send()
         suggestLessArtistIDs = updated
         save()
+        notify(.suggestLess)
     }
 
     func isFavoriteAlbum(_ album: Album) -> Bool {
@@ -759,6 +882,7 @@ final class LibraryStore: ObservableObject {
             favoriteAlbumIDs.insert(album.id)
         }
         save()
+        notify(.favoriteAlbums)
     }
 
     /// 收藏这位艺人。与专辑的「喜爱」同一个性质：只是一个本地标记，
@@ -774,6 +898,7 @@ final class LibraryStore: ObservableObject {
             favoriteArtistIDs.insert(artist.id)
         }
         save()
+        notify(.favoriteArtists)
     }
 
     /// 0 表示未评分。
@@ -788,6 +913,7 @@ final class LibraryStore: ObservableObject {
             ratings[id] = clamped
         }
         save()
+        notify(.ratings)
     }
 
     /// 该曲目被播放过的次数，0 表示从未播放。
@@ -803,6 +929,7 @@ final class LibraryStore: ObservableObject {
         playCounts.removeValue(forKey: id)
         lastPlayedAt.removeValue(forKey: id)
         save()
+        notify(.playbackStats)
     }
 
     /// 该曲目被中途切走的次数。
@@ -817,6 +944,7 @@ final class LibraryStore: ObservableObject {
         skipCounts[track.id, default: 0] += 1
         lastSkippedAt[track.id] = Date()
         save()
+        notify(.playbackStats)
     }
 
     /// 曲目所属的资料库专辑。Track 模型只有专辑名/id，曲风、发行年、专辑艺人都得回查专辑。
@@ -946,6 +1074,7 @@ final class LibraryStore: ObservableObject {
             recentContainers = updated
         }
         save()
+        notify(.playbackStats)
     }
 
     /// 台账上限。逐曲历史那份是 200：两个粒度各有各的窗口，见 `recentContainers`。
@@ -981,6 +1110,7 @@ final class LibraryStore: ObservableObject {
         playCounts[track.id, default: 0] += 1
         lastPlayedAt[track.id] = Date()
         save()
+        notify(.playbackStats)
     }
 
     // MARK: - 持久化
