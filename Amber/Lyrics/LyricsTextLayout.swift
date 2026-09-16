@@ -24,6 +24,20 @@ enum LyricsTextLayout {
 
     /// [实测] `lineTextAlignment` / `songwritersTextAlignment` 都是`NSTextAlignment?`，
     /// nil 表示 natural（跟随书写方向）。
+    /// 段落对齐 → `CATextLayer.alignmentMode`。
+    ///
+    /// **两处都要设。** `CATextLayer` 排属性串时认的是自己的 `alignmentMode`，
+    /// 段落样式里的 `alignment` 它不看——只设属性串那一份，layer 仍按默认的
+    /// `.natural` 贴左（对唱翻转侧的翻译副行就是这么掉队的）。
+    static func alignmentMode(_ alignment: NSTextAlignment?) -> CATextLayerAlignmentMode {
+        switch alignment {
+        case .center: return .center
+        case .right: return .right
+        case .justified: return .justified
+        default: return .natural
+        }
+    }
+
     static func paragraphStyle(alignment: NSTextAlignment?,
                                lineHeightAdjustment: CGFloat = 0,
                                tallScriptOutsets: CGFloat = 0) -> NSParagraphStyle {

@@ -202,7 +202,10 @@ extension SBS_TextContentLayer {
         var y: CGFloat = 0
         for metric in metrics {
             let row = Row()
-            row.frame = CGRect(x: 0, y: y, width: metric.width, height: metric.height)
+            row.frame = CGRect(x: Self.rowOriginX(rowWidth: metric.width,
+                                                  boxWidth: bounds.width,
+                                                  isFlipped: isFlipped),
+                               y: y, width: metric.width, height: metric.height)
             row.textHeight = metric.height
             row.base.frame = row.frame
             row.sung.frame = row.frame
@@ -420,7 +423,11 @@ extension SBS_TextContentLayer {
             width: specs.lineProgressionGradientFeather,
             height: LineProgressGradientGeometry.verticalPadding(
                 font: transliterationFontForMeasuring, lineHeight: height, specs: specs))
-        transliterationGradient.frame = CGRect(x: 0, y: 0, width: 0, height: height)
+        // 副行是满宽层 + 段落右对齐，墨迹靠在右边，遮罩的起点得跟过去；
+        // `applyTransliterationProgress` 只改 width，不碰 origin，设一次就够。
+        transliterationGradient.frame = CGRect(
+            x: isFlipped ? max(bounds.width - transliterationWidth, 0) : 0,
+            y: 0, width: 0, height: height)
         transliterationSung.opacity = isSelected ? 1 : 0
     }
 
@@ -429,12 +436,14 @@ extension SBS_TextContentLayer {
     private func place(_ text: String, in layer: CATextLayer, font: NSFont,
                        color: CGColor? = nil,
                        lineHeightAdjustment: CGFloat = 0, y: CGFloat) -> CGFloat {
+        let alignment: NSTextAlignment? = isFlipped ? .right : specs.lineTextAlignment
         let attributes = LyricsTextLayout.attributes(
             for: text,
             font: font,
             color: color ?? LyricsSpecs.cgColor(translationColor, in: appearance),
-            alignment: specs.lineTextAlignment,
+            alignment: alignment,
             lineHeightAdjustment: lineHeightAdjustment)
+        layer.alignmentMode = LyricsTextLayout.alignmentMode(alignment)
         layer.string = LyricsTextLayout.hardWrapped(text, attributes: attributes,
                                                     width: bounds.width)
         let size = LyricsTextLayout.size(text, attributes: attributes, width: bounds.width)

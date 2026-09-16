@@ -35,6 +35,20 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// 当前进度（全局时间轴上的秒数）。`setProgress` 的两级防抖比的就是它。
     private(set) var progress: Double = 0
 
+    /// 对唱翻转侧。行盒子已经被 `recomputeLineFrames` 排到栏的右半边
+    /// （收窄到 85% 再右推 15%，右缘正好压在栏右缘），这里管的是盒子**里面**
+    /// 的文字靠哪边——实机 Apple Music 是每行顶到右边缘。
+    var isFlipped: Bool { line?.agentAlignment == .flipped }
+
+    /// 一个排版行在行盒里的水平落点。翻转侧顶右，其余贴左。
+    ///
+    /// 只挪行盒（`Row.frame`）就够：音节层、发音层、以及作为 `row.sung.mask` 的
+    /// 那条渐变，坐标全是**行内相对**的，跟着一起走。遮罩仍从行的左端起、向右长
+    /// ——顶到右边与从左往右扫是两件事（见 `TextLine.direction`）。
+    static func rowOriginX(rowWidth: CGFloat, boxWidth: CGFloat, isFlipped: Bool) -> CGFloat {
+        isFlipped ? max(boxWidth - rowWidth, 0) : 0
+    }
+
     /// 排版结果。一条歌词折成几行就有几个。
     var layoutLines: [SyncedLyricsLineLayer.LayoutLine] = []
     var rows: [Row] = []

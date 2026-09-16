@@ -19,6 +19,12 @@ enum LyricsAdapter {
         // 源数据直接给的前奏长度：第一条内容的起点。
         lyrics.leadingSilence = lines.first?.time ?? 0
 
+        // 名册 → 左右两栏。`vocalistsType` 今天没有读者（`Lyrics.swift` 里只有声明），
+        // 填它是为了模型完整；界面上的可见变化全部来自 `agentAlignment`。
+        let voices = Set(lines.compactMap { $0.vocalist?.index }).count
+        lyrics.vocalistsType = voices >= 3 ? .group : (voices == 2 ? .duet : .single)
+        let alignments = agentAlignments(for: lines)
+
         var previousEnd: TimeInterval?
         lyrics.lines = lines.enumerated().map { index, line in
             defer { previousEnd = line.end }
@@ -82,8 +88,8 @@ enum LyricsAdapter {
                 // 要的是 `Emphasis.factor` 这份**数据**，不是这一位能力
                 // ——§23.3 的闸查的是词的 emphasis tag，不是行的 capability。
                 text.capabilities = line.syllables.isEmpty ? [] : [.gradient, .lift]
-                // agentAlignment / backgroundVocals：QRC/LRC 不提供，
-                // 留默认值走普通行那条路。
+                text.agentAlignment = alignments[index]
+                // backgroundVocals：QRC/LRC 不提供，留默认值走普通行那条路。
                 return text
             }
         }
@@ -92,6 +98,40 @@ enum LyricsAdapter {
             .filter { $0.kind == .credits }
             .map(\.text)
         return lyrics
+    }
+
+    // MARK: - 对唱分栏
+
+    /// 名册 → 二元对齐位。
+    ///
+    /// 载体只有 `normal` / `flipped` 两档，而名册可以有 5 个人
+    /// （BIGBANG《BANG BANG BANG》：TAEYANG / T.O.P / 승리 / G-DRAGON / 대성）。
+    ///
+    /// 规则：**每换一次人就换一次边**，从 `.normal` 起。对唱本来就是「你一句我一句」，
+    /// 换边表达的是「换人了」这件事本身，而不是「你是第几位歌手」——按名册序号的奇偶
+    /// 分边则要看「谁先被点名」这个偶然。两人对唱时它退化成「甲左乙右」。
+    ///
+    /// 代价：同一位歌手在不同段落可以落到不同侧（上面那首实测没有发生——
+    /// TAEYANG 恒左、G-DRAGON 恒右）。真要「同一人恒同侧」，换成
+    /// 「行数最多者 normal、其余 flipped」即可，不动结构。`[推]`
+    /// 返回与 `lines` **等长**的对齐位：换边是按段落发生的，不是按人固定的，
+    /// 所以结果不能按歌手编号收进字典。
+    static func agentAlignments(for lines: [LyricLine]) -> [Lyrics.AgentAlignment] {
+        var result: [Lyrics.AgentAlignment] = []
+        result.reserveCapacity(lines.count)
+        var previous: Int?
+        var flipped = false
+        for line in lines {
+            // 间奏、创作者、以及第一条提示之前的行都没有归属：留在左边，也不影响换边节奏。
+            guard let index = line.vocalist?.index else {
+                result.append(.normal)
+                continue
+            }
+            if let previous, previous != index { flipped.toggle() }
+            previous = index
+            result.append(flipped ? .flipped : .normal)
+        }
+        return result
     }
 
     // MARK: - 强调因子的合成 `[补]`

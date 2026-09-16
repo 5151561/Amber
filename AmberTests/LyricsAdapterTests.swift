@@ -13,9 +13,15 @@ final class LyricsAdapterTests: XCTestCase {
                       text: String = "",
                       kind: LyricLine.Kind = .lyric,
                       translation: String? = nil,
-                      syllables: [LyricSyllable] = []) -> LyricLine {
+                      syllables: [LyricSyllable] = [],
+                      vocalist: LyricLine.Vocalist? = nil) -> LyricLine {
         LyricLine(index: index, time: time, end: end, text: text,
-                  translation: translation, syllables: syllables, kind: kind)
+                  translation: translation, syllables: syllables, kind: kind,
+                  vocalist: vocalist)
+    }
+
+    private func voice(_ index: Int) -> LyricLine.Vocalist {
+        LyricLine.Vocalist(name: "歌手\(index)", index: index)
     }
 
     func testIndicesMatchArrayPositions() {
@@ -153,6 +159,68 @@ final class LyricsAdapterTests: XCTestCase {
         XCTAssertEqual(SBS_TextContentLayer.syllableRanges(in: "we go", syllables: syllables),
                        [0..<2, 3..<5])
     }
+
+    // MARK: - 对唱分栏
+
+    /// 名册规模决定 `vocalistsType`
+    func testVocalistsTypeFromRosterSize() {
+        func type(_ voices: [Int]) -> Lyrics.VocalistsType {
+            LyricsAdapter.makeLyrics(from: voices.enumerated().map {
+                line($0.offset, Double($0.offset), Double($0.offset) + 1,
+                     text: "句", vocalist: voice($0.element))
+            }).vocalistsType
+        }
+        XCTAssertEqual(LyricsAdapter.makeLyrics(from: [line(0, 0, 1, text: "句")]).vocalistsType, .single)
+        XCTAssertEqual(type([0, 0]), .single)
+        XCTAssertEqual(type([0, 1]), .duet)
+        // [实测] BIGBANG《BANG BANG BANG》名册 5 人
+        XCTAssertEqual(type([0, 1, 2, 3, 4]), .group)
+    }
+
+    /// 每换一次人就换一次边，从左起；同一位歌手连着唱的几句留在同一边
+    func testAlignmentFlipsOnEveryVocalistChange() {
+        let source = [0, 0, 1, 1, 0, 2].enumerated().map {
+            line($0.offset, Double($0.offset), Double($0.offset) + 1,
+                 text: "句", vocalist: voice($0.element))
+        }
+        let alignments = LyricsAdapter.makeLyrics(from: source).lines
+            .compactMap { ($0 as? TextLine)?.agentAlignment }
+        XCTAssertEqual(alignments, [.normal, .normal, .flipped, .flipped, .normal, .flipped])
+    }
+
+    /// 换边是按段落发生的：同一位歌手再出场时落在哪边由「他前面是谁」决定
+    func testAlignmentIsPerSegmentNotPerVocalist() {
+        // 甲 → 乙 → 丙 → 甲：甲第二次出场时前面是丙，所以翻到右边
+        let source = [0, 1, 2, 0].enumerated().map {
+            line($0.offset, Double($0.offset), Double($0.offset) + 1,
+                 text: "句", vocalist: voice($0.element))
+        }
+        let alignments = LyricsAdapter.makeLyrics(from: source).lines
+            .compactMap { ($0 as? TextLine)?.agentAlignment }
+        XCTAssertEqual(alignments, [.normal, .flipped, .normal, .flipped])
+    }
+
+    /// 间奏与第一条提示之前的行没有归属：留在左边，也不打乱换边节奏
+    func testAlignmentIsNormalBeforeFirstCue() {
+        let source = [
+            line(0, 0, 3, text: "前奏后的第一句"),
+            line(1, 3, 6, kind: .interlude),
+            line(2, 6, 9, text: "甲", vocalist: voice(0)),
+            line(3, 9, 12, kind: .interlude),
+            line(4, 12, 15, text: "乙", vocalist: voice(1)),
+        ]
+        let alignments = LyricsAdapter.makeLyrics(from: source).lines
+            .map { ($0 as? TextLine)?.agentAlignment }
+        XCTAssertEqual(alignments, [.normal, nil, .normal, nil, .flipped])
+    }
+
+    /// 现状回归：没有歌手提示行的歌一律贴左
+    func testNoVocalistMeansNormalAlignment() {
+        let source = (0..<3).map { line($0, Double($0), Double($0) + 1, text: "句") }
+        let lyrics = LyricsAdapter.makeLyrics(from: source)
+        XCTAssertEqual(lyrics.vocalistsType, .single)
+        XCTAssertTrue(lyrics.lines.allSatisfy { ($0 as? TextLine)?.agentAlignment == .normal })
+    }
 }
 
 // MARK: - LyricsStore
@@ -255,4 +323,5 @@ final class LyricsStoreTests: XCTestCase {
         XCTAssertNil(store.cachedLyrics(for: b), "最久没用的那首被扔掉")
         XCTAssertNotNil(store.cachedLyrics(for: c))
     }
+
 }
