@@ -195,149 +195,129 @@ enum LineProgressGradientGeometry {
         var feather: CGFloat
     }
 
-    /// 计算当前进度下渐变层的宽度与羽化宽度。
+    /// 渐变扫过几何计算。
     ///
-    /// 歌唱推进原则：
-    /// 1. 连贯歌唱中（音节间无显著停顿）：羽化宽度恒定为 30pt（`specs.lineProgressionGradientFeather`），
-    ///    推进前沿与渐变右端严格按音节时长匀速推进，确保丝滑无跳跃的手感。
-    /// 2. 音节间停顿期（当前音节已唱完，距离下一音节开唱有 >= 0.15s 停顿）：
-    ///    唱完后在 150ms 内将羽化软边平滑回缩至字间距内，使遮罩在停顿期间不越过下一个字的起始位置，
-    ///    彻底消除停顿期间未唱字被静态半高亮的现象。
-    /// 3. 停顿后开唱：在开唱前 120ms 内羽化从字间距平滑展开至 30pt，衔接无跳跃。
+    /// 原版核心几何模型：
+    /// 1. `LineProgressGradientLayer` 软边宽度恒定为 30pt（`specs.lineProgressionGradientFeather`），
+    ///    子层结构为：`fill` [0, w - featherWidth] (alpha 1.0)，`gradient` [w - featherWidth, w] (alpha 1.0 -> 0.0)。
+    ///    `w` 即为遮罩前进的最前沿（Beyond w 是完全未唱的暗色，alpha = 0.0）。
+    /// 2. 每个音节的终点目标位置 `targetWidth`：
+    ///    - 若为行末最后一个音节：整行唱毕，遮罩完全扫出音节外以确保 100% 实心覆盖，
+    ///      `targetWidth = finishedWidth`（即末音节 maxX + featherWidth + padding）。
+    ///    - 若为行中音节：遮罩前沿不得渗入下一个未唱音节！
+    ///      前沿到达当前音节 maxX，并允许伸入字间空白至多 `min(featherWidth * 0.25, physicalGap)`。
+    ///      无论音节之间是否有停顿，遮罩前沿恒不越过下一个音节的起始坐标 `nextMinX`。
+    /// 3. 音节起始位置 `startWidth`：
+    ///    - 首音节起于音节起始坐标 `sylMinX`。
+    ///    - 后续音节的起点严格等于前一音节的目标落点 `targetWidth(prev)`。
+    /// 4. 连续推进性：
+    ///    - 音节唱演中（ratio 0 -> 1）：宽度从 `startWidth` 匀速平滑插值到 `targetWidth`。
+    ///    - 音节间停顿期（progress >= endTime 但下一音节尚未开唱）：ratio 为 1.0，
+    ///      宽度静止在 `targetWidth`。由于 `targetWidth <= nextMinX`，停顿期间下一个字
+    ///      完全处于遮罩外（alpha = 0），绝不出现半高亮，亦无任何回缩或突进跳跃。
+    ///    - 下一音节开唱时：ratio 从 0 开始，`startWidth` 恰好等于上一音节停驻的 `targetWidth`，
+    ///      无缝继续向前推进。
     static func sweptGeometry(of layoutLine: SyncedLyricsLineLayer.LayoutLine,
                               state: SyncedLyricsLineLayer.LayoutLine.ProgressState,
                               progress: Double,
                               verticalPadding padding: CGFloat,
                               specs: LyricsSpecs) -> SweptGeometry {
-        let defaultFeather = specs.lineProgressionGradientFeather
+        let feather = specs.lineProgressionGradientFeather
         switch state {
         case .notStarted:
-            return SweptGeometry(width: 0, feather: defaultFeather)
+            return SweptGeometry(width: 0, feather: feather)
         case .finished:
             guard let word = layoutLine.words.last,
                   let syllable = word.syllables.last else {
-                return SweptGeometry(width: 0, feather: defaultFeather)
+                return SweptGeometry(width: 0, feather: feather)
             }
             let finished = finishedWidth(
                 lastWordMinX: word.frame.minX,
                 lastSyllableMaxX: syllable.frame.maxX,
                 verticalPadding: padding,
                 specs: specs)
-            return SweptGeometry(width: finished, feather: defaultFeather)
+            return SweptGeometry(width: finished, feather: feather)
         case .singing(let syllableIndex, let wordIndex):
             guard layoutLine.words.indices.contains(wordIndex) else {
-                return SweptGeometry(width: 0, feather: defaultFeather)
+                return SweptGeometry(width: 0, feather: feather)
             }
             let word = layoutLine.words[wordIndex]
             guard word.syllables.indices.contains(syllableIndex) else {
-                return SweptGeometry(width: 0, feather: defaultFeather)
+                return SweptGeometry(width: 0, feather: feather)
             }
             let syllable = word.syllables[syllableIndex]
 
             let span = syllable.endTime - syllable.startTime
             let ratio = span > 0 ? min(max((progress - syllable.startTime) / span, 0), 1) : 1
-            let sylMinX = word.frame.minX + syllable.frame.minX
-            let sylMaxX = sylMinX + syllable.frame.width
-            let front = sylMinX + syllable.frame.width * ratio
 
-            // 查找下一个音节与其在排版行中的起始坐标
-            var nextSyl: SyncedLyricsLineLayer.Syllable?
-            var nextSylMinX: CGFloat?
-            if syllableIndex + 1 < word.syllables.count {
-                let ns = word.syllables[syllableIndex + 1]
-                nextSyl = ns
-                nextSylMinX = word.frame.minX + ns.frame.minX
-            } else {
-                for nextW in (wordIndex + 1)..<layoutLine.words.count {
-                    let nw = layoutLine.words[nextW]
-                    if let firstSyl = nw.syllables.first {
-                        nextSyl = firstSyl
-                        nextSylMinX = nw.frame.minX + firstSyl.frame.minX
-                        break
-                    }
-                }
-            }
+            let target = targetWidth(for: layoutLine, wordIndex: wordIndex, syllableIndex: syllableIndex, specs: specs, padding: padding)
+            let start = startWidth(for: layoutLine, wordIndex: wordIndex, syllableIndex: syllableIndex, specs: specs, padding: padding)
 
-            // 查找上一个音节的结束时间
-            var prevSylEndTime: TimeInterval?
-            if syllableIndex > 0 {
-                prevSylEndTime = word.syllables[syllableIndex - 1].endTime
-            } else if wordIndex > 0 {
-                for prevW in (0..<wordIndex).reversed() {
-                    let pw = layoutLine.words[prevW]
-                    if let lastSyl = pw.syllables.last {
-                        prevSylEndTime = lastSyl.endTime
-                        break
-                    }
-                }
-            }
-
-            // 1. 停顿期处理：当前音节已唱完（progress >= syllable.endTime），
-            // 且与下一个音节之间存在停顿空档（gap >= 0.15s）。
-            if let nextSyl, let nextMinX = nextSylMinX,
-               nextSyl.startTime - syllable.endTime >= 0.15 {
-                let pauseDuration = nextSyl.startTime - syllable.endTime
-                let physicalGap = max(0, nextMinX - sylMaxX)
-                let restingFeather = min(defaultFeather, physicalGap)
-
-                if progress >= syllable.endTime {
-                    let fadeDuration = min(0.15, pauseDuration * 0.3)
-                    let elapsedInPause = progress - syllable.endTime
-                    if elapsedInPause < fadeDuration && fadeDuration > 0 {
-                        let t = elapsedInPause / fadeDuration
-                        let smoothT = t * t * (3 - 2 * t)
-                        let currentFeather = defaultFeather + (restingFeather - defaultFeather) * smoothT
-                        let width = sylMaxX + currentFeather
-                        return SweptGeometry(width: width, feather: currentFeather)
-                    } else {
-                        let width = sylMaxX + restingFeather
-                        return SweptGeometry(width: width, feather: restingFeather)
-                    }
-                }
-            }
-
-            // 2. 停顿后起跑平滑处理：如果当前音节前曾有停顿（>= 0.15s），
-            // 在开唱前 120ms 内羽化软边从平滑展开至 30pt，避免起跑跳变。
-            if let prevEnd = prevSylEndTime,
-               syllable.startTime - prevEnd >= 0.15,
-               progress >= syllable.startTime {
-                let bloomDuration = min(0.12, span * 0.4)
-                let elapsedInSyl = progress - syllable.startTime
-                if elapsedInSyl < bloomDuration && bloomDuration > 0 {
-                    let prevMaxX = prevSylMaxX(layoutLine, wordIndex: wordIndex, syllableIndex: syllableIndex) ?? sylMinX
-                    let physicalGap = max(0, sylMinX - prevMaxX)
-                    let startFeather = min(defaultFeather, physicalGap)
-                    let t = elapsedInSyl / bloomDuration
-                    let smoothT = t * t * (3 - 2 * t)
-                    let currentFeather = startFeather + (defaultFeather - startFeather) * smoothT
-                    let width = front + currentFeather
-                    return SweptGeometry(width: width, feather: currentFeather)
-                }
-            }
-
-            // 3. 正常歌唱中（连贯音节，或停顿展开后）：羽化恒为 30pt，匀速丝滑推进！
-            let feather = defaultFeather
-            let width = front + feather
+            let width = start + (target - start) * ratio
             return SweptGeometry(width: width, feather: feather)
         }
     }
 
-    private static func prevSylMaxX(_ layoutLine: SyncedLyricsLineLayer.LayoutLine,
-                                    wordIndex: Int,
-                                    syllableIndex: Int) -> CGFloat? {
-        if syllableIndex > 0 {
-            let pw = layoutLine.words[wordIndex]
-            let ps = pw.syllables[syllableIndex - 1]
-            return pw.frame.minX + ps.frame.minX + ps.frame.width
-        } else if wordIndex > 0 {
-            for prevW in (0..<wordIndex).reversed() {
-                let pw = layoutLine.words[prevW]
-                if let ps = pw.syllables.last {
-                    return pw.frame.minX + ps.frame.minX + ps.frame.width
+    /// 音节唱完时的目标遮罩右端坐标。
+    static func targetWidth(for layoutLine: SyncedLyricsLineLayer.LayoutLine,
+                            wordIndex: Int,
+                            syllableIndex: Int,
+                            specs: LyricsSpecs,
+                            padding: CGFloat) -> CGFloat {
+        guard layoutLine.words.indices.contains(wordIndex) else { return 0 }
+        let word = layoutLine.words[wordIndex]
+        guard word.syllables.indices.contains(syllableIndex) else { return 0 }
+        let syllable = word.syllables[syllableIndex]
+        let sylMaxX = word.frame.minX + syllable.frame.minX + syllable.frame.width
+
+        let isLastInLine = (wordIndex == layoutLine.words.count - 1) && (syllableIndex == word.syllables.count - 1)
+        if isLastInLine {
+            return finishedWidth(lastWordMinX: word.frame.minX,
+                                 lastSyllableMaxX: syllable.frame.maxX,
+                                 verticalPadding: padding,
+                                 specs: specs)
+        }
+
+        // 查找下一个音节的起始坐标
+        var nextMinX: CGFloat = sylMaxX
+        if syllableIndex + 1 < word.syllables.count {
+            let nextSyl = word.syllables[syllableIndex + 1]
+            nextMinX = word.frame.minX + nextSyl.frame.minX
+        } else {
+            for nextW in (wordIndex + 1)..<layoutLine.words.count {
+                let nw = layoutLine.words[nextW]
+                if let firstSyl = nw.syllables.first {
+                    nextMinX = nw.frame.minX + firstSyl.frame.minX
+                    break
                 }
             }
         }
-        return nil
+
+        let physicalGap = max(0, nextMinX - sylMaxX)
+        let lead = min(specs.lineProgressionGradientFeather * 0.25, physicalGap)
+        return sylMaxX + lead
+    }
+
+    /// 音节开唱时的遮罩右端起始坐标。
+    static func startWidth(for layoutLine: SyncedLyricsLineLayer.LayoutLine,
+                           wordIndex: Int,
+                           syllableIndex: Int,
+                           specs: LyricsSpecs,
+                           padding: CGFloat) -> CGFloat {
+        if syllableIndex > 0 {
+            return targetWidth(for: layoutLine, wordIndex: wordIndex, syllableIndex: syllableIndex - 1, specs: specs, padding: padding)
+        } else if wordIndex > 0 {
+            for prevW in (0..<wordIndex).reversed() {
+                let pw = layoutLine.words[prevW]
+                if !pw.syllables.isEmpty {
+                    return targetWidth(for: layoutLine, wordIndex: prevW, syllableIndex: pw.syllables.count - 1, specs: specs, padding: padding)
+                }
+            }
+        }
+        guard layoutLine.words.indices.contains(wordIndex) else { return 0 }
+        let word = layoutLine.words[wordIndex]
+        guard word.syllables.indices.contains(syllableIndex) else { return 0 }
+        return word.frame.minX + word.syllables[syllableIndex].frame.minX
     }
 }
 

@@ -1763,9 +1763,9 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(geom.feather, 30)
     }
 
-    /// 音节间停顿阶段：渐变软边应被夹紧在当前音节末尾与下一个音节起点之间，
-    /// 既保证已唱音节 100% 实心覆盖，又防止高亮泄漏至下一个未唱音节。
-    func testSweptGeometryClampsFeatherToGapDuringPause() {
+    /// 音节间停顿阶段：遮罩前沿不得越过下一个未唱音节的起始坐标，
+    /// 无论停顿多久，遮罩稳定停驻在字间空白内，下一个未唱字零高亮泄漏。
+    func testSweptGeometryDoesNotLeakIntoNextSyllableDuringPause() {
         let layoutLine = SyncedLyricsLineLayer.LayoutLine()
         layoutLine.startTime = 10
         layoutLine.endTime = 16
@@ -1797,19 +1797,15 @@ final class LyricsKitTests: XCTestCase {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state, progress: 13, verticalPadding: 6, specs: specs())
 
-        // 推进前沿停在“装”的末端 200
-        // 到“你”起点的距离为 208 - 200 = 8pt
-        XCTAssertEqual(geom.feather, 8)
-        XCTAssertEqual(geom.width, 208)
-
-        // 验证：fillLayer 宽度 = width - feather = 200，完全覆盖“装”
-        XCTAssertEqual(geom.width - geom.feather, 200)
-        // 验证：渐变右端 208 不超过“你”的起始位置 208，alpha 在 208 降为 0，“你”零高亮泄漏
-        XCTAssertEqual(geom.width, secondWord.frame.minX)
+        // 羽化恒为 30pt
+        XCTAssertEqual(geom.feather, 30)
+        // 遮罩右端 207.5 严格不越过“你”的起始位置 208，alpha 在 >= 207.5 为 0，“你”零高亮泄漏
+        XCTAssertLessThanOrEqual(geom.width, secondWord.frame.minX)
+        XCTAssertEqual(geom.width, 200 + 7.5, accuracy: 1e-6)
     }
 
-    /// 连贯歌唱中（音节间无显著停顿）：羽化宽度恒定为 30pt，匀速平滑推进，绝不锁死或跳跃。
-    func testSweptGeometryContinuousSingingKeepsConstantFeather() {
+    /// 连贯歌唱中：前后音节的交界严格连续（startWidth(N+1) == targetWidth(N)），匀速平滑推进，绝不锁死或跳跃。
+    func testSweptGeometryContinuousSingingIsSmoothAndContinuous() {
         let layoutLine = SyncedLyricsLineLayer.LayoutLine()
         layoutLine.startTime = 10
         layoutLine.endTime = 14
@@ -1830,51 +1826,29 @@ final class LyricsKitTests: XCTestCase {
         word.syllables = [syl1, syl2]
         layoutLine.words = [word]
 
-        // t = 11.5s（syl1 唱了 75%，front = 100 + 30 = 130）
-        // 连贯歌唱无停顿，羽化保持恒定 30pt，推进前沿与软边匀速向前
-        let state = layoutLine.progressState(at: 11.5)
-        let geom = LineProgressGradientGeometry.sweptGeometry(
-            of: layoutLine, state: state, progress: 11.5, verticalPadding: 6, specs: specs())
+        let s = specs()
+        let pad: CGFloat = 6
+        // 音节 1 的 target 与音节 2 的 start 严格相等
+        let target1 = LineProgressGradientGeometry.targetWidth(for: layoutLine, wordIndex: 0, syllableIndex: 0, specs: s, padding: pad)
+        let start2 = LineProgressGradientGeometry.startWidth(for: layoutLine, wordIndex: 0, syllableIndex: 1, specs: s, padding: pad)
+        XCTAssertEqual(target1, start2)
 
-        XCTAssertEqual(geom.feather, 30)
-        XCTAssertEqual(geom.width, 160)
-        XCTAssertEqual(geom.width - geom.feather, 130)
+        // t = 11.5s（syl1 唱了 75%）
+        let state1 = layoutLine.progressState(at: 11.5)
+        let geom1 = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state1, progress: 11.5, verticalPadding: pad, specs: s)
+        XCTAssertEqual(geom1.feather, 30)
+        // start(100) + (140 - 100) * 0.75 = 130
+        XCTAssertEqual(geom1.width, 130, accuracy: 1e-6)
+
+        // t = 12.0s（交界点）：音节 1 唱完与音节 2 开唱的位置完全一致
+        let geomEnd1 = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state1, progress: 12.0, verticalPadding: pad, specs: s)
+        XCTAssertEqual(geomEnd1.width, 140, accuracy: 1e-6)
     }
 
-    /// 当距离下一个音节充足（>= 30pt）时，使用完整 30pt 羽化。
-    func testSweptGeometryUsesFullFeatherWhenGapIsSufficient() {
-        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
-        layoutLine.startTime = 10
-        layoutLine.endTime = 14
-
-        var syl1 = SyncedLyricsLineLayer.Syllable()
-        syl1.startTime = 10
-        syl1.endTime = 12
-        syl1.frame = CGRect(x: 0, y: 0, width: 100, height: 50)
-
-        var syl2 = SyncedLyricsLineLayer.Syllable()
-        syl2.startTime = 12
-        syl2.endTime = 14
-        syl2.frame = CGRect(x: 100, y: 0, width: 100, height: 50)
-
-        var word = SyncedLyricsLineLayer.Word()
-        word.frame = CGRect(x: 0, y: 0, width: 200, height: 50)
-        word.syllables = [syl1, syl2]
-        layoutLine.words = [word]
-
-        // t = 10.2s（syl1 唱了 10%，front = 10）
-        // 距 syl2 (minX = 100) 有 90pt >= 30pt
-        let state = layoutLine.progressState(at: 10.2)
-        let geom = LineProgressGradientGeometry.sweptGeometry(
-            of: layoutLine, state: state, progress: 10.2, verticalPadding: 6, specs: specs())
-
-        XCTAssertEqual(geom.feather, 30)
-        XCTAssertEqual(geom.width, 40, accuracy: 1e-6)
-        XCTAssertEqual(geom.width - geom.feather, 10, accuracy: 1e-6)
-    }
-
-    /// 行尾最后一个音节无后续音节约束，羽化完整展开。
-    func testSweptGeometryLastSyllableUsesFullFeather() {
+    /// 行尾最后一个音节唱完时推进至 finishedWidth。
+    func testSweptGeometryLastSyllableUsesFinishedWidth() {
         let layoutLine = SyncedLyricsLineLayer.LayoutLine()
         layoutLine.startTime = 10
         layoutLine.endTime = 12
@@ -1889,13 +1863,18 @@ final class LyricsKitTests: XCTestCase {
         word.syllables = [syl]
         layoutLine.words = [word]
 
-        // t = 11s（syl 唱了 50%，front = 50 + 25 = 75）
-        let state = layoutLine.progressState(at: 11)
+        let pad: CGFloat = 6
+        let s = specs()
+        let expectedTarget = LineProgressGradientGeometry.finishedWidth(
+            lastWordMinX: 50, lastSyllableMaxX: 50, verticalPadding: pad, specs: s)
+
+        // 唱到 100%
+        let state = layoutLine.progressState(at: 12.0)
         let geom = LineProgressGradientGeometry.sweptGeometry(
-            of: layoutLine, state: state, progress: 11, verticalPadding: 6, specs: specs())
+            of: layoutLine, state: state, progress: 12.0, verticalPadding: pad, specs: s)
 
         XCTAssertEqual(geom.feather, 30)
-        XCTAssertEqual(geom.width, 105)
+        XCTAssertEqual(geom.width, expectedTarget)
     }
 
     /// finished 状态返回 finishedWidth 且羽化为默认值。
