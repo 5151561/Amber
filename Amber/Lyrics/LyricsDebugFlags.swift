@@ -41,6 +41,9 @@ enum LyricsDebugFlags {
         #endif
     }()
 
+    /// `-lyricslog`：向 `/tmp/lyrics_debug.log` 输出歌词滚动与选中诊断日志。
+    static let enablesLogging = flag("-lyricslog")
+
     private static func flag(_ name: String) -> Bool {
         #if DEBUG
         return ProcessInfo.processInfo.arguments.contains(name)
@@ -49,3 +52,20 @@ enum LyricsDebugFlags {
         #endif
     }
 }
+
+func lyricsDebugLog(_ message: String) {
+    #if DEBUG
+    guard LyricsDebugFlags.enablesLogging else { return }
+    let line = "\(Date()) [Lyrics] \(message)\n"
+    if let data = line.data(using: .utf8) {
+        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/lyrics_debug.log")) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/lyrics_debug.log"))
+        }
+    }
+    #endif
+}
+

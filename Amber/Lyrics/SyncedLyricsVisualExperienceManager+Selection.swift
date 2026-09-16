@@ -37,29 +37,20 @@ extension SyncedLyricsVisualExperienceManager {
         return .init(spring: spring)
     }
 
-    /// 逐字歌词的翻行弹簧：由一个归一化的「速度」现算，不读 specs。
-    ///
-    /// [实测]，全是立即数：
-    ///
-    /// ```
-    /// u  = (speed >= 0.2) ? (min(speed, 0.75) − 0.2) / 0.55 : 0      ; ∈ [0, 1]
-    /// ζ  = 0.78 + 0.12 · (1 − u)                                     ; 0.90 → 0.78
-    /// T  = 0.48 + 0.27 · u                                           ; 0.48 → 0.75
-    /// spring =(dampingRatio: ζ, response: T)
-    /// ```
-    ///
-    /// 也就是：**唱得越快，阻尼比越低、周期越长**——快歌的翻行更"荡"一点，
-    /// 慢歌更干脆。两条线性映射的四个端点都是实测。
-    ///
-    /// 入参 `speed` 的物理量纲没走完`[部分]`；`speed < 0.2` 时`u = 0`，
-    /// 取到端点 `(ζ = 0.90, T = 0.48)`——注意 ζ = 0.90 正好是
-    /// `specs.lineChangeSpringTimingParameters` `(1, 100, 18)` 的阻尼比，
-    /// 两条路在下端是接上的。
+    /// 逐字歌词的速度感知动态弹簧（sub_0x10110b814）。
     static func derivedLineChangeSpring(speed: Double) -> SpringTimingParameters {
-        let u = speed >= 0.2 ? (min(speed, 0.75) - 0.2) / 0.55 : 0
-        let dampingRatio = 0.78 + 0.12 * (1 - u)
-        let response = 0.48 + 0.27 * u
-        return SpringTimingParameters(dampingRatio: dampingRatio, response: response)
+        SpringTimingParameters.derivedLineChangeSpring(speed: speed)
+    }
+
+    /// 依据当前行节奏/时长计算归一化速度 speed ∈ [0.2, 0.75]（§9.1 / sub_0x10110b814）。
+    /// 快歌（<= 1.5s）取 0.75（u = 1, ζ = 0.78），慢歌（>= 5.0s）取 0.20（u = 0, ζ = 0.90）。
+    func calculateLineSpeed(for line: (any LyricsLine)?) -> Double {
+        guard let line else { return 0.2 }
+        let duration = max(0.1, line.endTime - line.startTime)
+        if duration <= 1.5 { return 0.75 }
+        if duration >= 5.0 { return 0.20 }
+        let fraction = (duration - 1.5) / (5.0 - 1.5)
+        return 0.75 - fraction * (0.75 - 0.20)
     }
 
     // MARK: - selecting line
@@ -259,11 +250,15 @@ extension SyncedLyricsVisualExperienceManager {
         guard let viewController,
               let plan = scrollFocusPlan(in: selectedLineViews, at: elapsed) else { return }
         guard plan.view !== scrollTargetView else { return }
+        lyricsDebugLog("followScrollTarget: newTarget=\(plan.view.lineLayer?.line?.index ?? -1) duration=\(plan.duration)")
         scrollTargetView = plan.view
         // 打开着的间奏行由展开动画自己落位（动画期间视口不动），这里不抢。
         guard plan.view !== instrumentalBreakVisibleView else { return }
-        viewController.scrollFocus(to: plan.view,
-                                   animation: makeLineChangeAnimation(settlingIn: plan.duration))
+        let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: plan.view.lineLayer?.line) : 0
+        let anim = makeLineChangeAnimation(speed: speed,
+                                           useSpecsSpring: lyrics?.type != .timedWords,
+                                           settlingIn: plan.duration)
+        viewController.scrollFocus(to: plan.view, animation: anim)
     }
 
     /// 把翻行弹簧压成「跑完只要 `duration`」的那一条。
@@ -271,10 +266,12 @@ extension SyncedLyricsVisualExperienceManager {
     /// - 只压不放：`duration` 不比它本来的时长短就原样返回。
     /// - `duration <= 0`（空档为 0，上一句的`endTime` 正好是下一句的`startTime`）
     ///   返回 `nil`，照本文件的老规矩就是**瞬时落位**：没有时间可占，就别假装在滚。
-    func makeLineChangeAnimation(settlingIn duration: TimeInterval)
+    func makeLineChangeAnimation(speed: Double = 0,
+                                 useSpecsSpring: Bool = true,
+                                 settlingIn duration: TimeInterval)
         -> SyncedLyricsLineLayer.SelectionAnimation? {
         guard duration > 0 else { return nil }
-        let base = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+        let base = makeLineChangeAnimation(speed: speed, useSpecsSpring: useSpecsSpring)
         guard duration < base.settlingDuration else { return base }
         return .init(spring: base.spring.timeScaled(to: duration, from: base.settlingDuration),
                      settlingDuration: duration)
@@ -339,9 +336,11 @@ extension SyncedLyricsVisualExperienceManager {
         // 焦点位轮不轮得到这一句，由 `scrollFocusPlan` 说了算（新行还没入列，一起传进去）。
         // 轮不到——正在唱的那句还没让位——就只换外观入列，滚动交给每帧的 `followScrollTarget`。
         let plan = scrollFocusPlan(in: selectedLineViews + [view], at: currentElapsedTime())
+        lyricsDebugLog("select line \(line.index), plan=\(plan?.view.lineLayer?.line?.index ?? -1), isSame=\(plan?.view === view)")
         scrollTargetView = plan?.view
         guard plan?.view === view else {
-            let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+            let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: line) : 0
+            let animation = makeLineChangeAnimation(speed: speed, useSpecsSpring: lyrics?.type != .timedWords)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
             viewController.relayout(affected: viewController.visibleLineViews(),
@@ -369,8 +368,11 @@ extension SyncedLyricsVisualExperienceManager {
             // 弹簧按这一次让位的时长压过（句间空档窄就跟着窄），与 `followScrollTarget` 同源。
             // 这里的描述符同时管**行外观与行盒重排**，空档为 0 时也不该退化成瞬时——
             // 视口不滚是一回事，行自己的外观切换是另一回事，所以兜底回原装那条。
-            let animation = makeLineChangeAnimation(settlingIn: plan?.duration ?? scrollLead)
-                ?? makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
+            let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: line) : 0
+            let animation = makeLineChangeAnimation(speed: speed,
+                                                    useSpecsSpring: lyrics?.type != .timedWords,
+                                                    settlingIn: plan?.duration ?? scrollLead)
+                ?? makeLineChangeAnimation(speed: speed, useSpecsSpring: lyrics?.type != .timedWords)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
             // 抓一份「当前与可视矩形相交的行」快照，
@@ -715,31 +717,4 @@ extension SyncedLyricsVisualExperienceManager {
     }
 }
 
-extension SpringTimingParameters {
-    /// 由阻尼比与周期反推 `(mass, stiffness, damping)`。
-    ///
-    /// [实测]，全部实测：
-    ///
-    /// ```
-    /// mass = Double(1)
-    /// k    = Double(2)
-    /// π    = ; 是 π，不是 2π
-    /// ω    = k · π / response = 2π / response
-    /// stiffness = mass · ω²
-    /// damping   = dampingRatio · 2 · √(stiffness · mass)
-    /// ```
-    ///
-    /// 只有两条指令 / `ret`——就是`Double.init(Int)`，
-    /// 所以那两个标量字面上是 **1 和 2**。与 SwiftUI `Spring(response:dampingRatio:)`
-    /// 一字不差。
-    ///
-    /// 造完之后原版同样造一个临时 `CASpringAnimation` 读回`settlingDuration`
-    /// 填进描述符，与另外两个构造点一致。
-    init(dampingRatio: Double, response: TimeInterval, mass: Double = 1) {
-        let omega = 2 * Double.pi / response
-        let stiffness = mass * omega * omega
-        self.init(mass: mass,
-                  stiffness: stiffness,
-                  damping: dampingRatio * 2 * (stiffness * mass).squareRoot())
-    }
-}
+

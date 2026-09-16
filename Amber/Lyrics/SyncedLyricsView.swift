@@ -157,7 +157,13 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
         // 「更大字体」按同一条走：它把两条副行的档位对调，已经建好的行同样不会自己改。
         let fontsChanged = coordinator.appliedOverrides.sizeClass != overrides.sizeClass
             || coordinator.appliedLargerText != settings.values.largerText
-        let rectChanged = coordinator.appliedOverrides.selectedLineRect != overrides.selectedLineRect
+        let rectChanged: Bool = {
+            guard let r1 = coordinator.appliedOverrides.selectedLineRect,
+                  let r2 = overrides.selectedLineRect else {
+                return (coordinator.appliedOverrides.selectedLineRect == nil) != (overrides.selectedLineRect == nil)
+            }
+            return abs(r1.minY - r2.minY) > 0.5 || abs(r1.height - r2.height) > 0.5
+        }()
         let marginsChanged =
             coordinator.appliedOverrides.horizontalMargin != overrides.horizontalMargin
 
@@ -180,8 +186,9 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
             coordinator.lyricsIdentity = identity
             controller.setLyrics(LyricsAdapter.makeLyrics(from: lyrics))
         } else if rectChanged {
-            // 只挪了基线：不重建，把当前行滑到新位置就行——
+            // 只挪了基线：重算几何落位并把当前行滑到新位置——
             // 这就是 [实测] §8.1 那条 `offsetObservation → activeBaselineConstraint`。
+            controller.relayoutEverything()
             controller.reanchorSelectedLine()
         }
     }

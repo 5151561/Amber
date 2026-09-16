@@ -44,6 +44,12 @@ final class SyncedLyricsViewController: NSViewController {
     var timingProviderGate = TimingProviderGate()
     /// 正在跑的滚动弹簧。每帧由 `displayLinkFired` 推一格，见 +ScrollSpring.swift。
     var scrollSpring: ScrollSpring?
+    /// 动画期间处于临时独立位移状态的行集合（零位移对账用）。
+    var displacedLineViews: Set<SyncedLyricsLineView> = []
+    /// 正在进行的逐行动画对账目标 origin。
+    var pendingScrollTargetOrigin: CGPoint?
+    /// 逐行滚动动画代际，用于废弃上一轮尚未结束的回调。
+    var scrollAnimationGeneration: Int = 0
     /// 当前处在悬停外观的那一行。见 `syncHoverState()`。
     weak var hoveredLineView: SyncedLyricsLineView?
     /// 块式通知观察者的令牌。见 `installScrollObserversIfNeeded()`——

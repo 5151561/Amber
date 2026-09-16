@@ -915,6 +915,38 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertNotNil(controller.scrollSpring)
     }
 
+    /// [实测] §6.1：点击驱动滚动后，`needsTapHandling` 必须立即撤旗，后续滚动恢复弹性阶梯延迟。
+    func testAnimateLineScrollResetsNeedsTapHandling() {
+        let controller = SyncedLyricsViewController()
+        controller.loadView()
+        let visual = SyncedLyricsVisualExperienceManager()
+        visual.specs = controller.specs
+        controller.manager = visual
+
+        var line0 = TextLine()
+        line0.index = 0
+        line0.startTime = 0
+        line0.endTime = 5
+        line0.text = "Line 0"
+
+        var line1 = TextLine()
+        line1.index = 1
+        line1.startTime = 5
+        line1.endTime = 10
+        line1.text = "Line 1"
+
+        var lyrics = Lyrics()
+        lyrics.lines = [line0, line1]
+        controller.setLyrics(lyrics)
+        visual.needsTapHandling = true
+
+        controller.animateLineScroll(to: CGPoint(x: 0, y: 100),
+                                      anchorLine: line1,
+                                      spring: controller.specs.lineChangeSpringTimingParameters)
+
+        XCTAssertFalse(visual.needsTapHandling, "needsTapHandling must be cleared after line scroll")
+    }
+
     /// 呼吸会让两侧圆点探出行宽，但**不为此留内边距**：[PX] Music 的首个点静止
     /// 左沿就压在歌词左沿上。留了 padding 三个点会整体右缩十来 pt。
     func testInstrumentalDotsDoNotReserveBreathingOverflow() throws {
@@ -1496,6 +1528,35 @@ final class LyricsKitTests: XCTestCase {
         let expanded = CGRect(x: 0, y: 200, width: 300, height: 40)
         XCTAssertEqual(LyricsLineGeometry.originY(
             after: expanded, firstLineStartingPosition: 60, lineSpacing: 25), 265)
+    }
+
+    /// §16.2：首行 y 在 .center 下落到让第 0 行在 origin=0 时居中于目标锚点的高度。
+    func testFirstLineStartingPositionRespectsSelectedLinePosition() {
+        var specs = LyricsSpecs()
+        specs.firstLineStartingPosition = 60
+        specs.selectedLinePosition = .topRelative(12, cardHeightPercentage: 0)
+        XCTAssertEqual(LyricsLineGeometry.firstLineY(specs: specs, lineHeight: 40, containerHeight: 600), 60)
+
+        // 居中有载荷矩形：(rect.height - line0.height)/2 + rect.minY
+        let rect = CGRect(x: 0, y: 100, width: 400, height: 500)
+        specs.selectedLinePosition = .center(rect: rect)
+        // 100 + (500 - 40)/2 = 100 + 230 = 330
+        XCTAssertEqual(LyricsLineGeometry.firstLineY(specs: specs, lineHeight: 40, containerHeight: 600), 330)
+
+        // 居中无载荷矩形：(containerHeight - line0.height)/2
+        specs.selectedLinePosition = .center(rect: nil)
+        // (600 - 40)/2 = 280
+        XCTAssertEqual(LyricsLineGeometry.firstLineY(specs: specs, lineHeight: 40, containerHeight: 600), 280)
+    }
+
+    /// [PX] §22.3：侧栏检查器以 0.381 视口高作为焦点锚点，并取整避免微小抖动。
+    func testSidebarSelectedLineRectCalculatesCorrectCenterAndRounds() throws {
+        let rect = try XCTUnwrap(LyricsBaseline.sidebarSelectedLineRect(panelHeight: 700.4, panelWidth: 280.2))
+        XCTAssertEqual(rect.height, 700)
+        XCTAssertEqual(rect.width, 280)
+        // 700 * 0.381 = 266.7 -> rounded to 267
+        // rect.minY = 267 - 700/2 = -83
+        XCTAssertEqual(rect.minY, -83)
     }
 
     // MARK: - §2.6 折行 / 行几何
@@ -2257,6 +2318,124 @@ final class LyricsKitTests: XCTestCase {
         visual.activateDueLines(at: 9.8)
         XCTAssertEqual(target.lineLayer?.isSelected, true)
     }
+
+    // MARK: - 歌词动效复刻测试（Apple Music 逐行独立位移 + 阶梯延迟 + 零位移对账 + 物理弹簧）
+
+    /// 逐字歌词动态弹簧端点与物理公式核验（sub_0x10110b814）。
+    /// ζ = 0.78 + 0.12 * (1 - u), T = 0.48 + 0.27 * u
+    func testDerivedLineChangeSpringEndpointsAndPhysics() {
+        // 慢歌端点：speed <= 0.2 => u = 0, ζ = 0.90, T = 0.48
+        let slowSpring = SpringTimingParameters.derivedLineChangeSpring(speed: 0.1)
+        XCTAssertEqual(slowSpring.dampingRatio, 0.90, accuracy: 1e-4)
+        XCTAssertEqual(2 * Double.pi / slowSpring.angularFrequency, 0.48, accuracy: 1e-4)
+
+        // 快歌端点：speed >= 0.75 => u = 1, ζ = 0.780, T = 0.75
+        let fastSpring = SpringTimingParameters.derivedLineChangeSpring(speed: 0.8)
+        XCTAssertEqual(fastSpring.dampingRatio, 0.780, accuracy: 1e-4)
+        XCTAssertEqual(2 * Double.pi / fastSpring.angularFrequency, 0.75, accuracy: 1e-4)
+
+        // 中间值：speed = 0.475 => u = 0.5, ζ = 0.84, T = 0.615
+        let midSpring = SpringTimingParameters.derivedLineChangeSpring(speed: 0.475)
+        XCTAssertEqual(midSpring.dampingRatio, 0.84, accuracy: 1e-4)
+        XCTAssertEqual(2 * Double.pi / midSpring.angularFrequency, 0.615, accuracy: 1e-4)
+
+        // 点击驱动：过阻尼 (2, 260, 50), ζ ≈ 1.096 > 1
+        let tap = SpringTimingParameters.tapDriven
+        XCTAssertEqual(tap.mass, 2.0)
+        XCTAssertEqual(tap.stiffness, 260.0)
+        XCTAssertEqual(tap.damping, 50.0)
+        XCTAssertGreaterThan(tap.dampingRatio, 1.0)
+    }
+
+    /// 逐行独立位移：动画开始时视口保持不动（contentView.bounds.origin 保持原位），
+    /// 受影响行按 50ms 阶梯延迟错开起跑（delay_i = 0.05 * (max(i, 1) - 1)），挂载增量动画。
+    func testAnimateLineScrollLeavesViewportStationaryDuringAnimation() throws {
+        let (controller, _) = makeExpansionFixture(instrumentalAt: 10)
+        let clip = try XCTUnwrap(controller.scrollView?.contentView)
+        let initialOrigin = clip.bounds.origin.y
+
+        guard let lines = controller.lyrics?.lines, lines.count > 4 else {
+            XCTFail("Fixture lacks sufficient lines")
+            return
+        }
+
+        let targetLine = lines[3]
+        let targetOrigin = CGPoint(x: 0, y: initialOrigin + 120)
+
+        // 启动逐行滚动动画
+        controller.animateLineScroll(to: targetOrigin,
+                                     anchorLine: targetLine,
+                                     spring: controller.specs.lineChangeSpringTimingParameters,
+                                     baseOffset: 0)
+
+        // 1. 容器视口先不动！
+        XCTAssertEqual(clip.bounds.origin.y, initialOrigin, accuracy: 1e-9, "视口在动画期间必须保持不动")
+
+        // 2. 圈定受影响行并已登记
+        XCTAssertFalse(controller.displacedLineViews.isEmpty, "受影响行必须进入 displacedLineViews 集合")
+
+        // 3. 逐行下发动画器，阶梯延迟核验
+        XCTAssertFalse(controller.currentAnimators.isEmpty, "必须建出逐行 LayerPropertyAnimator")
+        let sortedAnimators = controller.currentAnimators.sorted { $0.delay < $1.delay }
+        if sortedAnimators.count >= 3 {
+            XCTAssertEqual(sortedAnimators[0].delay, 0, accuracy: 1e-9, "第 1 行 delay 恒为 0")
+            XCTAssertEqual(sortedAnimators[1].delay, 0, accuracy: 1e-9, "前两行共享 delay 0")
+            XCTAssertEqual(sortedAnimators[2].delay, 0.05, accuracy: 1e-9, "第 3 行延迟 50ms")
+        }
+        if sortedAnimators.count >= 4 {
+            XCTAssertEqual(sortedAnimators[3].delay, 0.10, accuracy: 1e-9, "第 4 行延迟 100ms")
+        }
+
+        // 4. 图层 position 动画必须为 isAdditive
+        for animator in controller.currentAnimators {
+            for layer in animator.layers {
+                if let anim = layer.animation(forKey: "position") as? CABasicAnimation {
+                    XCTAssertTrue(anim.isAdditive, "逐行位移动画必须是 isAdditive")
+                }
+            }
+        }
+    }
+
+    /// 零位移对账：完成回调时瞬时重置图层 position 并将视口切换到目标位置，屏幕前后零位移。
+    func testZeroDisplacementReconciliation() throws {
+        let (controller, visual) = makeExpansionFixture(instrumentalAt: 10)
+        let clip = try XCTUnwrap(controller.scrollView?.contentView)
+        let initialOrigin = clip.bounds.origin.y
+
+        guard let lines = controller.lyrics?.lines, lines.count > 4 else {
+            XCTFail("Fixture lacks sufficient lines")
+            return
+        }
+
+        let targetLine = lines[3]
+        let delta: CGFloat = 100
+        let targetOrigin = CGPoint(x: 0, y: initialOrigin + delta)
+
+        controller.animateLineScroll(to: targetOrigin,
+                                     anchorLine: targetLine,
+                                     spring: controller.specs.lineChangeSpringTimingParameters,
+                                     baseOffset: 0)
+
+        // 记录对账前各受影响行在屏幕上的渲染理论坐标
+        let affected = Array(controller.displacedLineViews)
+        XCTAssertFalse(affected.isEmpty)
+
+        // 执行零位移对账
+        controller.reconcileDisplacedLines(to: targetOrigin)
+
+        // 1. 视口落到目标位置
+        XCTAssertEqual(clip.bounds.origin.y, targetOrigin.y, accuracy: 1e-9)
+
+        // 2. displacedLineViews 清空
+        XCTAssertTrue(controller.displacedLineViews.isEmpty)
+
+        // 3. 所有行图层的 position 恢复至 view.frame.origin
+        for view in affected {
+            let layerPos = view.layer?.position ?? .zero
+            XCTAssertEqual(layerPos.x, view.frame.origin.x, accuracy: 1e-9)
+            XCTAssertEqual(layerPos.y, view.frame.origin.y, accuracy: 1e-9)
+        }
+    }
 }
 
 
@@ -2383,6 +2562,7 @@ final class LargerTextPipelineTests: XCTestCase {
         XCTAssertEqual(lyrics.font.pointSize, pronunciation.font.pointSize)
     }
 }
+
 
 /// `syncBlurToPlaybackState()` 只读 `isPaused`，`elapsedTime` 走不到。
 @MainActor

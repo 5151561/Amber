@@ -74,7 +74,7 @@ extension SyncedLyricsViewController {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (index, view) in manager.lineViews.enumerated()
-        where !animatedIDs.contains(ObjectIdentifier(view)) {
+        where !animatedIDs.contains(ObjectIdentifier(view)) && !displacedLineViews.contains(view) {
             view.frame = lineFrames[safe: index] ?? .zero
         }
         CATransaction.commit()
@@ -183,24 +183,29 @@ extension SyncedLyricsViewController {
         guard let manager else { return }
         let visible = scrollView?.documentVisibleRect ?? .zero
         let fitsVertically = view.frame.minY >= visible.minY && view.frame.maxY <= visible.maxY
+        lyricsDebugLog("scrollFocus to line \(view.lineLayer?.line?.index ?? -1), fitsVertically=\(fitsVertically)")
         guard !fitsVertically, let line = view.lineLayer?.line else {
             scroll(toLineView: view, animation: animation, animated: animation != nil)
             return
         }
-        guard animateToDecision(targetLineFrame: view.frame) == .scroll else { return }
+        guard animateToDecision(targetLineFrame: view.frame) == .scroll else {
+            lyricsDebugLog("animateToDecision != .scroll")
+            return
+        }
         guard let animation else {
             scroll(toLineView: view, animation: nil, animated: false)
             return
         }
         let elapsed = manager.currentElapsedTime()
-        // 底弹簧用调用方压好的那条（句间空档窄时它已经被压短了），而不是 specs 里那条原装的——
-        // 否则「提前量」是按空档算的、「跑完」还是按原装算的，两头对不上。
-        // 点击驱动那一支自有它的硬编码弹簧（§6.1），`lineChangeSpring` 里照旧优先。
-        let (spring, delay) = lineChangeSpring(for: line,
-                                               baseOffset: elapsed - line.startTime,
-                                               base: animation.spring)
+        let (spring, _) = lineChangeSpring(for: line,
+                                           baseOffset: elapsed - line.startTime,
+                                           base: animation.spring)
+        let offset = elapsed - line.startTime
         manager.needsTapHandling = false
-        scroll(to: targetOrigin(for: view), spring: spring, delay: delay)
+        animateLineScroll(to: targetOrigin(for: view),
+                          anchorLine: line,
+                          spring: spring,
+                          baseOffset: offset)
     }
 
     /// 把某一行滚回它的目标位置（§2.5）。三道闸同上。
@@ -211,12 +216,20 @@ extension SyncedLyricsViewController {
                 animation: SyncedLyricsLineLayer.SelectionAnimation?,
                 animated: Bool) {
         guard let manager else { return }
+        lyricsDebugLog("scroll(toLineView:) line=\(view.lineLayer?.line?.index ?? -1), animated=\(animated), hasAnim=\(animation != nil), allowAnimate=\(manager.allowAnimateToNextLineAfterScroll)")
         guard manager.mode == .regular, !isDragging,
               manager.allowAnimateToNextLineAfterScroll else { return }
 
         let origin = targetOrigin(for: view)
-        guard animated, let animation else { setScrollOrigin(origin); return }
-        scroll(to: origin, spring: animation.spring, delay: 0)
+        guard animated, let animation, let line = view.lineLayer?.line else {
+            manager.needsTapHandling = false
+            setScrollOrigin(origin)
+            return
+        }
+        animateLineScroll(to: origin,
+                          anchorLine: line,
+                          spring: animation.spring,
+                          baseOffset: 0)
     }
 
     /// 目标行没被完整装下时的降级路径：滚动动画过去。
@@ -239,15 +252,147 @@ extension SyncedLyricsViewController {
                                updatesInstrumentalTime: true)
 
         case .scroll:
-            let (spring, delay) = lineChangeSpring(for: line, baseOffset: elapsed - line.startTime)
-            // 点击驱动的那条硬编码弹簧只管这一次滚动（§6.1），用完就撤旗。
+            let (spring, _) = lineChangeSpring(for: line, baseOffset: elapsed - line.startTime)
             manager.needsTapHandling = false
             manager.selectLine(line,
                                animation: .init(spring: spring),
                                deselectingOthers: false,
                                updatesInstrumentalTime: true)
-            scroll(to: scrollOrigin(forLineFrame: view.frame), spring: spring, delay: delay)
+            animateLineScroll(to: scrollOrigin(forLineFrame: view.frame),
+                              anchorLine: line,
+                              spring: spring,
+                              baseOffset: elapsed - line.startTime)
         }
+    }
+
+    /// 视口受影响行的逐行独立位移 + 零位移对账。
+    ///
+    /// 还原 Apple Music 歌词动效核心机制（§16.4 / §17.1 / §17.2 / §6.5）：
+    /// 1. 容器视口先不动（contentView.bounds.origin 保持原位）；
+    /// 2. 圈定可视区与目标可视区交集内的连续受影响行集合（sub_0x10111c548）；
+    /// 3. 逐行下发独立的 Layer 增量动画（LayerPropertyAnimator），
+    ///    按 `delay = lineDelay × (max(i, 1) − 1)` 阶梯延迟错开起跑；
+    /// 4. 跑完在 completionHandlers 里清除临时位移，瞬时切换 bounds.origin（零位移对账）。
+    func animateLineScroll(to targetOrigin: CGPoint,
+                           anchorLine: any LyricsLine,
+                           spring: SpringTimingParameters,
+                           baseOffset: TimeInterval = 0) {
+        guard let clip = scrollView?.contentView, let manager else { return }
+        let currentOrigin = clip.bounds.origin
+        let delta = targetOrigin.y - currentOrigin.y
+        lyricsDebugLog("animateLineScroll: anchor=\(anchorLine.index) targetOrigin=\(targetOrigin.y) currentOrigin=\(currentOrigin.y) delta=\(delta)")
+
+        // 死区判定：小于 1pt 的位移归零，直接落位不抖动。
+        guard abs(delta) >= Self.scrollDeadZone else {
+            lyricsDebugLog("animateLineScroll: deadzone hit delta=\(delta)")
+            manager.needsTapHandling = false
+            setScrollOrigin(targetOrigin)
+            return
+        }
+
+        // 已经有正在执行的同目标位移动画时，忽略并发冗余调用（例如 didSelect 与 didDeselect 几毫秒内相继触发），
+        // 绝不打断已经启动的梯形独立位移动画。
+        if let pending = pendingScrollTargetOrigin, abs(pending.y - targetOrigin.y) < Self.scrollDeadZone {
+            lyricsDebugLog("animateLineScroll: already scrolling to \(targetOrigin.y), ignoring redundant call")
+            return
+        }
+
+        // 收集受影响行（sub_0x10111c548）
+        let affected = affectedLineViews(aroundLineAt: anchorLine.index, deltaY: delta)
+        lyricsDebugLog("animateLineScroll: affected.count=\(affected.count)")
+        guard !affected.isEmpty else {
+            manager.needsTapHandling = false
+            setScrollOrigin(targetOrigin)
+            return
+        }
+
+        // 如果已有正在位移的行，一并纳入，保证并发换行时不漏重置。
+        let combined = Array(Set(affected).union(displacedLineViews))
+            .sorted { ($0.lineLayer?.line?.index ?? 0) < ($1.lineLayer?.line?.index ?? 0) }
+        displacedLineViews = Set(combined)
+        pendingScrollTargetOrigin = targetOrigin
+
+        scrollAnimationGeneration &+= 1
+        let currentGeneration = scrollAnimationGeneration
+
+        let isTapDriven = manager.needsTapHandling
+        manager.needsTapHandling = false // [实测 §6.1] 点击驱动仅生效一次，立即撤旗
+        let springParams = isTapDriven ? SpringTimingParameters.tapDriven : spring
+        let settlingDuration = CASpringAnimation(keyPath: "position", spring: springParams).settlingDuration
+
+        let curve = LyricsAnimationCurve.spring(
+            SpringAnimationParameters(mass: springParams.mass,
+                                       stiffness: springParams.stiffness,
+                                       damping: springParams.damping,
+                                       duration: nil,
+                                       settlingDuration: settlingDuration))
+
+        let stagger = LineStagger.sharedFirstPair(specs.lineDelay)
+        var animators: [LayerPropertyAnimator] = []
+        for (i, lineView) in combined.enumerated() {
+            guard let layer = lineView.layer else { continue }
+            let delay: TimeInterval = isTapDriven ? 0 : stagger.delay(movedOrdinal: i, affectedOrdinal: i)
+
+            let targetLayerY = lineView.frame.origin.y - delta
+            let currentLayerY = layer.presentation()?.position.y ?? layer.position.y
+            let offsetY = currentLayerY - targetLayerY
+            lyricsDebugLog("lineView[\(lineView.lineLayer?.line?.index ?? -1)] ordinal=\(i) delay=\(delay) offsetY=\(offsetY)")
+            guard abs(offsetY) >= 0.5 else { continue }
+
+            let animator = LayerPropertyAnimator(curve: curve)
+            animator.delay = delay
+            animator.layers = [layer]
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.position = CGPoint(x: lineView.frame.origin.x, y: targetLayerY)
+            CATransaction.commit()
+
+            animator.addAdditiveAnimation(to: layer,
+                                          keyPath: "position",
+                                          offset: CGPoint(x: 0, y: offsetY),
+                                          frameRateRange: (min: 0, max: 0))
+            animators.append(animator)
+        }
+
+        guard !animators.isEmpty else {
+            lyricsDebugLog("animateLineScroll: animators is empty!")
+            // 一条动画都没建时立即跑零位移对账
+            reconcileDisplacedLines(to: targetOrigin)
+            return
+        }
+
+        var remaining = animators.count
+        for animator in animators {
+            animator.completionHandlers.append { [weak self] in
+                guard let self, self.scrollAnimationGeneration == currentGeneration else { return }
+                remaining -= 1
+                if remaining <= 0 {
+                    if let finalOrigin = self.pendingScrollTargetOrigin {
+                        self.reconcileDisplacedLines(to: finalOrigin)
+                    }
+                }
+            }
+        }
+
+        track(animators)
+        for animator in animators {
+            animator.finishDispatch { }
+        }
+    }
+
+    /// 零位移对账：在 CATransaction 中瞬时恢复图层 position 并切换 contentView.bounds.origin。
+    func reconcileDisplacedLines(to finalOrigin: CGPoint) {
+        lyricsDebugLog("reconcileDisplacedLines to \(finalOrigin.y), count=\(displacedLineViews.count)")
+        pendingScrollTargetOrigin = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for view in displacedLineViews {
+            view.layer?.position = CGPoint(x: view.frame.origin.x, y: view.frame.origin.y)
+        }
+        displacedLineViews.removeAll()
+        setScrollOrigin(finalOrigin)
+        CATransaction.commit()
     }
 }
 
@@ -304,6 +449,14 @@ extension SyncedLyricsViewController {
             animator.state = .idle
         }
         currentAnimators = []
+        pendingScrollTargetOrigin = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for view in displacedLineViews {
+            view.layer?.position = CGPoint(x: view.frame.origin.x, y: view.frame.origin.y)
+        }
+        displacedLineViews.removeAll()
+        CATransaction.commit()
     }
 
     /// 一行应该落在哪儿。公式见 §2.5。

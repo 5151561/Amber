@@ -48,6 +48,18 @@ struct SpringTimingParameters: Sendable, Equatable {
                                       stiffness: stiffness / (k * k),
                                       damping: damping / k)
     }
+
+    /// 「(阻尼比, 周期) → (mass, stiffness, damping)」的转换器（sub_0x1010a3278）。
+    ///
+    /// mass = 1, ω = 2π / response, stiffness = mass · ω², damping = dampingRatio · 2 · √(stiffness · mass)。
+    /// 与 SwiftUI Spring(response:dampingRatio:) 一致。
+    init(dampingRatio: Double, response: TimeInterval, mass: Double = 1) {
+        let omega = 2 * Double.pi / response
+        let stiffness = mass * omega * omega
+        self.init(mass: mass,
+                  stiffness: stiffness,
+                  damping: dampingRatio * 2 * (stiffness * mass).squareRoot())
+    }
 }
 
 /// 48 字节，`LyricsAnimationCurve.spring` 的载荷。字段顺序由三个独立构造点
@@ -118,6 +130,20 @@ extension SpringTimingParameters {
     ///   是压 `delay`，见`DurationHack`。
     static let tapDriven = SpringTimingParameters(
         mass: 2, stiffness: 260, damping: 50)
+
+    /// 逐字歌词的速度感知动态弹簧（sub_0x10110b814）。
+    ///
+    /// 依据演唱进度 / 语速比率 u ∈ [0, 1] 动态现算弹簧：
+    /// u = (speed >= 0.2) ? (min(speed, 0.75) - 0.2) / 0.55 : 0
+    /// ζ = 0.78 + 0.119 · (1 - u)
+    /// T = 0.476 + 0.27 · u
+    /// 唱得越急促，阻尼比 ζ 越低（最低跌到 0.78），弹簧越“荡”越有弹力；慢歌则接近 0.90，沉着稳定。
+    static func derivedLineChangeSpring(speed: Double) -> SpringTimingParameters {
+        let u = speed >= 0.2 ? (min(speed, 0.75) - 0.2) / 0.55 : 0
+        let dampingRatio = 0.78 + 0.12 * (1 - u)
+        let response = 0.48 + 0.27 * u
+        return SpringTimingParameters(dampingRatio: dampingRatio, response: response)
+    }
 }
 
 /// duration hack 本体：时长不够时压掉动画的起始延迟。

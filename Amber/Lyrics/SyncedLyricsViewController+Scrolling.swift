@@ -41,6 +41,7 @@ extension SyncedLyricsViewController {
     /// `scrollToVisible:`——那些会让 AppKit 接管曲线，和原版对不上。
     func setScrollOrigin(_ origin: CGPoint) {
         guard let clip = scrollView?.contentView else { return }
+        lyricsDebugLog("setScrollOrigin: from=\(clip.bounds.origin.y) to=\(origin.y)")
         var b = clip.bounds
         b.origin = origin
         clip.bounds = b
@@ -144,6 +145,29 @@ enum LyricsLineGeometry {
                         lineSpacing: CGFloat) -> CGFloat {
         guard let previous else { return firstLineStartingPosition }
         return previous.maxY + (previous.height > 0 ? lineSpacing : 0)
+    }
+
+    /// 首行的纵向落点。规格见 §16.2。
+    ///
+    /// [实测]：
+    /// - 贴顶版式（`specs.selectedLinePosition.tag >= 0`，即 `.top` / `.topRelative`）：
+    ///   落到 `specs.firstLineStartingPosition`（= 60）；
+    /// - 居中版式（`tag < 0`，即 `.center`）：落到让首行在滚动 origin 为 0 时正好居中于载荷矩形的高度，
+    ///   即 `|sub_10109a09c(0, 目标行几何).y| = (rect.height − line0.height)/2 + rect.minY`。
+    ///   [PX] §22.3 实测「首组为焦点时组框中心仍在锚位（上方留白 276）」正是这个初值。
+    static func firstLineY(specs: LyricsSpecs,
+                           lineHeight: CGFloat,
+                           containerHeight: CGFloat) -> CGFloat {
+        switch specs.selectedLinePosition {
+        case .top, .topRelative:
+            return specs.firstLineStartingPosition
+        case .center(let rect):
+            if let rect {
+                return max(specs.firstLineStartingPosition, rect.minY + (rect.height - lineHeight) / 2)
+            } else {
+                return max(specs.firstLineStartingPosition, (containerHeight - lineHeight) / 2)
+            }
+        }
     }
 
     /// 一行排版时实际可用的宽度。
@@ -328,9 +352,10 @@ extension SyncedLyricsViewController {
 
         let origin = targetOrigin(for: view)          // 间奏行按收起态算锚点，见 targetOrigin
         if jumpShouldAnimate(targetLineFrame: view.frame, targetLine: line, animated: animated) {
-            scroll(to: origin,
-                   spring: specs.lineChangeSpringTimingParameters,
-                   delay: 0)
+            animateLineScroll(to: origin,
+                              anchorLine: line,
+                              spring: specs.lineChangeSpringTimingParameters,
+                              baseOffset: 0)
         } else {
             setScrollOrigin(origin)
         }
