@@ -8,7 +8,7 @@ final class LineProgressGradientLayer: CALayer {
     enum Direction: Sendable { case leftToRight, rightToLeft }
 
     var color: CGColor?                       // +8
-    var featherWidth: CGFloat = 30 {          // +16  [实测] specs.lineProgressionGradientFeather
+    var featherWidth: CGFloat = 16 {          // +16  specs.lineProgressionGradientFeather
         didSet {
             guard oldValue != featherWidth else { return }
             setNeedsLayout()
