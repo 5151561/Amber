@@ -95,6 +95,7 @@ extension SyncedLyricsVisualExperienceManager {
         let effectiveStart = (line as? TextLine)?.syllables.first?.startTime ?? line.startTime
         let isDue = deselectingOthers
             || line is InstrumentalLine
+            || scrollTargetView === target
             || currentElapsedTime() >= effectiveStart
 
         // 二、目标行进选中态。–
@@ -259,6 +260,13 @@ extension SyncedLyricsVisualExperienceManager {
                                            useSpecsSpring: lyrics?.type != .timedWords,
                                            settlingIn: plan.duration)
         viewController.scrollFocus(to: plan.view, animation: anim)
+        if plan.view.lineLayer?.isSelected != true {
+            if plan.view.isHighlighted { plan.view.isHighlighted = false }
+            plan.view.setAccessibilitySelected(true)
+            plan.view.lineLayer?.apply(selected: true, animation: anim)
+            startWordProgress(on: plan.view, animated: anim != nil)
+            setBlurRadius(0, on: plan.view, animated: true)
+        }
     }
 
     /// 把翻行弹簧压成「跑完只要 `duration`」的那一条。
