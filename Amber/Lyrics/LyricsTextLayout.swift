@@ -300,16 +300,44 @@ enum LyricsTextLayout {
     }
 
     /// 按给定宽度折行后要占多大。宽度非正时直接返回零。
+    ///
+    /// **折成几行问 TextKit，行与行隔多远问 CoreText。** 两边对同一段中文的行距不一样：
+    /// [实测 2026-09-16] 50pt 的「一天到晚命令王宮裡的裁縫師們，替他做各種不同款式的新衣」
+    /// 折 3 行，TextKit 的 `usedRect` 报 150（每行 50——它按**真正落到行上的字体**算，
+    /// 中文回退到苹方，50pt 行高正好 50），而 `CATextLayer` 画出来是 174
+    /// （每行 58.89——CoreText 的行距取**基准字体**，SF 50pt 是 48.34 + 10.55）。
+    /// 行框按 150 建、图层按 174 画，最后那一行就有小半行在框外被裁掉。
+    /// 纯文本歌词（散文，动辄三四行）一眼就能看见；唱词那种一两行的只啃掉一点 descender。
+    ///
+    /// **别试着用段落样式把行高钉死**：`minimumLineHeight` / `maximumLineHeight`
+    /// `CTFramesetter` 是认的（钉到 50 之后 suggest 回 150），但 **`CATextLayer` 不认**
+    /// ——钉完照旧按 58.89 画（实测把图层渲进位图数行，三行的墨迹带仍是 19–106 /
+    /// 137–232 / 255–…）。它与「`CATextLayer` 认 `alignmentMode`、不认段落对齐」是同一族坑。
+    ///
+    /// 所以**只有折出不止一行时**才改问 CoreText：单行没有「行与行」可言，
+    /// 两边给的高度本来就一样，走老路，既有的行距规格一点不动。
     static func size(_ text: String,
                      attributes: [NSAttributedString.Key: Any],
                      width: CGFloat) -> CGSize {
         guard !text.isEmpty, width > 0 else { return .zero }
         let wrapped = wrap(text, attributes: attributes, width: width)
         guard !wrapped.fragments.isEmpty else { return .zero }
+        let laidOut = wrapped.fragments.count > 1
+            ? drawnHeight(of: hardWrapped(text, attributes: attributes, width: width), width: width)
+            : wrapped.usedSize.height
         let font = attributes[.font] as? NSFont
-        let height = font.map { rasterSafeHeight(wrapped.usedSize.height, font: $0) }
-            ?? ceil(wrapped.usedSize.height)
+        let height = font.map { rasterSafeHeight(laidOut, font: $0) } ?? ceil(laidOut)
         return CGSize(width: wrapped.usedSize.width, height: height)
+    }
+
+    /// `CATextLayer` 画这串硬换行的字要多高——直接问画它的那个引擎。
+    /// 入参必须是已经加好硬换行的那一份（`hardWrapped` 的产物），
+    /// 不然 CoreText 会按自己的断点再折一次，数出来的行数就不是屏上那几行。
+    private static func drawnHeight(of string: NSAttributedString, width: CGFloat) -> CGFloat {
+        let setter = CTFramesetterCreateWithAttributedString(string)
+        return CTFramesetterSuggestFrameSizeWithConstraints(
+            setter, CFRange(location: 0, length: 0), nil,
+            CGSize(width: width, height: .greatestFiniteMagnitude), nil).height
     }
 
     /// 一行文字的墨高（ascent + descent，**不含 leading**）。

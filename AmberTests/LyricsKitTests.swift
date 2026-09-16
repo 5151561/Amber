@@ -1603,6 +1603,62 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(style.alignment, .natural)      // nil = natural
     }
 
+    /// 多行的行高要按**画它的那个引擎**算。
+    ///
+    /// TextKit 折 3 行的中文报 150（每行 50，按回退到的苹方算），
+    /// `CATextLayer`（CoreText）画出来是 174（每行 58.89，按基准字体 SF 算）。
+    /// 按 150 建行框就会把最后小半行裁在框外。这条把「测出来的高度装得下画出来的字」
+    /// 钉住：**把硬换行那串真画进一张位图，最后一行的墨迹不许碰到底边。**
+    ///
+    /// 不要改成「比 TextKit 的 usedRect 大多少」之类的比例断言——那是拿系数凑；
+    /// 这里验的是画出来到底裁没裁。
+    func testMultiLineHeightFitsWhatCoreTextDraws() throws {
+        let font = NSFont.systemFont(ofSize: 50, weight: .bold)
+        let text = "一天到晚命令王宮裡的裁縫師們，替他做各種不同款式的新衣"
+        let width: CGFloat = 645
+        let attributes = LyricsTextLayout.attributes(
+            for: text, font: font, color: CGColor(gray: 1, alpha: 1))
+        let wrapped = LyricsTextLayout.wrap(text, attributes: attributes, width: width)
+        XCTAssertGreaterThan(wrapped.fragments.count, 1, "样本必须折出不止一行，否则这条什么都没验")
+
+        let height = LyricsTextLayout.size(text, attributes: attributes, width: width).height
+        let layer = CATextLayer()
+        layer.contentsScale = 1
+        layer.isWrapped = true
+        layer.string = LyricsTextLayout.hardWrapped(text, attributes: attributes, width: width)
+        layer.frame = CGRect(x: 0, y: 0, width: width, height: height)
+
+        let image = NSImage(size: CGSize(width: width, height: height))
+        image.lockFocus()
+        if let context = NSGraphicsContext.current?.cgContext { layer.render(in: context) }
+        image.unlockFocus()
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+
+        func hasInk(row y: Int) -> Bool {
+            stride(from: 0, to: rep.pixelsWide, by: 4).contains {
+                (rep.colorAt(x: $0, y: y)?.brightnessComponent ?? 0) > 0.5
+            }
+        }
+        // 底边那一行像素不许有墨：有就说明最后一行正贴着框边被裁。
+        XCTAssertFalse(hasInk(row: rep.pixelsHigh - 1))
+        // 而且最后一行确实画出来了（不是整行都没画）。
+        XCTAssertTrue((0..<rep.pixelsHigh).contains { $0 > rep.pixelsHigh * 2 / 3 && hasInk(row: $0) })
+    }
+
+    /// 单行不受上面那条影响：没有「行与行」，两个引擎给的高度本来就一样，
+    /// 走的还是 TextKit 那条老路——既有的行距规格一点不动。
+    func testSingleLineHeightStaysOnTheTextKitPath() {
+        let font = lyricsFont()
+        let text = "我们在夜色里唱着歌"
+        let width: CGFloat = 645
+        let attributes = LyricsTextLayout.attributes(
+            for: text, font: font, color: CGColor(gray: 1, alpha: 1))
+        let wrapped = LyricsTextLayout.wrap(text, attributes: attributes, width: width)
+        XCTAssertEqual(wrapped.fragments.count, 1)
+        XCTAssertEqual(LyricsTextLayout.size(text, attributes: attributes, width: width).height,
+                       LyricsTextLayout.rasterSafeHeight(wrapped.usedSize.height, font: font))
+    }
+
     /// CJK 的字形与断点开关：不设 `languageIdentifier` 排出来跟官方不一样。
     func testLanguageIdentifierFollowsScript() {
         // 汉字一律按简体：这条路在主线程排版里，不做需要加载模型的语言识别。
