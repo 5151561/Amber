@@ -173,24 +173,30 @@ final class TrackInfoTests: XCTestCase {
         XCTAssertEqual(track.title, "标题")
     }
 
-    // MARK: - updateTrack 四处同步
+    // MARK: - updateTrack 五处同步
 
-    func testUpdateTrackTouchesAllFourPlaces() {
+    func testUpdateTrackTouchesAllFivePlaces() {
         let library = LibraryStore(directory: directory)
         let track = makeTrack()
         library.addToLibrary(track)
         library.toggleFavorite(track)
-        library.noteStarted(track)
+        // 第五处是最近播放台账里的**散曲格**：只有 `.track` 那一 case 含可变的曲目字段。
+        library.noteStarted(track, container: .track(track))
         let playlist = library.createPlaylist(name: "单子")
         library.addTracks([track], toPlaylist: playlist.id)
 
-        let changed = library.updateTrack(id: track.id) { $0.title = "四处都要改" }
+        let changed = library.updateTrack(id: track.id) { $0.title = "五处都要改" }
         XCTAssertTrue(changed)
 
-        XCTAssertEqual(library.libraryTracks.first(where: { $0.id == track.id })?.title, "四处都要改")
-        XCTAssertEqual(library.favoriteTracks.first(where: { $0.id == track.id })?.title, "四处都要改")
-        XCTAssertEqual(library.recentTracks.first(where: { $0.id == track.id })?.title, "四处都要改")
-        XCTAssertEqual(library.playlists.first?.tracks.first?.title, "四处都要改")
+        XCTAssertEqual(library.libraryTracks.first(where: { $0.id == track.id })?.title, "五处都要改")
+        XCTAssertEqual(library.favoriteTracks.first(where: { $0.id == track.id })?.title, "五处都要改")
+        XCTAssertEqual(library.recentTracks.first(where: { $0.id == track.id })?.title, "五处都要改")
+        XCTAssertEqual(library.playlists.first?.tracks.first?.title, "五处都要改")
+        if case .track(let stored) = library.recentContainers.first {
+            XCTAssertEqual(stored.title, "五处都要改")
+        } else {
+            XCTFail("台账里该有一格散曲")
+        }
     }
 
     func testUpdateTrackIsNoOpWhenTransformChangesNothing() {

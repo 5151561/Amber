@@ -90,6 +90,13 @@ protocol CatalogPageModelProviding: AnyObject {
     var statePublisher: AnyPublisher<CatalogPageState, Never> { get }
     /// 换音源 / 首次上屏 / 错误页点「重试」
     func reload()
+    /// 本地资料库那几段（最近播放 / 音乐回忆）变了：只重算它们，不发音源请求。
+    /// 只有主页那份模型有这种段，别家默认什么都不做。
+    func refreshLocalSections()
+}
+
+extension CatalogPageModelProviding {
+    func refreshLocalSections() {}
 }
 
 /// 钉在页面内容**底下**、不随文稿滚的背景层（艺人页的满幅封面，`ArtistBackdropView`）。
@@ -176,6 +183,11 @@ class CatalogPageViewController: ContentPageController {
     private var itemsByID: [CatalogEntryID: CatalogItem] = [:]
     /// 宽度还没落定时挡下来的那一份快照，等 `viewDidLayout` 补灌（见`apply(sections:)`）。
     private var pendingSections: [CatalogSection]?
+    /// 切走期间台账变过：这一页被压住时不灌快照（滚动位置、悬浮态都还挂在上面，
+    /// 灌了也没人看），记一笔等 `pageDidAppear()` 再补。
+    private var needsLocalRefresh = false
+    /// 上一份快照的**版式指纹**（段序 / 每段件数 / 容器宽），见 `apply(sections:)` 末尾。
+    private var lastLayoutSignature: String?
     private var tracksByID: [CatalogEntryID: Track] = [:]
 
     // 三态覆盖层
@@ -383,6 +395,23 @@ class CatalogPageViewController: ContentPageController {
                 .store(in: &cancellables)
         }
 
+        // 听歌记账动了「最近播放」的台账 → 只重算本地那两段。根页是缓存的，
+        // 不订阅的话听完一首歌货架要等到换音源或重启才变。
+        // `@Published` 在 willSet 发布，所以落到下一轮再读（同上面那条订阅）；
+        // 首值由下面那句 `reload()` 负责，这里 `dropFirst()` 掉。
+        appState.library.$recentContainers
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                guard !self.view.isHiddenOrHasHiddenAncestor else {
+                    self.needsLocalRefresh = true
+                    return
+                }
+                self.model.refreshLocalSections()
+            }
+            .store(in: &cancellables)
+
         model.statePublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -419,6 +448,14 @@ class CatalogPageViewController: ContentPageController {
 
     /// 切走：导航容器只把视图 `isHidden` 掉，鼠标不会再发 exited，
     /// 不清的话箭头与那张卡的高亮会原样留到下次切回来。
+    /// 切回来：被压住期间攒下的那次台账变动在这里补上。
+    override func pageDidAppear() {
+        super.pageDidAppear()
+        guard needsLocalRefresh else { return }
+        needsLocalRefresh = false
+        model.refreshLocalSections()
+    }
+
     override func pageDidDisappear() {
         super.pageDidDisappear()
         clearHover()
@@ -455,10 +492,15 @@ class CatalogPageViewController: ContentPageController {
 
     /// 快照里的一条。`CatalogItem.id` 只在段内唯一（同一张专辑会同时出现在两段里），
     /// 而 diffable 要求**全局**唯一，所以带上段 id 与下标。
+    /// 一件的身份。**不带位置**：diffable 按它认「还是不是同一件」，位置一旦进来，
+    /// 在货架头上插一张新卡就会让后面每一件的身份全变，12 张卡被判成「整批删掉重加」——
+    /// 全部重建（封面重取、看得见闪动），也没有 Music 那种「新卡从左边长出来」的插入动画。
     private struct CatalogEntryID: Hashable {
         let section: String
-        let index: Int
         let id: String
+        /// 同一段里**重复出现**的同一件（同一张碟摆两次）才靠它区分。
+        /// 第一件永远是 0，所以段首插入不会动到其余各件的身份。
+        let occurrence: Int
     }
 
     private enum PageLayoutSection {
@@ -619,15 +661,20 @@ class CatalogPageViewController: ContentPageController {
             // 那一串 `NSCollectionLayoutGroupCustomItem` 的顺序一一对应。
             // 数据源那边按 id 先查 `tracksByID` 再查`itemsByID`，混着放没问题。
             var ids: [CatalogEntryID] = []
-            for (index, item) in renderItems(of: section).enumerated() {
-                let id = CatalogEntryID(section: section.id, index: index, id: item.id)
+            // 段内同一个 id 第二次出现才给下一个 occurrence（见 `CatalogEntryID`）。
+            var occurrences: [String: Int] = [:]
+            func entry(_ rawID: String) -> CatalogEntryID {
+                let occurrence = occurrences[rawID, default: 0]
+                occurrences[rawID] = occurrence + 1
+                return CatalogEntryID(section: section.id, id: rawID, occurrence: occurrence)
+            }
+            for item in renderItems(of: section) {
+                let id = entry(item.id)
                 itemsByID[id] = item
                 ids.append(id)
             }
-            let itemCount = ids.count
-            for (index, track) in renderTracks(of: section).enumerated() {
-                let id = CatalogEntryID(section: section.id, index: itemCount + index,
-                                        id: "track-\(track.id)")
+            for track in renderTracks(of: section) {
+                let id = entry("track-\(track.id)")
                 tracksByID[id] = track
                 ids.append(id)
             }
@@ -636,9 +683,44 @@ class CatalogPageViewController: ContentPageController {
 
         layoutSections = layout
         shelfMetrics = metrics
-        dataSource.apply(snapshot, animatingDifferences: false)
-        collectionView.collectionViewLayout?.invalidateLayout()
+        // 只换了内容（段与件数都没动、也不是首次灌）就**带动画**：新卡从左边长出来、
+        // 其余各件平移让位，与 Music 同。首次上屏 / 换音源 / 段有增删那几次不动画，
+        // 否则整页卡片会一起飞进来。
+        let signature = layoutSignature(sections)
+        let contentOnly = lastLayoutSignature != nil && signature == lastLayoutSignature
+        dataSource.apply(snapshot, animatingDifferences: contentOnly)
+        // **版式没变就别重解布局**：组合布局一 `invalidateLayout()`，横向货架
+        // （orthogonal section）里的 cell 会被整批重建、封面重新异步取，
+        // 界面上就是切回来时图片闪一下。换了哪几张卡由上面那次 diffable apply 负责；
+        // 卡摆在哪儿是按「段序 + 每段件数」算死的（见 `makeLayout`），这几样没动，
+        // 布局解就还是同一份。容器宽变了走的是 `viewDidLayout` 那条路（组合布局自己
+        // 重求解），根本到不了这里，所以指纹里没有宽——理由见 `layoutSignature`。
+        if signature != lastLayoutSignature {
+            lastLayoutSignature = signature
+            collectionView.collectionViewLayout?.invalidateLayout()
+        }
         clearHover()
+    }
+
+    /// 版式指纹：只认**影响布局解**的那几样——段序、标题行的形态（有没有标题、有没有种子
+    /// 那行 headline：它决定标题行高是 `headingHeight` 还是 `seedThumbSize`）、段的样式、
+    /// 每段**真正摆出来**的卡数与曲目行数。数的是 `renderItems`/`renderTracks` 而不是
+    /// `section.items`/`.tracks`：大横幅只摆第一张、并排带的卡与曲目分两路走，
+    /// 布局解（`artistBandSection`、`linksSection(count:)`）认的也是这两个数。
+    /// 卡片换了内容但这些都没动时指纹一样。
+    ///
+    /// **不含容器宽**：改窗口宽／开合侧栏不走 `apply(sections:)`——`viewDidLayout` 只重算
+    /// `shelfMetrics`，段布局由组合布局自己按新容器重求解。宽要是进了指纹，这里存下的
+    /// 就永远是上一次灌快照时那个宽，于是改过宽之后的第一次内容更新必定「指纹不一致」，
+    /// 白白 `invalidateLayout()` 一次——那一下就是整页横向货架的 cell 重建、封面重取。
+    private func layoutSignature(_ sections: [CatalogSection]) -> String {
+        var parts = ["\(showsPageTitle)"]
+        for section in sections {
+            parts.append("\(section.id)|\(section.title ?? "")|\(section.headline != nil)|"
+                + "\(section.layout)|"
+                + "\(renderItems(of: section).count)|\(renderTracks(of: section).count)")
+        }
+        return parts.joined(separator: "\n")
     }
 
     private enum OverlayKind { case none, loading, error, empty }

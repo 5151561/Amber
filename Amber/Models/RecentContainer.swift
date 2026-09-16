@@ -32,7 +32,12 @@ enum RecentContainer: Codable, Hashable {
     var id: String {
         switch self {
         case .playlist(let playlist): return "playlist:\(playlist.id)"
-        case .libraryPlaylist(let id): return "libplaylist:\(id)"
+        // **与 `.playlist` 同一个前缀**：同一份歌单有两条路进来——从资料库那份歌单页
+        // 起播给的是 `.libraryPlaylist`，从目录页、或`playLibraryPlaylist` 转手给
+        // `playPlaylist` 时给的是`.playlist`——而`LibraryPlaylist.from` 沿用的就是
+        // 音源歌单的 id（见`Models.swift`）。键不一致的话同一份歌单会摆出两张卡。
+        // 本地自建列表的 id 是 `local:<UUID>`，撞不上音源 id。
+        case .libraryPlaylist(let id): return "playlist:\(id)"
         case .album(let album): return "album:\(album.id)"
         case .favorites: return "favorites"
         case .artist(let id, _, _, _): return "artist:\(id)"

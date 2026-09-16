@@ -126,6 +126,40 @@ final class CatalogFeedModel: ObservableObject {
         state = .content(title: title, sections: rendered)
     }
 
+    /// 只重算**本地资料库来的那两段**（最近播放 / 音乐回忆），一条音源请求都不发。
+    ///
+    /// 目录页三页的根页是缓存的（切走只 `isHidden`，见`ContentNavigationController`），
+    /// `reload()` 只在首次上屏与换音源时跑——听完一首歌货架不会自己变。
+    /// 走 `reload()` 重拉整页太贵：它先把状态打回 `.loading`（页面闪一下空），
+    /// 再把十几段全向音源要一遍，而变的只有本地那一段。
+    ///
+    /// 这一段原先整段不在（第一次听歌，台账还是空的）时交给 `reload()`：
+    /// 该插在第几段是 `sections(_:)` 那份计划说了算，只有整页重排才排得准，
+    /// 而那是每位用户一辈子只会遇上一次的时刻。
+    func refreshLocalSections() {
+        guard case .content(let title, var rendered) = state else { return }
+        for plan in sections(appState) {
+            let fresh: CatalogSection?
+            switch plan.slot {
+            case .recentlyPlayed: fresh = recentlyPlayedSection(plan)
+            case .musicMemories: fresh = musicMemoriesSection(plan)
+            default: continue
+            }
+            switch (rendered.firstIndex { $0.id == plan.id }, fresh) {
+            case (let index?, let fresh?):
+                // 卡还是原来那几张（顺序也没变）就**什么都不做**：重灌一遍快照会让
+                // 组合布局重解，横向货架里的 cell 整批重建、封面重新异步取，
+                // 切回主页时看得见一次闪动。同一份歌单接着听最常落在这一支。
+                guard rendered[index].items.map(\.id) != fresh.items.map(\.id) else { continue }
+                rendered[index] = fresh
+            case (let index?, nil): rendered.remove(at: index)
+            case (nil, .some): reload(); return
+            case (nil, nil): break
+            }
+        }
+        state = .content(title: title, sections: rendered)
+    }
+
     // MARK: 段 → 卡片
 
     private func section(_ plan: CatalogPageSection, _ result: CatalogSlotResult) -> CatalogSection {
@@ -304,58 +338,89 @@ final class CatalogFeedModel: ObservableObject {
     }
 
     /// 「最近播放」在 Music 里也是服务端下发的一段，Amber 的最近播放记在本地资料库。
+    /// 读的是**容器台账**而不是逐曲历史：分哪个格子在记账那一刻就定了（见`RecentContainer`），
+    /// 这一层只负责把格子画成卡。
     private func recentlyPlayedSection(_ plan: CatalogPageSection) -> CatalogSection? {
-        let recents = library.recentTracks
-        guard !recents.isEmpty else { return nil }
-        let list = LocalTrackList(id: "recently-played", title: "最近播放", tracks: recents)
+        let containers = library.recentContainers
+        guard !containers.isEmpty else { return nil }
         return CatalogSection(
             id: plan.id, layout: layout(plan.style), title: plan.title,
-            destination: .localTracks(list),
+            destination: .recentlyPlayed,
             showsChevron: true,
-            items: Self.recentGroups(recents).prefix(12).map(recentItem))
+            items: Self.recentItems(Array(containers.prefix(12)), appState: appState))
     }
 
-    /// 「最近播放」的一格是一张**专辑**（Music 同）：同一张碟里连着听的几首收成一格，
-    /// 按首次出现的顺序排；没有专辑 id 的曲目（电台单集、散曲）各自一格。
-    static func recentGroups(_ tracks: [Track]) -> [Track] {
-        var seen = Set<String>()
-        var heads: [Track] = []
-        for track in tracks {
-            let key: String
-            if let albumId = track.albumId, !albumId.isEmpty {
-                key = "album:\(albumId)"
-            } else {
-                key = "track:\(track.id)"
-            }
-            guard seen.insert(key).inserted else { continue }
-            heads.append(track)
-        }
-        return heads
+    /// 最近播放的格子 → 方卡。**唯一实现**：货架与二级页（`CatalogRoomViewController`）
+    /// 共用这一份，别再各抄一份（静态工具给房间页共用，同 `fallbackColors`）。
+    /// 卡型一律 `.square`，不新增卡型。
+    static func recentItems(_ containers: [RecentContainer], appState: AppState) -> [CatalogItem] {
+        containers.compactMap { recentItem($0, appState: appState) }
     }
 
-    private func recentItem(_ track: Track) -> CatalogItem {
-        let albumRoute = Route.album(of: track)
-        let artistRoute = Route.artist(of: track)
-        // 卡上写专辑名；专辑名空（散曲）才退回歌名。
-        let title = track.albumName.isEmpty ? track.title : track.albumName
-        let onPlay: () -> Void
-        if case .album(let album) = albumRoute {
-            onPlay = { [appState] in Task { await appState.playAlbum(album) } }
-        } else if case .playlist(let playlist) = albumRoute {
-            onPlay = { [appState] in Task { await appState.playPlaylist(playlist) } }
-        } else {
-            onPlay = { [appState] in appState.playNow(track) }
+    private static func recentItem(_ container: RecentContainer,
+                                   appState: AppState) -> CatalogItem? {
+        switch container {
+        case .album(let album):
+            return CatalogItem(id: container.id, kind: .square,
+                               title: album.name,
+                               artworkURL: album.artworkURL,
+                               subtitle: album.artistName,
+                               route: .album(album),
+                               subtitleRoute: Route.artist(of: album),
+                               onPlay: { Task { await appState.playAlbum(album) } })
+        case .playlist(let playlist):
+            return CatalogItem(id: container.id, kind: .square,
+                               title: playlist.name,
+                               artworkURL: playlist.coverURL,
+                               subtitle: playlist.creatorName,
+                               // 没有封面地址时才顶上（同目录页的歌单卡）
+                               fallbackColors: fallbackColors(playlist.id),
+                               route: .playlist(playlist),
+                               onPlay: { Task { await appState.playPlaylist(playlist) } })
+        case .libraryPlaylist(let id):
+            // 这份资料库歌单可能已经被删了：整张卡丢掉，货架上不留空位。
+            // 不在载入时清理台账——删除发生在运行期，这道 guard 本来就必须有。
+            guard let playlist = appState.library.playlist(id: id) else { return nil }
+            return CatalogItem(id: container.id, kind: .square,
+                               title: playlist.name,
+                               artworkURL: playlist.artworkURL,
+                               subtitle: playlist.subtitle,
+                               route: .libraryPlaylist(id: id),
+                               onPlay: { Task { await appState.playLibraryPlaylist(playlist) } })
+        case .favorites:
+            let tracks = appState.library.favoriteTracks
+            // 与 `LibraryGridCards` 的心水卡逐字相同的落点：多入口共用同一份虚拟列表。
+            let list = LocalTrackList(id: "favorites", title: "心水歌曲", tracks: tracks)
+            return CatalogItem(id: container.id, kind: .square,
+                               title: "心水歌曲",
+                               artworkURL: tracks.first?.artworkURL,
+                               subtitle: "\(tracks.count) 首歌曲",
+                               route: .localTracks(list),
+                               onPlay: {
+                                   appState.player.play(tracks, source: .init(title: "心水歌曲",
+                                                                              route: .localTracks(list)))
+                               })
+        case .artist(let id, let kind, let name, let avatarURL):
+            // 台账只存了四个字段，艺人页要的 `Artist` 在这里现造（同 `Components.swift` 的做法）。
+            let artist = Artist(id: id, kind: kind, name: name,
+                                avatarURL: avatarURL, description: nil)
+            return CatalogItem(id: container.id, kind: .square,
+                               title: name,
+                               artworkURL: avatarURL,
+                               isCircularArtwork: true,
+                               // 艺人卡本来就不摆播放键（见 `CatalogItem.onOpen` 那条注释）
+                               route: .artist(artist))
+        case .track(let track):
+            return CatalogItem(id: container.id, kind: .square,
+                               title: track.title,
+                               artworkURL: track.artworkURL,
+                               subtitle: track.artistName,
+                               subtitleRoute: Route.artist(of: track),
+                               onPlay: { appState.playNow(track) },
+                               // 构造上就没有专辑可去，右键走曲目菜单
+                               track: track,
+                               isFavorite: appState.library.isFavorite(track))
         }
-        return CatalogItem(id: "recent-\(track.albumId ?? track.id)", kind: .square,
-                           title: title,
-                           artworkURL: track.artworkURL,
-                           subtitle: track.artistName,
-                           route: albumRoute,
-                           subtitleRoute: artistRoute,
-                           onPlay: onPlay,
-                           // 有专辑就按专辑走（右键是专辑菜单）；散曲才带曲目上下文
-                           track: albumRoute == nil ? track : nil,
-                           isFavorite: albumRoute == nil && library.isFavorite(track))
     }
 
     /// 「音乐回忆：你的热门音乐」。Music 那张卡落点是服务端每月生成的歌单

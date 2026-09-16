@@ -14,6 +14,13 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var libraryAlbums: [Album] = []
     @Published private(set) var favoriteTracks: [Track] = []
     @Published private(set) var recentTracks: [Track] = []
+    /// 「最近播放」的**容器台账**：在哪儿听的（歌单 / 心水 / 艺人 / 专辑 / 散曲），最近的在前。
+    ///
+    /// 与上面那份逐曲历史是**两个粒度、两张表**，各有各的上限（见`RecentContainer`）：
+    /// 逐曲那份 200 条喂相似种子与月度统计；这份 50 条只给货架与二级页当格子用。
+    /// 合成一份再分组的话，听完一张 200 首的歌单就会把逐曲窗口整个占满，
+    /// 货架塌成一张卡，更早的格子被整个挤掉。
+    @Published private(set) var recentContainers: [RecentContainer] = []
     /// 已喜爱的专辑 id（Music.app 在专辑标题后显示 ★）
     @Published private(set) var favoriteAlbumIDs: Set<String> = []
     /// 已收藏的艺人 id（目录艺人页 hero 上那枚 ★，参考图 design-ref/ui-spec/pages/catalog-artist.png）
@@ -126,6 +133,10 @@ final class LibraryStore: ObservableObject {
         /// 同上，后加的可选字段：「减少推荐」的本地镜像（见 `suggestLessTrackIDs`）。
         var suggestLessTracks: [String]?
         var suggestLessArtists: [String]?
+        /// 最近播放的容器台账（见 `RecentContainer`）。**必须可选**：要能分出
+        /// 「旧存档根本没有这个键」（按老规则回灌一份，货架不至于空着）与
+        /// 「新存档、台账确实是空的」（什么都不回灌）。
+        var recentContainers: [RecentContainer]?
     }
 
     private let fileURL: URL
@@ -594,8 +605,9 @@ final class LibraryStore: ObservableObject {
         return directory.path != "/Volumes"
     }
 
-    /// 按 id 改一条曲目的字段。**四处数组 + 每份本地播放列表**都要改：
-    /// `libraryTracks`、`favoriteTracks`、`recentTracks`、以及每份播放列表的`tracks`。
+    /// 按 id 改一条曲目的字段。**五处数组 + 每份本地播放列表**都要改：
+    /// `libraryTracks`、`favoriteTracks`、`recentTracks`、最近播放台账里的散曲格
+    /// （`recentContainers` 的`.track` 那一 case），以及每份播放列表的`tracks`。
     /// 曲目是**值类型、各存各的副本**，漏掉哪一处，那一处的行就还是旧值——
     /// 表格里刚改好的歌，切到「最近播放」又是老标题，重新指过路的还会再次播放失败。
     ///
@@ -626,6 +638,23 @@ final class LibraryStore: ObservableObject {
         if let updated = rewritten(libraryTracks) { libraryTracks = updated; changed = true }
         if let updated = rewritten(favoriteTracks) { favoriteTracks = updated; changed = true }
         if let updated = rewritten(recentTracks) { recentTracks = updated; changed = true }
+        // 第五处：台账里的散曲格。其余 case 的载荷（专辑 / 歌单 / 艺人 / 心水）
+        // 不含可变的曲目字段，改不到它们头上。不补这一处的话，本地文件改名或重新指路之后，
+        // 货架上那张散曲卡还是旧标题、还指着老路。
+        var workingContainers = recentContainers
+        var containersChanged = false
+        for index in workingContainers.indices {
+            guard case .track(let stored) = workingContainers[index], stored.id == id else { continue }
+            var edited = stored
+            transform(&edited)
+            guard edited != stored else { continue }
+            workingContainers[index] = .track(edited)
+            containersChanged = true
+        }
+        if containersChanged {
+            recentContainers = workingContainers
+            changed = true
+        }
         var workingPlaylists = playlists
         var playlistsChanged = false
         for index in workingPlaylists.indices {
@@ -889,14 +918,60 @@ final class LibraryStore: ObservableObject {
     /// 同时被记一次播放和一次跳过。
     ///
     /// 同 `recordSkip`：「使用听歌历史记录」关掉时什么都不记，已有的历史原样保留。
-    func noteStarted(_ track: Track) {
+    ///
+    /// `container` 是这一首落进的格子（在哪儿听的，见`RecentContainer`）：非 nil 时
+    /// 按 `container.id` 去重、顶到台账最前。默认值 nil 是**给测试用的**——
+    /// 现有那几处调用点不关心台账，生产侧只有 `AppState` 那一个调用点，且永远传非 nil。
+    /// 顶上那条「使用听歌历史记录」的 guard 已经把台账一并罩住，不加第二条开关。
+    func noteStarted(_ track: Track, container: RecentContainer? = nil) {
         guard AppSettings.shared.values.useListeningHistory else { return }
         recentTracks.removeAll { $0.id == track.id }
         recentTracks.insert(track, at: 0)
         if recentTracks.count > 200 {
             recentTracks = Array(recentTracks.prefix(200))
         }
+        // 已经是台账首位那一格＝同一份歌单/专辑里接着听：整份数组不会有任何变化，
+        // 却照样会发一次 `@Published`，主页目录页于是每首歌重灌一遍快照
+        // （悬浮态被清、货架横向位置回到最左）。没变就不动。
+        if let container, recentContainers.first != container {
+            // 先在本地数组上改完再**整份替换**（同 `updateTrack`）：`@Published` 每次
+            // 原地改动都发一声 willSet，逐条改的话一次记账要发三声，
+            // 订阅方（主页目录页）就得连着重灌三遍快照。
+            var updated = recentContainers
+            updated.removeAll { $0.id == container.id }
+            updated.insert(container, at: 0)
+            if updated.count > Self.recentContainerLimit {
+                updated = Array(updated.prefix(Self.recentContainerLimit))
+            }
+            recentContainers = updated
+        }
         save()
+    }
+
+    /// 台账上限。逐曲历史那份是 200：两个粒度各有各的窗口，见 `recentContainers`。
+    static let recentContainerLimit = 50
+
+    /// 按去重键收一遍，靠前（更近）的那条赢。
+    static func deduplicated(_ containers: [RecentContainer]) -> [RecentContainer] {
+        var seen = Set<String>()
+        return containers.filter { seen.insert($0.id).inserted }
+    }
+
+    /// 首次升级时的回灌：旧存档只有逐曲历史，按**老的展示规则**（原
+    /// `CatalogFeedModel.recentGroups`：`albumId` 去重、没有专辑的各成一格）现算一份台账，
+    /// 货架不至于是空的。老历史里没有来源信息，回灌出来的只可能是专辑卡 / 歌单卡 / 散曲卡——
+    /// 这是明知的取舍，口径就是「已有历史照老规则保留，不清空」。
+    static func backfilledContainers(from tracks: [Track]) -> [RecentContainer] {
+        var seen = Set<String>()
+        var result: [RecentContainer] = []
+        for track in tracks {
+            // source 传 nil ＝ 走 `resolve` 的回落那一路，与老规则逐字等价。
+            let container = RecentContainer.resolve(track: track, source: nil)
+            guard seen.insert(container.id).inserted else { continue }
+            result.append(container)
+            if result.count == recentContainerLimit { break }
+        }
+        return result
     }
 
     /// 一首歌**播到了结尾**：播放次数 +1、记下这一刻。由播放器在切下一首之前调，
@@ -915,6 +990,11 @@ final class LibraryStore: ObservableObject {
               let storage = try? JSONDecoder().decode(Storage.self, from: data) else { return }
         favoriteTracks = storage.favorites
         recentTracks = storage.recents
+        // 再按去重键收一遍：存档里可能留着同一格的**两种身份**（同一份歌单从资料库页
+        // 与从目录页起播，去重键统一之前各记了一条）。不收的话它们要等到下次再听
+        // 那份歌单才会自己合并，在那之前货架上就是两张一模一样的卡。
+        recentContainers = Self.deduplicated(
+            storage.recentContainers ?? Self.backfilledContainers(from: recentTracks))
         favoriteAlbumIDs = Set(storage.favoriteAlbums ?? [])
         favoriteArtistIDs = Set(storage.favoriteArtists ?? [])
         ratings = storage.ratings ?? [:]
@@ -999,7 +1079,8 @@ final class LibraryStore: ObservableObject {
                 dismissedAccountPlaylists: Array(dismissedAccountPlaylistIDs),
                 uncheckedTracks: Array(uncheckedTrackIDs),
                 suggestLessTracks: Array(suggestLessTrackIDs),
-                suggestLessArtists: Array(suggestLessArtistIDs))
+                suggestLessArtists: Array(suggestLessArtistIDs),
+                recentContainers: recentContainers)
     }
 
     private nonisolated static func write(_ storage: Storage, to url: URL) {

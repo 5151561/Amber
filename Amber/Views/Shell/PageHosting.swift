@@ -346,14 +346,13 @@ enum ContentPageFactory {
             if list.id == "favorites" {
                 return PlaylistDetailViewController(favoritesOf: appState)
             }
-            // 「最近播放」是网格形态的二级页，与专辑/歌单网格同一台引擎。
-            if list.id == "recents" || list.title == "最近播放" {
-                return CatalogRoomViewController(appState: appState, recentlyPlayed: list)
-            }
             return TrackListPageController(appState: appState, title: list.title,
                                            tracks: list.tracks,
                                            emptyMessage: "这份列表现在是空的。",
                                            emptyImage: "music.note.list")
+        case .recentlyPlayed:
+            // 「最近播放」是网格形态的二级页，与专辑/歌单网格同一台引擎。
+            return CatalogRoomViewController(recentlyPlayedIn: appState)
         case .tagGroup(let group):
             return CatalogRoomViewController(appState: appState, tagGroup: group)
         case .albumGrid(let title, let albums):

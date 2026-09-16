@@ -528,9 +528,8 @@ extension AppDelegate {
         // 「最近播放」这一种数据现成，给个直达口子验二级页的版式。
         if arguments.contains("-recentsroom") {
             appState.sidebarSelection = .home
-            let list = LocalTrackList(id: "recents", title: "最近播放", tracks: library.recentTracks)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                appState.push(.localTracks(list))
+                appState.push(.recentlyPlayed)
             }
         }
         // 右侧面板（歌词 / 待播清单）：胶囊上那两颗键没有菜单命令，实机验收点不到，
