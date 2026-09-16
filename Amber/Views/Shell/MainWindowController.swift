@@ -3,29 +3,29 @@ import Combine
 
 /// 主窗。Amber 是单窗 App（Music 也是），所以这一份由 AppDelegate 持有，不做多开。
 ///
-/// 窗口形态照 Music：`fullSizeContentView` + unified 工具栏，内容（含侧栏与面板）
-/// 铺到窗顶；**标题栏照系统默认画自己的背景**，滚上来的内容被它挡住。
+/// 窗口形态照 Music：`fullSizeContentView` + unified 工具栏 + **透明标题栏**，
+/// 内容（含侧栏与面板）铺到窗顶，标题栏自己什么都不画，工具栏各件靠 macOS 26
+/// 给的玻璃胶囊自证边界，滚上来的内容交给系统的 scroll edge effect。
 ///
-/// 这里原先写着 `titlebarAppearsTransparent = true`，那是抄错的：`NSWindow.h` 对这一位的
-/// 原话是「the titlebar doesn't draw its background, allowing all buttons to show through」。
-/// Music 不是这样——`design-ref/ui-spec/pages/songs.png` 顶上那一条工具栏是不透明的，
-/// 列头紧贴在它下面，滚动的曲目行看不见。
+/// **这一位曾被改成 `false`（＝标题栏画背景），那是误判，2026-09-17 改回。** 当时的判据是
+/// 「`design-ref/ui-spec/pages/songs.png` 顶上那一条工具栏是不透明的，列头紧贴在它下面」——
+/// 但那条不透明带其实是**歌曲页自己的表头** `TrackDisplayNSHeader`（23pt、
+/// `NSColor.amberTableHeader`、y=52…75，见 SongsTableView.swift），而那张截图的列表根本
+/// 没有滚动，标题栏透不透明看不出来。把「表头不透明」读成「标题栏不透明」，修正又加在
+/// **窗口**这一层，于是主页、歌单、资料库各页一起长出一条 52pt 的常驻背景带。
 ///
-/// [实测 probe] 2026-09-07（独立探针，`fullSizeContentView` + `.unified` + 一张 30pt
-/// 红绿交替行的 `NSTableView`，滚到中段后`screencapture` 取窗口区域读像素）：
-/// - `= true`：x=700 那一列从 y=0 一路到 y=130 都是同一套锐利条纹
-///   （y0…20 绿 (0.51,0.97,0.37)、y22…50 红 (0.94,0.29,0.18)、y52…80 又是绿），
-///   即**标题栏那 52pt 里就是内容本身**，红绿灯与搜索框直接压在曲目行上；
-/// - `= false`：y0…50 变成一条被糊开的过渡带（(0.40,0.52,0.25) → (0.59,0.30,0.23)，
-///   看不出行边界），y=52 才「啪」一下跳回锐利的绿 (0.51,0.97,0.37)——
-///   标题栏画了背景，行被挡住，下沿正好落在 52。
-/// 视图树上也对得起来：`NSTitlebarContainerView` 底下的`NSTitlebarBackgroundView`
-/// `[0, 848, 1440, 52]` 在`= true` 时是 **HIDDEN**，`= false` 时在。
+/// 正面证据（同一批 [PX] 截图）：`home.png` 里红绿灯直接坐在内容背景上，顶部 52pt
+/// 与下方是连续同一片背景、没有任何独立色带；`playlist-detail.png` 里返回/共享/更多是
+/// 浮在内容之上的玻璃胶囊，封面大图从窗顶下方连续铺开。`design-ref/appkit-rewrite-plan.md`
+/// §2 的目标结构与 `DESIGN_BRIEF.md` §7.2（Chrome 层漂浮在内容之上）说的也是这一套。
 ///
-/// 关掉这一位**不动任何几何**（同一份探针两种取值逐条对过）：`contentLayoutRect`
-/// 仍是 `[0, 0, 1440, 848]`、红绿灯仍在 (19,19)、`NSToolbarView` 仍是
-/// `[0, 848, 1440, 52]`；`NSSplitViewItem(sidebarWithViewController:)` +
-/// `allowsFullHeightLayout = true` 的侧栏仍是`[0, 0, 202.5, 900]`，照旧铺到窗顶。
+/// **切这一位不动任何几何。** [实测 probe] 2026-09-07 同一份探针两种取值逐条对过：
+/// `contentLayoutRect` 仍是 `[0, 0, 1440, 848]`、红绿灯仍在 (19,19)、`NSToolbarView`
+/// 仍是 `[0, 848, 1440, 52]`；`NSSplitViewItem(sidebarWithViewController:)` +
+/// `allowsFullHeightLayout = true` 的侧栏仍是 `[0, 0, 202.5, 900]`，照旧铺到窗顶。
+/// 各页 `automaticallyAdjustsContentInsets` 补的那 `contentInsets.top == 52` 也不变。
+/// 视图树上的差别只有一处：`NSTitlebarContainerView` 底下的 `NSTitlebarBackgroundView`
+/// `[0, 848, 1440, 52]`，`= true` 时 **HIDDEN**，`= false` 时在——那就是那条背景带。
 ///
 /// **红绿灯始终在，不用占位项。** 旧 SwiftUI 版要在工具栏里留一件 1pt 的透明占位，
 /// 因为 `.toolbar(.hidden)` 会把红绿灯一起收掉；AppKit 没有这回事：
@@ -59,7 +59,8 @@ final class MainWindowController: NSWindowController {
         // 所以这扇窗关掉之后必须还在：程序坞点一下由 `applicationShouldHandleReopen`
         // 拿这同一份 controller 重新 `showWindow`。代码建的 NSWindow 默认是 true。
         window.isReleasedWhenClosed = false
-        // `titlebarAppearsTransparent` 保持系统默认（false）＝标题栏自己画背景，见类型注释。
+        // 标题栏不画背景，内容一路铺到窗顶（见类型注释）。
+        window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified
         // 拖窗口背景可移动窗口。
@@ -190,12 +191,6 @@ final class MainWindowController: NSWindowController {
         for item in toolbar.items where item.itemIdentifier != .amberPanelSeparator {
             item.isHidden = hidden
         }
-        // 「播放中」是**整窗**覆盖（`NowPlayingHostController.layoutInHost` 把它铺成窗口
-        // 那么大，`fullSizeContentView` 之下就一直盖到窗顶）。标题栏平时要画背景挡住滚上来
-        // 的内容（见类型注释），但盖着整窗播放器的这一段不能画——否则它顶上会横一条 52pt
-        // 的模糊带。件能靠 `isHidden` 让位，背景不能，只能把这一位跟着切。
-        // Music 那一屏 design-ref 里没有截图/AX 可比对，这条是按「覆盖层要干净」定的。
-        window?.titlebarAppearsTransparent = hidden
     }
 
     // MARK: - 窗口级命令
