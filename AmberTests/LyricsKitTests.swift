@@ -1129,6 +1129,38 @@ final class LyricsKitTests: XCTestCase {
         }
     }
 
+    /// 展开这条路**接管视口**，必须把还在跑的翻行滚动的收尾作废。
+    ///
+    /// `animateLineScroll` 在完成回调里调 `reconcileDisplacedLines(to:)`，
+    /// 那一步会 `setScrollOrigin` 到**它自己**那个目标；那道闸只认
+    /// `scrollAnimationGeneration`。展开把视口挪走之后若不改代次，
+    /// 旧回调一到就把视口再挪一格回去——实测屏幕上所有行当场整体跳 90pt
+    /// （= `instrumentalBreakViewHeight + lineSpacing`），跳完再由各自的叠加偏移
+    /// 滑回来，观感就是「间奏点附近闪一下」。
+    func testExpansionInvalidatesTheInFlightScrollReconcile() throws {
+        let (controller, visual) = makeExpansionFixture(instrumentalAt: 2)
+        let target = visual.lineViews[2]
+        visual.instrumentalBreakVisibleView = target
+
+        // 假装上一次翻行滚动还在跑：留着它的收尾目标与受影响行。
+        controller.pendingScrollTargetOrigin = CGPoint(x: 0, y: 1234)
+        controller.displacedLineViews = Set(visual.lineViews.prefix(3))
+        let generationBefore = controller.scrollAnimationGeneration
+
+        controller.animateInstrumentalExpansion(
+            affected: Array(visual.lineViews.prefix(4)),
+            anchorIndex: 2,
+            deltaY: 40,
+            animation: SyncedLyricsLineLayer.SelectionAnimation(
+                spring: SpringTimingParameters(mass: 1, stiffness: 100, damping: 20)),
+            stagger: .sharedFirstPair(controller.specs.lineDelay))
+
+        XCTAssertNotEqual(controller.scrollAnimationGeneration, generationBefore,
+                          "代次必须推进，旧滚动的完成回调才进不来")
+        XCTAssertNil(controller.pendingScrollTargetOrigin, "旧的收尾目标必须清掉")
+        XCTAssertTrue(controller.displacedLineViews.isEmpty, "旧的位移行集合一并清掉")
+    }
+
     /// §16.4 / §17.1：受影响的行是围绕目标行的**一段连续行**，两趟都「首次不相交即停」，
     /// 返回前按下标升序排序；并集含「滚动后」的视口，所以 `delta` 越大收得越多。
     func testAffectedLinesAreAContiguousSortedRun() throws {
@@ -1591,6 +1623,31 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(specs.staticTopContentInset, 22)
     }
 
+    /// 边缘淡出只看几何：行被视口切掉多少就淡多少。
+    ///
+    /// 调用方传的是**呈现层**算出来的上沿（见 `updateLineAlphasForViewportEdges`）——
+    /// 间奏展开那条路第一帧就把模型 frame 写成终值、再用叠加动画退回去，
+    /// 拿模型值算会让亮度比位置早半秒到位。这条断言只钉算式本身。
+    func testEdgeAlphaFollowsHowMuchOfTheLineTheViewportKeeps() {
+        let viewport = CGRect(x: 0, y: 100, width: 400, height: 200)   // 100…300
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 150, lineHeight: 40,
+                                                    viewport: viewport), 1)
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 40, lineHeight: 40,
+                                                    viewport: viewport), 0)
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 320, lineHeight: 40,
+                                                    viewport: viewport), 0)
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 70, lineHeight: 40,
+                                                    viewport: viewport), 0.25, accuracy: 0.0001)
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 280, lineHeight: 40,
+                                                    viewport: viewport), 0.5, accuracy: 0.0001)
+        // 收起态的间奏行是 0 高（§16.1），没有「被切掉多少」可言
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 150, lineHeight: 0,
+                                                    viewport: viewport), 0)
+        // 比视口还高的行：夹在 1，不许超
+        XCTAssertEqual(LyricsLineGeometry.edgeAlpha(lineMinY: 50, lineHeight: 400,
+                                                    viewport: viewport), 0.5, accuracy: 0.0001)
+    }
+
     /// [PX] §22.3：侧栏检查器以 0.381 视口高作为焦点锚点，并取整避免微小抖动。
     func testSidebarSelectedLineRectCalculatesCorrectCenterAndRounds() throws {
         let rect = try XCTUnwrap(LyricsBaseline.sidebarSelectedLineRect(panelHeight: 700.4, panelWidth: 280.2))
@@ -1731,6 +1788,56 @@ final class LyricsKitTests: XCTestCase {
         let wrapped = LyricsTextLayout.hardWrapped(text, attributes: attributes, width: 200)
         XCTAssertEqual(wrapped.string.components(separatedBy: "\n").count, fragments.count)
         XCTAssertEqual(wrapped.string.replacingOccurrences(of: "\n", with: ""), text)
+    }
+
+    /// 硬换行那串字**不许进缓存**：同一段文字会被不同的明暗各要一次——
+    /// 行几何量它时用白色，落到图层上时用当前行的色——而
+    /// `CATextLayer` 拿到属性串之后 `foregroundColor` 就不生效了，
+    /// 颜色只能跟着串走。存一份共用的话，副行会永远停在先来那一次的色上
+    /// （实机症状：非当前行的译文也一直是满亮的白）。
+    func testHardWrappedCarriesEachCallersOwnColor() throws {
+        let font = lyricsFont()
+        let text = "我们在夜色里唱着无人听见的歌谣直到天亮才肯散场"
+        let width: CGFloat = 200
+
+        // 先用白色走一遍——行几何测高就是这么问的，缓存由它填上。
+        let measuring = LyricsTextLayout.attributes(
+            for: text, font: font, color: CGColor(gray: 1, alpha: 1))
+        _ = LyricsTextLayout.size(text, attributes: measuring, width: width)
+
+        // 再用暗色要那串字：拿回来的必须是暗色这一份。
+        let dim = CGColor(gray: 1, alpha: 0.175)
+        let painting = LyricsTextLayout.attributes(for: text, font: font, color: dim)
+        let string = LyricsTextLayout.hardWrapped(text, attributes: painting, width: width)
+        let color = try XCTUnwrap(
+            string.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        XCTAssertEqual(color.cgColor.alpha, 0.175, accuracy: 0.001)
+    }
+
+    /// 而高度**要**进缓存：它与颜色无关，且 `size` 被行几何对全表每行调用、
+    /// 一次翻行至少两遍，`CTFramesetter` 建一次的开销与 TextKit 折行同量级。
+    func testDrawnHeightRidesTheWrapCache() {
+        let font = lyricsFont()
+        let width: CGFloat = 200
+
+        let multi = "我们在夜色里唱着无人听见的歌谣直到天亮才肯散场"
+        let multiAttributes = LyricsTextLayout.attributes(
+            for: multi, font: font, color: CGColor(gray: 1, alpha: 1))
+        let wrappedMulti = LyricsTextLayout.wrap(multi, attributes: multiAttributes, width: width)
+        XCTAssertGreaterThan(wrappedMulti.fragments.count, 1)
+        XCTAssertGreaterThan(wrappedMulti.drawnHeight, wrappedMulti.usedSize.height,
+                             "多行：CoreText 排得比 TextKit 高，这个差就是会被裁掉的那截")
+        XCTAssertEqual(
+            LyricsTextLayout.size(multi, attributes: multiAttributes, width: width).height,
+            LyricsTextLayout.rasterSafeHeight(wrappedMulti.drawnHeight, font: font))
+
+        // 单行不改口径，仍是 TextKit 那份——既有的行距规格一点不动。
+        let single = "我们在夜色里唱着歌"
+        let singleAttributes = LyricsTextLayout.attributes(
+            for: single, font: font, color: CGColor(gray: 1, alpha: 1))
+        let wrappedSingle = LyricsTextLayout.wrap(single, attributes: singleAttributes, width: 645)
+        XCTAssertEqual(wrappedSingle.fragments.count, 1)
+        XCTAssertEqual(wrappedSingle.drawnHeight, wrappedSingle.usedSize.height)
     }
 
     /// 超高字符（藏文 / 天城文等）额外补一份字体外延到行距上；纯中英文不触发。

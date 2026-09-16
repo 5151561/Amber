@@ -147,6 +147,23 @@ enum LyricsLineGeometry {
         return previous.maxY + (previous.height > 0 ? lineSpacing : 0)
     }
 
+    /// 一行被视口上下边缘切掉之后还剩多少（0…1），逐行透明度就取它。
+    ///
+    /// 纯几何，不看选中态也不看时间轴（理由见
+    /// `SyncedLyricsViewController.updateLineAlphasForViewportEdges`）。
+    /// 0 高的行（收起态的间奏行，§16.1）没有「被切掉多少」可言，直接 0。
+    ///
+    /// - Parameter lineMinY: 行盒上沿在**文档坐标**里的位置。调用方要传
+    ///   **呈现层**算出来的那个值，不是模型 frame —— 间奏展开那条路
+    ///   （`animateInstrumentalExpansion`）会在第一帧就把全表 frame 写成终值、
+    ///   再用叠加动画把「看起来还在原处」退回去；拿模型值算，亮度就会比位置
+    ///   早半秒到位，间奏进出时看到的那一下闪就是它。
+    static func edgeAlpha(lineMinY: CGFloat, lineHeight: CGFloat, viewport: CGRect) -> CGFloat {
+        guard lineHeight > 0 else { return 0 }
+        let visible = min(lineMinY + lineHeight, viewport.maxY) - max(lineMinY, viewport.minY)
+        return min(max(visible / lineHeight, 0), 1)
+    }
+
     /// 首行的纵向落点。规格见 §16.2。
     ///
     /// [实测]：

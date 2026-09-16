@@ -478,8 +478,19 @@ extension InstrumentalContentLayer {
     /// 12pt 时偏差 0.67pt 看不出来，按字号档放大到 23pt 就有 1.3pt，一眼就是方的。
     /// 附带的另一半：bounds 被撑大后渲染尺寸恒等于 `length`，呼吸在重排跑过之后
     /// 就完全看不出来了，观感上正是「大小时有时无」。
+    ///
+    /// 整段**关掉隐式动作**（与 `SyncedLyricsLineLayer.layoutSublayers` 一致）。
+    /// 点是手工挂上去的子层、不是视图背衬层，CALayer 的默认动作在这儿是生效的：
+    /// 行高 0→40 时 `dotOrigins` 的 y 从 `(0−length)/2` 变成`(40−length)/2`，
+    /// 三个点会各自跑一条 0.25s 的隐式位移，和行重排那条弹簧完全不同拍；
+    /// `isHidden` / `masksToBounds` 的翻转同理会被补一段淡变。
+    /// 点自己的出现、呼吸与淡出另有动画（`reset()` / `cueFadeOut`），
+    /// 布局这一步只该落值。
     override func layoutSublayers() {
         super.layoutSublayers()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         // 0 高度阶段整层藏掉；行展开完成后再显示，让既有呼吸动画可以越过
         // 点阵自身边界。行视图为滤镜溢出关掉了 `clipsToBounds`，只靠裁剪
         // 兜不住——没轮到的间奏行会把点画到下一句歌词上。

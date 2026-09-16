@@ -360,6 +360,18 @@ extension SyncedLyricsViewController {
     /// **不看选中态。** 选中发生在开唱前 `maxEndTimeOffset`（0.5 s）的准入，
     /// 拿它当亮度开关，下一句就会在还没唱的时候先亮起来；亮度是几何的事，
     /// 唱没唱是时间的事，两件事不能共用一个开关。
+    ///
+    /// **行的落点取呈现层，视口取模型值。** 两者口径不同是因为它们在动画里的
+    /// 处境本来就不同：间奏展开那条路（`animateInstrumentalExpansion`）第一帧就把
+    /// 全表 frame 与视口 origin 都写成终值，然后只给受影响的行挂一条**叠加偏移**，
+    /// 把「看起来还在原处」在时间上退回 0——所以**行**在屏幕上还没动、模型值却已到位，
+    /// 必须问呈现层；而**视口**是在关动作的事务里一次到位的（那条路刻意不让视口参与
+    /// 插值，见 `+Instrumental.swift` 的理由二），模型值就是屏幕上的值。
+    ///
+    /// 漏了这条，间奏进出时边缘那几行的透明度会比位置早半秒跳到终点——
+    /// 位置没动、亮度先动，就是实机上看到的那一下闪（收起时反向再闪一次）。
+    /// 同一条规矩 `animateInstrumentalExpansion` 自己取 `before` 时就在用
+    /// （「呈现层优先：上一轮弹簧可能还在跑」）。
     func updateLineAlphasForViewportEdges() {
         guard let scrollView, let manager, !manager.lineViews.isEmpty else { return }
         let viewport = scrollView.contentView.bounds
@@ -368,16 +380,31 @@ extension SyncedLyricsViewController {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for view in manager.lineViews {
-            let frame = view.frame
             // 收起态的间奏行高度为 0（§16.1），没有「被切掉多少」可言。
-            guard !manager.hiddenLineViews.contains(view), frame.height > 0 else {
+            guard !manager.hiddenLineViews.contains(view) else {
                 setAlpha(0, on: view)
                 continue
             }
-            let visible = min(frame.maxY, viewport.maxY) - max(frame.minY, viewport.minY)
-            setAlpha(min(max(visible / frame.height, 0), 1), on: view)
+            let height = view.frame.height
+            let alpha = LyricsLineGeometry.edgeAlpha(lineMinY: presentedMinY(of: view),
+                                                     lineHeight: height,
+                                                     viewport: viewport)
+            setAlpha(alpha, on: view)
         }
         CATransaction.commit()
+    }
+
+    /// 行盒上沿此刻**在屏幕上**的位置。
+    ///
+    /// 行视图是 layer-backed 的，位移动画（含间奏那条叠加偏移）挂在它自己的背衬层
+    /// `position` 上，`bounds` 不参与——所以高度取模型值、中心取呈现层，两者拼出
+    /// 上沿。呈现层拿不到（没有动画在跑、或还没上屏）就回落模型值，
+    /// 与改这条之前的取值完全一致。
+    private func presentedMinY(of view: SyncedLyricsLineView) -> CGFloat {
+        guard let layer = view.layer, let presented = layer.presentation() else {
+            return view.frame.minY
+        }
+        return presented.position.y - layer.bounds.height * layer.anchorPoint.y
     }
 
     /// 每帧全表写 `alphaValue` 等于每帧把整棵层树重新提交一遍；值没变就别写。

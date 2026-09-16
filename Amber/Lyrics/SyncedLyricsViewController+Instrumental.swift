@@ -96,6 +96,19 @@ extension SyncedLyricsViewController {
             map[ObjectIdentifier(view)] = (layer.presentation()?.position ?? layer.position).y
         }
 
+        // 视口从这一刻起归这条路管：上一次翻行滚动（`animateLineScroll`）的收尾
+        // `reconcileDisplacedLines` 会把视口**再**挪到它自己那个目标上，而它的
+        // 那道闸只认 `scrollAnimationGeneration`。不作废它的话，展开动画跑到一半
+        // 会被它插一脚——屏幕上所有行当场整体跳一格（实测 90pt，正是
+        // `instrumentalBreakViewHeight + lineSpacing`），跳完再由各自的叠加偏移
+        // 慢慢滑回去，观感就是「间奏点附近闪一下」。
+        //
+        // 叠加偏移不怕作废：模型值一直是真值，正在跑的偏移各退各的（§6.5），
+        // 收尾要做的那件事——把视口摆到终点——这里自己就做了。
+        scrollAnimationGeneration &+= 1
+        pendingScrollTargetOrigin = nil
+        displacedLineViews.removeAll()
+
         // 一、布局与视口一次到位（§17.2 的对账在这里就做完了，动画只补偏移）。
         CATransaction.begin()
         CATransaction.setDisableActions(true)
