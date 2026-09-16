@@ -135,8 +135,8 @@ final class ExpandableTextView: NSView {
     /// 展开 / 收起后调；宿主头部据此重算高度。
     var onToggle: (() -> Void)?
     /// 给了这一条，「更多」就**不在原地展开**，而是把这一下交给宿主去弹介绍面板
-    /// （专辑页头就是这么接的，见 `AlbumHeaderView.presentAbout()`）。
-    /// 歌单页头不给，照旧就地展开。
+    /// （见 `AlbumHeaderView.presentAbout()` / `PlaylistHeaderView.presentAbout()`）。
+    /// 两处详情页头都这么接；不给这一条就照旧就地展开 +「收起」。
     var onMore: (() -> Void)?
 
     override var isFlipped: Bool { true }
@@ -461,6 +461,8 @@ final class PlaylistHeaderView: DetailHeaderView {
                 self?.needsLayout = true
                 self?.onHeightChanged?()
             }
+            // 与专辑页同：「更多」不在原地展开，弹那张介绍卡。
+            view.onMore = { [weak self] in self?.presentAbout() }
             addSubview(view)
             descriptionView = view
         }
@@ -672,6 +674,29 @@ final class PlaylistHeaderView: DetailHeaderView {
 
     @objc private func playTapped() { play() }
     @objc private func shuffleTapped() { shuffle() }
+
+    /// 简介末行那枚「更多」：弹介绍卡（`AboutPanel.swift`），与专辑页、艺人页 ⓘ 同一张。
+    ///
+    /// 事实行只摆策展人——歌单这边另一条现成的小字（`callout`）本身就是整句
+    /// （「累计播放 … 次」/「根据收听热度实时更新」），安不上「标签 / 值」那种排法。
+    /// 心水歌曲那一页没有封面地址，封面是画出来的那张卡，所以连图一起交过去。
+    private func presentAbout() {
+        var facts: [AboutFact] = []
+        if !content.curator.isEmpty {
+            facts.append(AboutFact(label: "策展人", value: content.curator))
+        }
+        findAboutPanelPresenter()?.presentAboutPanel(
+            AboutContent(name: content.title,
+                         artworkURL: content.artworkURL,
+                         artworkImage: content.artworkImage,
+                         facts: facts,
+                         body: content.description))
+    }
+
+    #if DEBUG
+    /// 实机验收用：`-playlistdemo -playlistabout` 直接弹介绍卡，走「更多」的同一条路。
+    func debugPresentAbout() { presentAbout() }
+    #endif
 
     @objc private func trailingTapped() {
         switch content.action {

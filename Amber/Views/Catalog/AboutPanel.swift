@@ -5,8 +5,8 @@ import AppKit
 // 对应 Music 艺人页 hero 上那枚 ⓘ 键弹出的「艺人介绍」面板（用户实机截图为准，
 // 不是 `catalog-artist.png` 里的形态——那张图没展开这个面板）。
 //
-// **两处在用**：艺人页 hero 的 ⓘ（`ArtistHeroView.presentBio()`）与专辑页头简介末行的
-// 「更多」（`AlbumHeaderView.presentAbout()`）——所以类型名不带 artist，内容由调用点凑
+// **三处在用**：艺人页 hero 的 ⓘ（`ArtistHeroView.presentBio()`）、专辑页头与歌单页头
+// 简介末行的「更多」（两个 `presentAbout()`）——所以类型名不带 artist，内容由调用点凑
 // （`AboutContent`：名字 + 一张图 + 若干事实行 + 正文）。结构自上而下：
 //
 //   ┌────────────────────────────┐  ← 圆角矩形卡，比窗口小一圈、居中
@@ -38,7 +38,7 @@ import AppKit
 /// 面板里「小号次要色标签 + 下一行正文」的一条事实行。
 ///
 /// Music 那张截图上是「成立日期 / 2017年」「類型 / 國語流行樂（圆角胶囊）」。
-/// 专辑那边填的是「艺人 / 发行日期 / 曲风」。
+/// 专辑那边填的是「艺人 / 发行日期 / 曲风」，歌单那边只有「策展人」。
 /// 我们的音源大多给不出这些字段，所以这一段是**有才摆**：给空数组就整段不占位
 /// （连 `nameToFacts` 那段间距也不留）。等取数接上之后往调用点里填即可，面板这边不用改。
 struct AboutFact {
@@ -56,25 +56,29 @@ struct AboutFact {
     }
 }
 
-/// 面板要的全部内容。字段全部来自 `CatalogItem` 现有的三项：
-/// `title` / `artworkURL` / `description`。
+/// 面板要的全部内容：名字 + 一张图 + 若干事实行 + 正文，三个调用点各自凑。
 struct AboutContent {
     let name: String
     let artworkURL: String?
+    /// 画出来的封面（心水歌曲那张白底红星卡）。给了就压过 `artworkURL`——
+    /// 与 `PlaylistHeaderView` 那边同一条规矩，那一页根本没有封面地址。
+    let artworkImage: NSImage?
     let facts: [AboutFact]
     /// 简介正文；nil 或空串时面板照常出来，正文位置摆 `AboutPanelView.emptyBody`。
     let body: String?
 
-    init(name: String, artworkURL: String?, facts: [AboutFact] = [], body: String?) {
+    init(name: String, artworkURL: String?, artworkImage: NSImage? = nil,
+         facts: [AboutFact] = [], body: String?) {
         self.name = name
         self.artworkURL = artworkURL
+        self.artworkImage = artworkImage
         self.facts = facts
         self.body = body
     }
 }
 
 /// 面板的宿主。由 `RootViewController` 实现（它本来就是迷你播放器/整窗播放器/toast
-/// 这些覆盖层的宿主）；hero 与专辑页头沿响应链往上找它，不持有引用（铁律 4：意图冒泡）。
+/// 这些覆盖层的宿主）；hero 与两处详情页头沿响应链往上找它，不持有引用（铁律 4：意图冒泡）。
 @MainActor
 protocol AboutPanelPresenting: AnyObject {
     func presentAboutPanel(_ content: AboutContent)
@@ -279,7 +283,11 @@ final class AboutPanelView: NSView {
         nameField.stringValue = content.name
         setAccessibilityLabel(content.name)
         // 与 hero 要同一张图、同一档尺寸：命中同一份缓存，点开就有，不会白一帧。
-        artworkView.setArtwork(url: content.artworkURL, points: ArtworkSize.fullPlayer)
+        if let image = content.artworkImage {
+            artworkView.setLocalArtwork(image)
+        } else {
+            artworkView.setArtwork(url: content.artworkURL, points: ArtworkSize.fullPlayer)
+        }
 
         let body = content.body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         bodyField.stringValue = body.isEmpty ? Self.emptyBody : body
