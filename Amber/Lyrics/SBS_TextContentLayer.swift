@@ -195,6 +195,10 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         // 浏览歌词只暂停自动跟随，不应关掉当前播放行的逐字高亮。
         let sungOpacity: Float = (isSelected || isSungPrepared) ? 1 : 0
 
+        var baseColorTargets: [(CATextLayer, CGColor)] = []
+        var rubyColorTargets: [(CATextLayer, CGColor)] = []
+        let translationCGColor = LyricsSpecs.cgColor(translationColor, in: appearance)
+
         for row in rows {
             // 换状态就把辉光打断（§8.1「去辉光的打断」）：这一行不再是当前播放行，
             // 不该继续挂着光晕——非选中行也收不到逐帧进度，ramp 自己也推不动了。
@@ -206,13 +210,13 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
                 CATransaction.commit()
             }
             for pair in row.syllables {
-                pair.base.foregroundColor = base
+                baseColorTargets.append((pair.base, base))
                 pair.sung.foregroundColor = sung
             }
             // 发音与正文同一套明暗：未唱走 `translationColor`（nil 时就是正文的暗色），
             // 已唱走 `lineProgressionGradientColor`——和整行式那条副行取色一致。
             for pair in row.ruby {
-                pair.base.foregroundColor = LyricsSpecs.cgColor(translationColor, in: appearance)
+                rubyColorTargets.append((pair.base, translationCGColor))
                 pair.sung.foregroundColor = sung
             }
             // 逐字高亮由渐变遮罩（row.gradient）的 sweptWidth 随音频推进，
@@ -232,10 +236,38 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
                 row.sung.opacity = sungOpacity
             }
         }
-        translationLayer.foregroundColor = LyricsSpecs.cgColor(translationColor, in: appearance)
+
+        let allSecondaryTargets: [(CATextLayer, CGColor)] = rubyColorTargets + [
+            (translationLayer, translationCGColor),
+            (transliterationBase, translationCGColor),
+        ]
+
+        if animated {
+            let colorAnimator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)
+            colorAnimator.layers = baseColorTargets.map(\.0) + allSecondaryTargets.map(\.0)
+            for (layer, color) in baseColorTargets {
+                colorAnimator.addAnimation(to: layer, keyPath: "foregroundColor",
+                                          from: layer.presentation()?.foregroundColor ?? layer.foregroundColor,
+                                          to: color,
+                                          frameRateRange: (min: 0, max: 0))
+            }
+            for (layer, color) in allSecondaryTargets {
+                colorAnimator.addAnimation(to: layer, keyPath: "foregroundColor",
+                                          from: layer.presentation()?.foregroundColor ?? layer.foregroundColor,
+                                          to: color,
+                                          frameRateRange: (min: 0, max: 0))
+            }
+            colorAnimator.finishDispatch {
+                for (layer, color) in baseColorTargets { layer.foregroundColor = color }
+                for (layer, color) in allSecondaryTargets { layer.foregroundColor = color }
+            }
+        } else {
+            for (layer, color) in baseColorTargets { layer.foregroundColor = color }
+            for (layer, color) in allSecondaryTargets { layer.foregroundColor = color }
+        }
+
         // 音译与主行同一套明暗：未唱走 `translationColor`（nil 时就是主行的暗色），
         // 已唱走 `lineProgressionGradientColor`。
-        transliterationBase.foregroundColor = LyricsSpecs.cgColor(translationColor, in: appearance)
         transliterationSung.foregroundColor = sung
         if animated && !isSelected && !isSungPrepared {
             let animator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)

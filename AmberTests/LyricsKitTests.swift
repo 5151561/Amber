@@ -491,9 +491,9 @@ final class LyricsKitTests: XCTestCase {
         }
     }
 
-    /// 提前就位的下一句要是清晰的（可以预读），但不点亮；
+    /// 提前滚动的下一句随滚动亮起浅色遮罩（isSelected == true）且去模糊；
     /// 暂停恢复与松手这两条回填模糊的路径也不许把它糊回去。
-    func testPreScrolledLineIsClearButNotHighlighted() throws {
+    func testPreScrolledLineLightsUpWithScrollAndStaysUnblurred() throws {
         var elapsed: TimeInterval = 0
         let (controller, visual, timeline) = makeScrubFixture { elapsed }
         controller.setLyrics(Self.makeTextLyrics([(0, 8), (11, 16), (16, 20)]))
@@ -507,7 +507,7 @@ final class LyricsKitTests: XCTestCase {
 
         XCTAssertTrue(visual.selectedLineViews.contains { $0 === viewB }, "B 已提前就位")
         XCTAssertEqual(viewB.lineLayer?.blurRadius, 0, "提前就位的 B 是清晰的，可以预读")
-        XCTAssertFalse(viewB.lineLayer?.isSelected == true, "但还没开唱，不点亮")
+        XCTAssertTrue(viewB.lineLayer?.isSelected == true, "随着滚动起跑，浅色遮罩同步亮起")
 
         visual.followScrollTarget(at: elapsed)
         XCTAssertTrue(visual.scrollTargetView === viewB, "焦点位已经在 B 上")
@@ -535,11 +535,39 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(viewC.lineLayer?.blurRadius,
                        SyncedLyricsVisualExperienceManager.deselectedBlurRadius)
 
-        // 开唱那一刻才点亮。
+        // 开唱那一刻保持亮起。
         elapsed = 11.0
         timeline.update()
         visual.activateDueLines(at: elapsed)
-        XCTAssertTrue(viewB.lineLayer?.isSelected == true, "开唱才点亮")
+        XCTAssertTrue(viewB.lineLayer?.isSelected == true, "开唱保持亮起")
+    }
+
+    /// 当上一句仍在唱（空档窄）且下一句提前准入时：准入时刻因上一句未唱完尚不起跑，下一句仅去模糊、暂不选中；
+    /// 当上一句唱完（handover时刻到达）并触发 followScrollTarget 起跑时，下一句随着滚动同步激活选中（浅色遮罩亮起）。
+    func testLineLightsUpWhenHandoverScrollStarts() throws {
+        var elapsed: TimeInterval = 0
+        let (controller, visual, timeline) = makeScrubFixture { elapsed }
+        // A 唱到 10，B 在 10.5 开唱（空档 0.5s < lead）
+        controller.setLyrics(Self.makeTextLyrics([(0, 10), (10.5, 15)]))
+        let viewA = visual.lineViews[0], viewB = visual.lineViews[1]
+
+        elapsed = 5
+        timeline.resync(at: elapsed)
+        XCTAssertTrue(viewA.lineLayer?.isSelected == true)
+
+        // 9.8s：已进入 10.5 - lead 的准入窗口，但 A 仍在唱（endTime=10.0，switchAt=10.0）
+        elapsed = 9.8
+        timeline.update()
+        XCTAssertTrue(visual.selectedLineViews.contains { $0 === viewB }, "B 已准入")
+        XCTAssertEqual(viewB.lineLayer?.blurRadius, 0, "B 预读去模糊")
+        XCTAssertFalse(viewB.lineLayer?.isSelected == true, "A 仍在唱，尚未起跑，B 暂不亮浅色遮罩")
+
+        // 10.0s：A 唱完，handover 到达，followScrollTarget 起跑
+        elapsed = 10.0
+        timeline.update()
+        visual.followScrollTarget(at: elapsed)
+        XCTAssertTrue(visual.scrollTargetView === viewB, "焦点位切到 B")
+        XCTAssertTrue(viewB.lineLayer?.isSelected == true, "随着滚动起跑，B 的浅色遮罩同步亮起")
     }
 
     /// 正跑着的滚动弹簧目标没变就不重启（句间准入一次、淘汰一次连着两回滚向同一处）。
