@@ -40,7 +40,10 @@ enum LyricParser {
         raw.removeAll { $0.text.isEmpty }
         guard !raw.isEmpty else { return [] }
 
-        let credits = stripLeadingCredits(&raw)
+        var credits = stripLeadingCredits(&raw)
+        // 尾部也有一块（《从未见过的海》正文唱完后接 16 行制作人/编曲/录音师…）。
+        // 词曲只在头块缺位时才由尾块补——见 `Credits.fillGaps`。
+        credits.fillGaps(from: stripTrailingCredits(&raw))
         guard !raw.isEmpty else { return [] }
 
         let trans = translation.map { parseTimedLines($0) } ?? []
@@ -273,6 +276,28 @@ enum LyricParser {
             return result
         }
 
+        /// 认下一条角色署名。**只填 `nil`**：同一首歌里 `词：` 出现两次时以先认到的为准。
+        fileprivate mutating func adopt(_ role: SongwriterRole, value: String) {
+            switch role {
+            case .lyricist:
+                if lyricist == nil { lyricist = value }
+            case .composer:
+                if composer == nil { composer = value }
+            case .both:
+                if lyricist == nil { lyricist = value }
+                if composer == nil { composer = value }
+            case .none:
+                break // 编曲 / 制作人 / 吉他 / 混音…：认出来是为了摘掉，不展示
+            }
+        }
+
+        /// 头块缺位时由尾块补。**只填 `nil`，不覆盖**：一首歌的词曲作者按惯例写在
+        /// 开头，尾块那份是同一份信息的重复（或者只有尾块有）。
+        mutating func fillGaps(from other: Credits) {
+            if lyricist == nil { lyricist = other.lyricist }
+            if composer == nil { composer = other.composer }
+        }
+
         private static let nameSeparators: Set<Character> = ["/", "、", ",", "，", "&", "＆", ";", "；", "|"]
     }
 
@@ -290,35 +315,101 @@ enum LyricParser {
     private static func stripLeadingCredits(_ lines: inout [RawLine]) -> Credits {
         var credits = Credits()
         var cut = 0 // 已确认的块尾：`lines[..<cut]` 都不是歌词
-        for (offset, line) in lines.enumerated() {
+        scan: for (offset, line) in lines.enumerated() {
             if offset == 0, cut == 0, isHeaderLine(line.text) {
                 cut = 1
                 continue
             }
-            guard let (key, value) = creditPair(in: line.text) else {
-                // 网易那种 JSON 信息行按定义就不是歌词，认不出角色名也照样摘掉。
-                guard line.isMetadata else { break }
+            switch classify(line, insideBlock: cut > 0) {
+            case .stop:
+                break scan
+            case .suspended:
+                continue // 认不出的先挂起：要么被后面某条确认行带走，要么留在正文里
+            case .confirmed(let role, let value):
                 cut = offset + 1
-                continue
-            }
-            // 认不出的「键：值」先挂起：它要么被后面某条确认行带走，要么留在正文里。
-            guard line.isMetadata || isCreditKey(key, insideBlock: cut > 0) else { continue }
-            cut = offset + 1
-            switch songwriterRole(of: key) {
-            case .lyricist:
-                if credits.lyricist == nil { credits.lyricist = value }
-            case .composer:
-                if credits.composer == nil { credits.composer = value }
-            case .both:
-                if credits.lyricist == nil { credits.lyricist = value }
-                if credits.composer == nil { credits.composer = value }
-            case .none:
-                break // 编曲 / 制作人 / 吉他 / 混音…：认出来是为了摘掉，不展示
+                credits.adopt(role, value: value)
             }
         }
         lines.removeFirst(cut)
         return credits
     }
+
+    /// 结尾那一块制作表（《从未见过的海》正文唱完后接 16 行「制作人 Produer：…」）。
+    ///
+    /// 与开头那块**同一套判据**（`classify`），只是锚点在末行、扫描方向相反。
+    /// 另加一条尾部专有的闸：**摘完必须还剩正文**。开头那块有「第 0 行」这个天然锚点
+    /// （文件第一行不可能是歌的第二句），尾块没有——它的扫描方向是**朝着正文去的**，
+    /// 一旦连续判错就会一路吃进副歌。所以整首都被判成制作信息时整块不摘。
+    private static func stripTrailingCredits(_ lines: inout [RawLine]) -> Credits {
+        var credits = Credits()
+        var cut = lines.count // 已确认的块首：`lines[cut...]` 都不是歌词
+        scan: for offset in stride(from: lines.count - 1, through: 0, by: -1) {
+            switch classify(lines[offset], insideBlock: cut < lines.count) {
+            case .stop:
+                break scan
+            case .suspended:
+                continue
+            case .confirmed(let role, let value):
+                cut = offset
+                credits.adopt(role, value: value)
+            }
+        }
+        guard cut > 0, cut < lines.count else { return Credits() }
+        lines.removeLast(lines.count - cut)
+        return credits
+    }
+
+    /// 一行在块扫描里的去向。头块与尾块共用，两边只差扫描方向。
+    private enum CreditScan {
+        /// 确认不是歌词，块界推到这一行
+        case confirmed(role: SongwriterRole, value: String)
+        /// 认不出的「键：值」，先挂起（只推进不摘）
+        case suspended
+        /// 块到此为止
+        case stop
+    }
+
+    private static func classify(_ line: RawLine, insideBlock: Bool) -> CreditScan {
+        // 版权声明按定义就不是歌词，且**不中断块扫描**——《我天生-有梦版》里它排在
+        // 「词：/曲：」之后、正文之前，中断的话它连同上面已认的两行一起留在屏上。
+        if isNoticeLine(line.text) { return .confirmed(role: .none, value: "") }
+        guard let (key, value) = creditPair(in: line.text) else {
+            // 网易那种 JSON 信息行按定义就不是歌词，认不出角色名也照样摘掉。
+            return line.isMetadata ? .confirmed(role: .none, value: "") : .stop
+        }
+        guard line.isMetadata || isCreditKey(key, insideBlock: insideBlock) else { return .suspended }
+        return .confirmed(role: songwriterRole(of: key), value: value)
+    }
+
+    /// 整行版权声明（`【本作品声明，著作权权利保留。未经著作权人书面许可…】`）。
+    ///
+    /// 判据是**两条形态规律的合取**，不是关键词表：
+    ///
+    /// 1. 整行被一对「标示括号」包住（`【】` `〖〗` `〔〕`）。中文排印里这一族承担的
+    ///    语义就是「这不是正文」（`【注】` `【声明】`）；歌词文件里的和声与旁白一律走
+    ///    **圆括号**（`（哎呦不错哦）`、`（斑驳的家徽擦拭了一夜）`）。两族用途互斥，
+    ///    所以这条从构造上咬不到和声行——不是「圆括号恰好没被列进黑名单」。
+    /// 2. 括号里是成句的散文：含句号 `。`。唱词不打句号——LRC/QRC 的一行就是一个乐句，
+    ///    句读由**时间戳**表达而不由标点表达，这是行式歌词格式本身的性质。
+    ///
+    /// 两条都要：只认括号会把 `【副歌】` 这类段落标记一并摘掉（摘了也不坏，但那是
+    /// 另一件事）；只认句号会咬到真的带句号的口白行。
+    ///
+    /// 已知盲区：用方头括号写的旁白会被摘。规律层面区分不了「用标注括号写的唱词」
+    /// 与「标注」——那是源数据自己打破了排印惯例。别为此把括号族放宽成「任意成对
+    /// 括号」，那会一口吃掉全部和声行。
+    private static func isNoticeLine(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let first = trimmed.first, let last = trimmed.last,
+              noticeBrackets[first] == last
+        else { return false }
+        return trimmed.contains("。")
+    }
+
+    /// 中文排印里的「标示括号」族。圆括号**不在其中**，那是和声与旁白用的。
+    private static let noticeBrackets: [Character: Character] = [
+        "【": "】", "〖": "〗", "〔": "〕",
+    ]
 
     /// 首行的「歌名 - 歌手」
     private static func isHeaderLine(_ text: String) -> Bool {
@@ -326,17 +417,40 @@ enum LyricParser {
             && text.range(of: "^.+\\s[-–—]\\s.+$", options: .regularExpression) != nil
     }
 
-    /// 「键：值」两侧；键过长就不像角色名（那是带冒号的唱词）。
+    /// 「键：值」两侧；键不像角色名就不算（那是带冒号的唱词）。
     private static func creditPair(in text: String) -> (key: String, value: String)? {
         guard let separator = text.rangeOfCharacter(from: CharacterSet(charactersIn: "：:")) else { return nil }
         let key = text[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
         let value = text[separator.upperBound...].trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty, !value.isEmpty, key.count <= maxCreditKeyLength else { return nil }
+        guard !value.isEmpty, looksLikeRoleName(key) else { return nil }
         return (key, value)
     }
 
-    /// 角色名的长度上限。`录音师 Recording Engineer` 是 22 个字符，中英对照里算长的。[推]
-    private static let maxCreditKeyLength = 24
+    /// 这个键在**形态**上像不像一个角色名。
+    ///
+    /// 角色名是一个**名词短语**（中英对照时是一对），不是句子：汉字段是几个字的职称，
+    /// 拉丁段是几个词的对译。早先这里卡的是整键字符数（24，依据是
+    /// `录音师 Recording Engineer` 正好 22 个字符）——那是**一个样本**：
+    /// 双语键的字符数随英文职称长度线性增长，实测
+    /// `人声/吉他录音师 Vocal/Guitar Recording Engineer` 是 40 个字符的真角色名。
+    /// 用字符数当闸等于在给英文职称的长度设限，与「像不像角色名」无关。
+    /// 分段计数分的是**短语与句子**：`我对你说过无数次我爱你` 是 11 个汉字的从句。
+    private static func looksLikeRoleName(_ key: String) -> Bool {
+        guard !key.isEmpty else { return false }
+        // 句读只出现在句子里，角色名不会有。
+        guard !key.contains(where: { sentencePunctuation.contains($0) }) else { return false }
+        let han = key.filter { $0.isLetter && !$0.isASCII }.count
+        let latin = key.split(whereSeparator: { $0.isWhitespace || $0 == "/" })
+            .filter { $0.contains(where: { $0.isASCII && $0.isLetter }) }.count
+        return han <= maxRoleNameHanCount && latin <= maxRoleNameLatinWords
+    }
+
+    /// 汉字段的字数上限（不计 `/` 与空白）。`人声/吉他录音师` = 7。[推]
+    private static let maxRoleNameHanCount = 8
+    /// 拉丁段的词数上限（按 `/` 与空白切）。`Vocal/Guitar Recording Engineer` = 4。[推]
+    private static let maxRoleNameLatinWords = 4
+    /// 句末与句中的点断。唱词与角色名的分界线之一。
+    private static let sentencePunctuation: Set<Character> = ["。", "！", "？", "，", "；", "、"]
 
     /// 这个键是不是制作信息里的角色名。
     ///
@@ -392,7 +506,7 @@ enum LyricParser {
         "OP", "SP", "OP/SP", "SP/OP", "A&R", "AR", "PD", "MV", "OST", "ISRC", "UPC",
     ]
 
-    private enum SongwriterRole { case lyricist, composer, both, none }
+    fileprivate enum SongwriterRole { case lyricist, composer, both, none }
 
     /// 只有词与曲进「创作者」那一行。这里按**整键**认（去掉空白与英文对照那半边），
     /// 免得 `编曲` 被 `曲` 咬中——摘除可以粗，署名不能错。
