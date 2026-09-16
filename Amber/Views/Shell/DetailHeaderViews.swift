@@ -134,6 +134,10 @@ final class ExpandableTextView: NSView {
     private(set) var expanded = false
     /// 展开 / 收起后调；宿主头部据此重算高度。
     var onToggle: (() -> Void)?
+    /// 给了这一条，「更多」就**不在原地展开**，而是把这一下交给宿主去弹介绍面板
+    /// （专辑页头就是这么接的，见 `AlbumHeaderView.presentAbout()`）。
+    /// 歌单页头不给，照旧就地展开。
+    var onMore: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -231,7 +235,13 @@ final class ExpandableTextView: NSView {
 
     // MARK: 展开态（自己持有，不经 @Published —— 铁律 3）
 
-    @objc private func expand() { setExpanded(true) }
+    @objc private func expand() {
+        if let onMore {
+            onMore()
+            return
+        }
+        setExpanded(true)
+    }
     @objc private func collapse() { setExpanded(false) }
 
     private func setExpanded(_ value: Bool) {
@@ -855,6 +865,11 @@ final class AlbumHeaderView: DetailHeaderView {
     private let favoriteStar = NSButton()
     private let artistLabel = CatalogCardKit.label(size: M.albumArtistSize, weight: .medium,
                                                    color: NSColor(Color.amberKey), lines: 1)
+    /// 艺人名那一行是**链接**：Music 点它进艺人页。`CatalogLabel` 自己不接点击
+    /// （`hitTest` 返回 nil），而表格只把点击转给 `NSControl`（见`SongsRichCellView` 那条），
+    /// 所以摆一枚 `isTransparent` 的按钮盖在**字形**上——不画任何东西、只收这一下，
+    /// 标签那边一个像素不动。
+    private let artistButton = NSButton()
     private let metadataLabel = CatalogCardKit.label(size: M.albumMetaSize,
                                                      color: .secondaryLabelColor, lines: 1)
     private let losslessDot = CatalogCardKit.label(size: M.albumMetaSize,
@@ -901,6 +916,12 @@ final class AlbumHeaderView: DetailHeaderView {
 
         addSubview(artworkView)
         for label in [titleLabel, artistLabel, metadataLabel, losslessDot] { addSubview(label) }
+        artistButton.isBordered = false
+        artistButton.isTransparent = true   // 文档原话：仍然跟踪鼠标、发 action，但不画
+        artistButton.title = ""
+        artistButton.target = self
+        artistButton.action = #selector(artistTapped)
+        addSubview(artistButton)
         favoriteStar.isBordered = false
         favoriteStar.bezelStyle = .shadowlessSquare
         favoriteStar.imagePosition = .imageOnly
@@ -939,6 +960,11 @@ final class AlbumHeaderView: DetailHeaderView {
         titleLabel.stringValue = content.title
         artistLabel.stringValue = content.artist
         metadataLabel.stringValue = content.metadata
+        // 艺人 id / 名字缺一个就打不开艺人页（判据与曲目行、卡片副标题同一条
+        // ——`Route.artist(of:)`），那就干脆别摆这枚透明键，省得点了没反应。
+        artistButton.isHidden = artistRoute == nil
+        artistButton.setAccessibilityLabel(content.artist)
+        artistButton.toolTip = content.artist
 
         descriptionView?.removeFromSuperview()
         descriptionView = nil
@@ -952,6 +978,8 @@ final class AlbumHeaderView: DetailHeaderView {
                 self?.needsLayout = true
                 self?.onHeightChanged?()
             }
+            // 专辑的简介不在原地展开：「更多」弹那张介绍卡（与艺人页 ⓘ 同一张）。
+            view.onMore = { [weak self] in self?.presentAbout() }
             addSubview(view)
             descriptionView = view
         }
@@ -1004,6 +1032,9 @@ final class AlbumHeaderView: DetailHeaderView {
         }
 
         menu = collectionActions(isFavorite: isFavorite, isInLibrary: isInLibrary).makeMenu()
+        // 艺人名上盖着那枚透明键，右键落在它身上：`NSView.menu(for:)` 默认只报自己那份，
+        // 不给就是「名字上右键不弹菜单」。同一份挂过去，页头哪儿右键都一样。
+        artistButton.menu = menu
 
         needsLayout = true
     }
@@ -1038,6 +1069,10 @@ final class AlbumHeaderView: DetailHeaderView {
         let library = appState.library
         let downloads = appState.downloads
         actions.shareURL = album.webShareURL
+        // 「前往艺人」：与点艺人名那一下同一个落点（从前这一条一直空着，那段就整个不摆）。
+        if artistRoute != nil {
+            actions.goToArtist = { [weak self] in self?.artistTapped() }
+        }
         // Music 那条「在 Apple Music 中显示」的位置，Amber 摆的是音源网页版那一页。
         if let web = album.webShareURL {
             actions.openOnWeb = { NSWorkspace.shared.open(web) }
@@ -1105,6 +1140,41 @@ final class AlbumHeaderView: DetailHeaderView {
 
     @objc private func playTapped() { play() }
     @objc private func shuffleTapped() { shuffle() }
+
+    /// 这张碟的艺人页落点；id 或名字缺一个就没有（`Route.artist(of:)` 的判据）。
+    private var artistRoute: Route? { Route.artist(of: content.album) }
+
+    /// 点艺人名 = 进艺人页。右键菜单里的「前往艺人」走同一条。
+    @objc private func artistTapped() {
+        guard let artistRoute else { return }
+        appState.push(artistRoute)
+    }
+
+    /// 简介末行那枚「更多」：弹介绍卡（`AboutPanel.swift`），与艺人页 hero 的 ⓘ 同一张。
+    ///
+    /// 事实行填的是专辑自己有、而卡上又看得见价值的三样：艺人、发行日期（比页头信息行
+    /// 那个只有年份的版本全）、曲风。曲风摆成胶囊——与艺人面板的「类型」同款。
+    private func presentAbout() {
+        let album = content.album
+        var facts: [AboutFact] = []
+        if !album.artistName.isEmpty { facts.append(AboutFact(label: "艺人", value: album.artistName)) }
+        if let date = album.publishDate, !date.isEmpty {
+            facts.append(AboutFact(label: "发行日期", value: date))
+        }
+        if let genre = album.genre, !genre.isEmpty {
+            facts.append(AboutFact(label: "曲风", value: genre, isChip: true))
+        }
+        findAboutPanelPresenter()?.presentAboutPanel(
+            AboutContent(name: content.title,
+                         artworkURL: content.artworkURL,
+                         facts: facts,
+                         body: content.description))
+    }
+
+    #if DEBUG
+    /// 实机验收用：`-albumdemo -albumabout` 直接弹介绍卡，走的就是「更多」的这条路。
+    func debugPresentAbout() { presentAbout() }
+    #endif
 
     @objc private func toggleFavorite() {
         appState.library.toggleFavoriteAlbum(content.album)
@@ -1230,6 +1300,13 @@ final class AlbumHeaderView: DetailHeaderView {
         let artistHeight = labelHeight(artistLabel, width: column.width)
         artistLabel.frame = NSRect(x: column.x, y: columnTop + y,
                                    width: column.width, height: artistHeight)
+        // 透明键只盖住**字形**那一截（标签是整列宽的，盖满了等于名字右边一大片空白也能点）：
+        // 字形从 frame.x + 2 起（`CatalogCardKit.labelInset`），名字长到要截断时封顶在列宽。
+        artistButton.frame = NSRect(
+            x: column.x + CatalogCardKit.labelInset,
+            y: columnTop + y,
+            width: min(CatalogCardKit.textWidth(artistLabel), column.width),
+            height: artistHeight)
         y += artistHeight
 
         y += M.albumMetaTop

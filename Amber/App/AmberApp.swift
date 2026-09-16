@@ -343,6 +343,18 @@ extension AppDelegate {
                 }
                 guard let album else { return }
                 await MainActor.run { appState.push(.album(album)) }
+                // `-albumabout`：把简介末行那枚「更多」当场按一下（弹`AboutPanel`，
+                // 与艺人页 ⓘ 同一张卡），好让 `-dumpviews` 连面板里的文字一起写出来。
+                // 页面要先把详情拉回来，页头才在树里，所以等一会儿再找。
+                if arguments.contains("-albumabout") {
+                    try? await Task.sleep(for: .seconds(4))
+                    await MainActor.run {
+                        guard let root = NSApp.keyWindow?.contentView,
+                              let header = Self.findView(of: AlbumHeaderView.self, in: root)
+                        else { return }
+                        header.debugPresentAbout()
+                    }
+                }
                 // `-addthis`：把这张碟连同它的曲目加进资料库，用来自证「资料库里的专辑」
                 // 那一路形态（星级列、标题栏那颗 ••• 走 `albumPageEntries` 那份项序）。
                 if arguments.contains("-addthis"),
@@ -377,7 +389,8 @@ extension AppDelegate {
                 try? await Task.sleep(for: .seconds(4))
                 await MainActor.run {
                     guard let root = NSApp.keyWindow?.contentView,
-                          let hero = Self.findArtistHero(in: root) else { return }
+                          let hero = Self.findView(of: ArtistHeroView.self, in: root)
+                    else { return }
                     hero.debugPresentBio()
                 }
             }
@@ -556,11 +569,12 @@ extension AppDelegate {
     }
 
     #if DEBUG
-    /// 在视图树里找那张满幅 hero（`-artistbio` 用）。
-    static func findArtistHero(in view: NSView) -> ArtistHeroView? {
-        if let hero = view as? ArtistHeroView { return hero }
+    /// 在视图树里找第一件某类视图（`-artistbio` 找那张满幅 hero、
+    /// `-albumabout` 找专辑页头）。
+    static func findView<V: NSView>(of type: V.Type, in view: NSView) -> V? {
+        if let hit = view as? V { return hit }
         for sub in view.subviews {
-            if let hero = findArtistHero(in: sub) { return hero }
+            if let hit = findView(of: type, in: sub) { return hit }
         }
         return nil
     }
