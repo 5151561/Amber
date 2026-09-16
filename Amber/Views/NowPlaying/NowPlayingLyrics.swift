@@ -80,21 +80,22 @@ final class NowPlayingLyrics: ObservableObject {
         options.isActive = false
     }
 
-    /// 取词走 `LyricsStore`：与侧栏歌词共用一份缓存，同一首在两处之间来回切只打一次网络。
+    /// 取词走 `LyricsStore` 的**显示口**：勾了「自定义歌词」就用用户手打的那份，
+    /// 否则是音源那份。与侧栏歌词共用一份缓存，同一首在两处之间来回切只打一次网络。
     /// 命中缓存时不先清空——直接从上一首的词换成这一首的，中间不插一帧空态。
     func load(track: Track?, using provider: any MusicProvider, isPlaying: Bool) async {
         guard let track else {
             clear()
             return
         }
-        if let cached = LyricsStore.shared.cachedLyrics(for: track) {
+        if let cached = LyricsStore.shared.cachedDisplayLyrics(for: track) {
             apply(cached, of: track, isPlaying: isPlaying)
             return
         }
         clear()
         isLoading = true
         defer { isLoading = false }
-        let loaded = await LyricsStore.shared.lyrics(for: track, using: provider)
+        let loaded = await LyricsStore.shared.displayLyrics(for: track, using: provider)
         // 换歌时 `.task(id:)` 会取消上一份，取消后回来的结果不能再写进去。
         guard !Task.isCancelled else { return }
         apply(loaded, of: track, isPlaying: isPlaying)

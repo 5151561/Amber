@@ -33,6 +33,9 @@ struct NowPlayingView: View {
     @EnvironmentObject private var player: PlayerController
     @EnvironmentObject private var library: LibraryStore
     @StateObject private var model = NowPlayingViewModel()
+    /// 订阅曲目简介：在「显示简介 › 歌词」里改完自定义歌词，下面那条取词的
+    /// `.task(id:)` 才会拿到新的键并重取（`infos` 是 `@Published`）。
+    @ObservedObject private var trackInfo = TrackInfoStore.shared
 
     /// [HIG] 「减弱动态效果」：这一屏的动效全是自绘的（背景律动、粒子、封面缩放），
     /// 系统不会替它们降级，得自己读这一位。
@@ -128,6 +131,18 @@ struct NowPlayingView: View {
         // 阶段 1 起骨架由 AppKit 接管：整窗位移归 `NowPlayingHostController` 的 CALayer 弹簧，
         // 安全区在 `NowPlayingRoot` 上以`.ignoresSafeArea()` 铺满全窗。
         .task(id: track?.id) { await loadTrackAssets() }
+        // 歌词**单独一条**，键是「曲目 id + 这首的自定义歌词」：在简介面板里改完
+        // 自定义歌词要立刻换上新的那份，而只认 `track.id` 的话不换歌就永远不重取。
+        // 不把复合键并进上面那条：那条还在取封面，自定义词一改会连封面一起重取，
+        // 白白再跑一遍 0.5 秒的淡入动画。取词那一步因此从 `loadTrackAssets` 里搬到这里。
+        .task(id: LyricsStore.displayToken(for: track, trackInfo: trackInfo)) {
+            guard let track else {
+                model.lyrics.clear()
+                return
+            }
+            await model.lyrics.load(track: track, using: appState.provider(track.kind),
+                                    isPlaying: player.isPlaying)
+        }
         .onChange(of: isPresented) { _, presented in model.setPresented(presented) }
         // [TYPE] `LyricsOptions.isActive`：抽屉开合 / 播停都要重算一次「是否在跟随」。
         .onChange(of: player.isPlaying) { _, playing in
@@ -796,11 +811,8 @@ struct NowPlayingView: View {
             // 只有真的没曲目时才清空；换歌时留着旧封面，等新的取回来再换。
             // 先清成 nil 的话背景场跟着变 nil，画面会闪一下空态灰再淡进新色。
             artwork = nil
-            model.lyrics.clear()
             return
         }
-
-        let provider = appState.provider(track.kind)
 
         // [实测] 整窗播放器走 ITMPMetadataModel 那一档（800），是整套阶梯里最大的
         if let loaded = await ImageCache.shared.image(
@@ -808,8 +820,6 @@ struct NowPlayingView: View {
            track.id == self.track?.id {
             withAnimation(.easeInOut(duration: 0.5)) { artwork = loaded }
         }
-        await model.lyrics.load(track: track, using: provider,
-                                isPlaying: player.isPlaying)
     }
 }
 

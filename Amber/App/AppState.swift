@@ -171,12 +171,13 @@ final class AppState: ObservableObject {
             return try await provider.trackStreamURL(track: track, quality: self.downloadQuality)
         }
         // 下载好的文件里也带一份歌词（LRC 写进标签，见 `DownloadStore.lyricsText`）。
-        // 走 `LyricsStore` 而不是直接`provider.lyrics`：侧栏与整窗歌词共用的就是这份缓存，
-        // 刚看过词的那首下载时一趟网络都不用再打，也不会把同一首问两遍。
+        // 走 `LyricsStore` 的**显示口**而不是直接 `provider.lyrics`：一来侧栏与整窗歌词
+        // 共用的就是这份缓存，刚看过词的那首下载时一趟网络都不用再打，也不会把同一首问两遍；
+        // 二来勾了「自定义歌词」的那些歌，文件里写进去的要与面板上看到的是同一份。
         // 取不到（没有词、断网、这个音源不认这首）就是空数组，下载照旧成功。
         downloads.resolveLyrics = { [weak self] track in
             guard let self, let provider = self.providers[track.kind] else { return [] }
-            return await self.lyricsStore.lyrics(for: track, using: provider)
+            return await self.lyricsStore.displayLyrics(for: track, using: provider)
         }
         downloads.onMediaFolderChanged = { [weak self] message in self?.showToast(message) }
         // MV 下载走**视频那一档**：设置 › 播放 › 视频质量里「流播放」与「下载」是两个
