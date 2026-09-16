@@ -74,7 +74,7 @@ extension SyncedLyricsViewController {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (index, view) in manager.lineViews.enumerated()
-        where !animatedIDs.contains(ObjectIdentifier(view)) && !displacedLineViews.contains(view) {
+        where !animatedIDs.contains(ObjectIdentifier(view)) {
             view.frame = lineFrames[safe: index] ?? .zero
         }
         CATransaction.commit()
@@ -268,11 +268,12 @@ extension SyncedLyricsViewController {
     /// 视口受影响行的逐行独立位移 + 零位移对账。
     ///
     /// 还原 Apple Music 歌词动效核心机制（§16.4 / §17.1 / §17.2 / §6.5）：
-    /// 1. 容器视口先不动（contentView.bounds.origin 保持原位）；
-    /// 2. 圈定可视区与目标可视区交集内的连续受影响行集合（sub_0x10111c548）；
-    /// 3. 逐行下发独立的 Layer 增量动画（LayerPropertyAnimator），
-    ///    按 `delay = lineDelay × (max(i, 1) − 1)` 阶梯延迟错开起跑；
-    /// 4. 跑完在 completionHandlers 里清除临时位移，瞬时切换 bounds.origin（零位移对账）。
+    /// 1. 视口与模型层第一帧直接切换到目标真值（targetOrigin 与 view.frame.origin），
+    ///    保证进入与离开视口的行自第一帧起就在正确的裁切区域内，彻底消除裁切空白与延迟突现；
+    /// 2. 动画层通过 CALayer 的叠加式动画（additive animation）将各行视觉位置在时间轴上退回初始屏幕坐标；
+    /// 3. 原已在视口内的行按 `delay = lineDelay × (max(i, 1) − 1)` 阶梯延迟错开起跑，还原波浪/手风琴独立位移；
+    /// 4. 边缘新进场的行延迟为 0，伴随前序行让位第一时间无缝滑入，既不留白也不突现；
+    /// 5. 动画落位后叠加偏移自动归零，零位移对账清空记录，自然稳定在真实布局。
     func animateLineScroll(to targetOrigin: CGPoint,
                            anchorLine: any LyricsLine,
                            spring: SpringTimingParameters,
@@ -290,12 +291,22 @@ extension SyncedLyricsViewController {
             return
         }
 
-        // 已经有正在执行的同目标位移动画时，忽略并发冗余调用（例如 didSelect 与 didDeselect 几毫秒内相继触发），
-        // 绝不打断已经启动的梯形独立位移动画。
+        // 如果位移跨度超过整个可视高度（远距离跳转），交由视口平滑滚动（ScrollSpring）处理
+        let visible = scrollView?.documentVisibleRect ?? clip.bounds
+        if abs(delta) > visible.height {
+            let isTap = manager.needsTapHandling
+            manager.needsTapHandling = false
+            scroll(to: targetOrigin, spring: isTap ? .tapDriven : spring, delay: 0)
+            return
+        }
+
+        // 已经有正在执行的同目标位移动画时，忽略并发冗余调用
         if let pending = pendingScrollTargetOrigin, abs(pending.y - targetOrigin.y) < Self.scrollDeadZone {
             lyricsDebugLog("animateLineScroll: already scrolling to \(targetOrigin.y), ignoring redundant call")
             return
         }
+
+        cancelScrollSpring()
 
         // 收集受影响行（sub_0x10111c548）
         let affected = affectedLineViews(aroundLineAt: anchorLine.index, deltaY: delta)
@@ -307,8 +318,13 @@ extension SyncedLyricsViewController {
         }
 
         // 如果已有正在位移的行，一并纳入，保证并发换行时不漏重置。
+        let lineViewsList = manager.lineViews
         let combined = Array(Set(affected).union(displacedLineViews))
-            .sorted { ($0.lineLayer?.line?.index ?? 0) < ($1.lineLayer?.line?.index ?? 0) }
+            .sorted { (v1, v2) -> Bool in
+                let idx1 = lineViewsList.firstIndex(where: { $0 === v1 }) ?? 0
+                let idx2 = lineViewsList.firstIndex(where: { $0 === v2 }) ?? 0
+                return idx1 < idx2
+            }
         displacedLineViews = Set(combined)
         pendingScrollTargetOrigin = targetOrigin
 
@@ -328,25 +344,40 @@ extension SyncedLyricsViewController {
                                        settlingDuration: settlingDuration))
 
         let stagger = LineStagger.sharedFirstPair(specs.lineDelay)
-        var animators: [LayerPropertyAnimator] = []
-        for (i, lineView) in combined.enumerated() {
-            guard let layer = lineView.layer else { continue }
-            let delay: TimeInterval = isTapDriven ? 0 : stagger.delay(movedOrdinal: i, affectedOrdinal: i)
 
-            let targetLayerY = lineView.frame.origin.y - delta
-            let currentLayerY = layer.presentation()?.position.y ?? layer.position.y
-            let offsetY = currentLayerY - targetLayerY
-            lyricsDebugLog("lineView[\(lineView.lineLayer?.line?.index ?? -1)] ordinal=\(i) delay=\(delay) offsetY=\(offsetY)")
+        // 记录动画前各行在屏幕上的呈现位置（优先取 presentationLayer 以便并发打断时连续衔接）
+        let beforePresentationY: [ObjectIdentifier: CGFloat] = combined.reduce(into: [:]) { map, view in
+            guard let layer = view.layer else { return }
+            map[ObjectIdentifier(view)] = (layer.presentation()?.position ?? layer.position).y
+        }
+
+        // 一、视口与模型层第一帧到位：切换视口 origin 并确保模型层 position 为自然 frame
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        setScrollOrigin(targetOrigin)
+        for lineView in combined {
+            lineView.layer?.position = CGPoint(x: lineView.frame.origin.x, y: lineView.frame.origin.y)
+        }
+        CATransaction.commit()
+
+        var animators: [LayerPropertyAnimator] = []
+
+        for (i, lineView) in combined.enumerated() {
+            guard let layer = lineView.layer,
+                  let startLayerY = beforePresentationY[ObjectIdentifier(lineView)] else { continue }
+
+            let offsetY = (startLayerY - lineView.frame.origin.y) + delta
             guard abs(offsetY) >= 0.5 else { continue }
+
+            // 顺应运动方向计算波浪顺序：
+            // - 上移（delta >= 0）：自上而下推进，前序行先走，新进场行在末尾顺畅跟进；
+            // - 下移（delta < 0）：自下而上推进，下方行先行腾出空间，上方行顺畅跟进。
+            let ordinal = delta >= 0 ? i : (combined.count - 1 - i)
+            let delay: TimeInterval = isTapDriven ? 0 : stagger.delay(movedOrdinal: ordinal, affectedOrdinal: ordinal)
 
             let animator = LayerPropertyAnimator(curve: curve)
             animator.delay = delay
             animator.layers = [layer]
-
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            layer.position = CGPoint(x: lineView.frame.origin.x, y: targetLayerY)
-            CATransaction.commit()
 
             animator.addAdditiveAnimation(to: layer,
                                           keyPath: "position",
@@ -357,7 +388,6 @@ extension SyncedLyricsViewController {
 
         guard !animators.isEmpty else {
             lyricsDebugLog("animateLineScroll: animators is empty!")
-            // 一条动画都没建时立即跑零位移对账
             reconcileDisplacedLines(to: targetOrigin)
             return
         }
@@ -381,18 +411,12 @@ extension SyncedLyricsViewController {
         }
     }
 
-    /// 零位移对账：在 CATransaction 中瞬时恢复图层 position 并切换 contentView.bounds.origin。
+    /// 零位移对账：模型层已在第一帧就位，动画完成后清空 displacedLineViews 状态。
     func reconcileDisplacedLines(to finalOrigin: CGPoint) {
         lyricsDebugLog("reconcileDisplacedLines to \(finalOrigin.y), count=\(displacedLineViews.count)")
         pendingScrollTargetOrigin = nil
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for view in displacedLineViews {
-            view.layer?.position = CGPoint(x: view.frame.origin.x, y: view.frame.origin.y)
-        }
         displacedLineViews.removeAll()
         setScrollOrigin(finalOrigin)
-        CATransaction.commit()
     }
 }
 
@@ -450,13 +474,8 @@ extension SyncedLyricsViewController {
         }
         currentAnimators = []
         pendingScrollTargetOrigin = nil
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for view in displacedLineViews {
-            view.layer?.position = CGPoint(x: view.frame.origin.x, y: view.frame.origin.y)
-        }
         displacedLineViews.removeAll()
-        CATransaction.commit()
+        cancelScrollSpring()
     }
 
     /// 一行应该落在哪儿。公式见 §2.5。

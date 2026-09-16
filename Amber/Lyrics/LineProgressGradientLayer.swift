@@ -8,7 +8,12 @@ final class LineProgressGradientLayer: CALayer {
     enum Direction: Sendable { case leftToRight, rightToLeft }
 
     var color: CGColor?                       // +8
-    var featherWidth: CGFloat = 30            // +16  [实测] specs.lineProgressionGradientFeather
+    var featherWidth: CGFloat = 30 {          // +16  [实测] specs.lineProgressionGradientFeather
+        didSet {
+            guard oldValue != featherWidth else { return }
+            setNeedsLayout()
+        }
+    }
     var direction: Direction = .leftToRight   // +24
     /// [实测] §8.2：它是 `CGSize?`——宽、高、是 Optional 的
     /// tag 字节（即 nil）。宽高各有各的用处：

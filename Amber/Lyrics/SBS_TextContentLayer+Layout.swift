@@ -477,6 +477,9 @@ extension SBS_TextContentLayer {
                 verticalPadding: padding,
                 specs: specs)
 
+            row.gradient.featherWidth = specs.lineProgressionGradientFeather
+            row.gradient.layoutIfNeeded()
+
             var frame = row.gradient.frame
             let from = frame.size.width
             frame.size.width = target
