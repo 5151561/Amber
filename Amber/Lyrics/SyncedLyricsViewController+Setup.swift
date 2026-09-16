@@ -131,11 +131,13 @@ extension SyncedLyricsViewController {
     // MARK: - 装歌词
 
     func setLyrics(_ lyrics: Lyrics?) {
+        lyricsDebugLog("setLyrics: \(lyrics?.lines.count ?? 0) lines, type=\(String(describing: lyrics?.type))")
         isSettingLyrics = true
         defer { isSettingLyrics = false }
 
         self.lyrics = lyrics
         manager?.lyrics = lyrics
+        manager?.needsTapHandling = false
         manager?.manager?.setLyrics(lyrics)
 
         guard let manager, let documentView else { return }
@@ -210,10 +212,18 @@ extension SyncedLyricsViewController {
             // 宽受限、高无限：折行交给 TextKit，不限行数、不截断、不缩字号。
             let size = view.sizeThatFits(NSSize(width: measureWidth, height: .infinity))
 
-            var y = LyricsLineGeometry.originY(
-                after: previous,
-                firstLineStartingPosition: specs.firstLineStartingPosition,
-                lineSpacing: specs.lineSpacing)
+            var y: CGFloat
+            if let previous {
+                y = LyricsLineGeometry.originY(
+                    after: previous,
+                    firstLineStartingPosition: specs.firstLineStartingPosition,
+                    lineSpacing: specs.lineSpacing)
+            } else {
+                y = LyricsLineGeometry.firstLineY(
+                    specs: specs,
+                    lineHeight: size.height,
+                    containerHeight: scrollView.frame.height)
+            }
             // [实测] 段首吃 `paragraphSpacing = 39`（`isFirstLineOfParagraph`）。
             if index > 0, (line as? TextLine)?.isFirstLineOfParagraph == true {
                 y += specs.paragraphSpacing

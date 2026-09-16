@@ -53,23 +53,32 @@ struct InspectorLyricsView: View {
             //   落到基线 spec 的 Dynamic Type `.largeTitle`（macOS 约 26pt），
             //   与 [AX] 实测的行盒 28（24pt bold 的行高）对不上。
             //
+            // - selectedLineRect: [PX] §22.3 锚点以 0.381 视口高居中，避免贴顶导致前序行不可见。
+            //
             // `isActive` 这里**不接**：容器切到待播盘就把这一片从视图树里摘掉，
             // `viewWillDisappear` 已经把每帧驱动停了；再按`isPlaying` 关一道，
             // 暂停时拖进度条就不会重新落行（整窗那边现在正是这样）。
-            SyncedLyricsView(
-                lyrics: lyrics,
-                player: player,
-                showsTranslation: showTranslation,
-                showsTransliteration: showTransliteration,
-                overrides: .init(horizontalMargin: MusicMetrics.Inspector.lyricsInset,
-                                 sizeClass: .sidebar))
-                // [AX] 翻译键是**窗口的直接子件**、不在歌词组里，所以浮在歌词之上
-                // 而不是跟着滚；距面板右沿与窗底各 15。
-                .overlay(alignment: .bottomTrailing) {
-                    LyricsTranslationButton(hasTranslation: lyrics.hasTranslation,
-                                            hasTransliteration: lyrics.hasTransliteration)
-                        .padding(MusicMetrics.Lyrics.TranslationButton.inset)
-                }
+            GeometryReader { geo in
+                let selectedRect = LyricsBaseline.sidebarSelectedLineRect(
+                    panelHeight: geo.size.height,
+                    panelWidth: geo.size.width)
+                SyncedLyricsView(
+                    lyrics: lyrics,
+                    player: player,
+                    showsTranslation: showTranslation,
+                    showsTransliteration: showTransliteration,
+                    overrides: .init(selectedLineRect: selectedRect,
+                                     horizontalMargin: MusicMetrics.Inspector.lyricsInset,
+                                     sizeClass: .sidebar))
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    // [AX] 翻译键是**窗口的直接子件**、不在歌词组里，所以浮在歌词之上
+                    // 而不是跟着滚；距面板右沿与窗底各 15。
+                    .overlay(alignment: .bottomTrailing) {
+                        LyricsTranslationButton(hasTranslation: lyrics.hasTranslation,
+                                                hasTransliteration: lyrics.hasTransliteration)
+                            .padding(MusicMetrics.Lyrics.TranslationButton.inset)
+                    }
+            }
         }
     }
 

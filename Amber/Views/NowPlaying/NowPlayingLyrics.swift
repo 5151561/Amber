@@ -143,12 +143,28 @@ enum LyricsBaseline {
     /// - Parameters:
     ///   - artworkCenterY: `LayoutHints.primaryArtworkCenterY`
     ///   - panel: 歌词滚动区在同一坐标系里的矩形
-    /// - Returns: nil 表示锚点还没报上来，这时用 `LyricsSpecs` 的基线落点（`.top(12)`）。
+    /// - Returns: nil 表示面板尺寸尚未就绪（height <= 1）。
     static func selectedLineRect(artworkCenterY: CGFloat?, panel: CGRect) -> CGRect? {
-        guard let artworkCenterY, panel.height > 1 else { return nil }
-        let targetY = artworkCenterY - panel.minY        // 换算进滚动视图自己的坐标系
+        guard panel.height > 1 else { return nil }
+        let targetY: CGFloat
+        if let artworkCenterY {
+            targetY = artworkCenterY - panel.minY        // 换算进滚动视图自己的坐标系
+        } else {
+            // 锚点尚未报上来时以 0.381 视口高兜底，避免回退贴顶
+            targetY = panel.height * MusicMetrics.Lyrics.viewportAnchorRatio
+        }
         return CGRect(x: 0, y: targetY - panel.height / 2,
                       width: panel.width, height: panel.height)
+    }
+
+    /// [PX] §22.3 侧栏检查器歌词基线：以视口高 × 0.381 为焦点组框中心。
+    static func sidebarSelectedLineRect(panelHeight: CGFloat, panelWidth: CGFloat) -> CGRect? {
+        guard panelHeight > 1 else { return nil }
+        let h = panelHeight.rounded()
+        let w = panelWidth.rounded()
+        let targetY = (h * MusicMetrics.Lyrics.viewportAnchorRatio).rounded()
+        return CGRect(x: 0, y: targetY - h / 2,
+                      width: w, height: h)
     }
 }
 

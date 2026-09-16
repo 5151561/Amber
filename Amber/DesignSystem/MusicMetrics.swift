@@ -1856,6 +1856,9 @@ enum MusicMetrics {
         /// [实测] 宽度断点
         static let breakpoints: [CGFloat] = [300, 528, 672, 760]
 
+        /// [PX] 焦点组框中心相对视口高的锚点比例（§22.3：视口高 771 → 293.8、548 → 207.8，均为 0.381）。
+        static let viewportAnchorRatio: CGFloat = 0.381
+
         enum SizeClass: CaseIterable {
             /// 窄于 300：Music 的侧栏歌词样式
             case sidebar
