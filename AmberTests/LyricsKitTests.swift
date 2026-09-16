@@ -1791,6 +1791,36 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertEqual(geom.feather, 16)
     }
 
+    /// 首音节起跑阶段（ratio == 0，如暂停时跳转到音节起点）：
+    /// 遮罩前沿必须严格等于首音节起始坐标 sylMinX，绝不得叠加 feather，
+    /// 确保音节内部 alpha 恒为 0，防止暂停跳转到该句时首字母提前透出高亮。
+    func testSweptGeometryAtStartOfSyllableHasZeroHighlightLeak() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        layoutLine.startTime = 10
+        layoutLine.endTime = 14
+
+        var syl = SyncedLyricsLineLayer.Syllable()
+        syl.startTime = 10
+        syl.endTime = 12
+        syl.frame = CGRect(x: 0, y: 0, width: 40, height: 50)
+        var word = SyncedLyricsLineLayer.Word()
+        word.frame = CGRect(x: 100, y: 0, width: 40, height: 50)
+        word.syllables = [syl]
+        layoutLine.words = [word]
+
+        let state = layoutLine.progressState(at: 10)
+        XCTAssertEqual(state, .singing(syllableIndexInWord: 0, wordIndex: 0))
+
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state, progress: 10, verticalPadding: 6, specs: specs())
+
+        XCTAssertEqual(geom.feather, 16)
+        // 遮罩右端严格停在首音节起始坐标 100，不得侵入音节内部 [100, 140]
+        XCTAssertEqual(geom.width, word.frame.minX)
+        // 在音节区域内 [100, 140]，遮罩 alpha 严格为 0，零高亮泄漏
+        XCTAssertLessThanOrEqual(geom.width, word.frame.minX)
+    }
+
     /// 音节间停顿阶段：遮罩前沿不得越过下一个未唱音节的起始坐标，
     /// 无论停顿多久，遮罩稳定停驻在字间空白内，下一个未唱字零高亮泄漏。
     func testSweptGeometryDoesNotLeakIntoNextSyllableDuringPause() {
