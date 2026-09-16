@@ -165,6 +165,18 @@ enum LyricsTextLayout {
         var fragments: [Fragment]
         /// 整段折完后占的尺寸，宽是各片段用宽的最大值。
         var usedSize: CGSize
+        /// `CATextLayer` 画这段硬换行文本要多高（CoreText 的口径，见 `size`）。
+        ///
+        /// 跟折行结果一起算、一起进缓存：`size` 被行几何对全表每行调用、一次翻行至少
+        /// 两遍，而 `CTFramesetter` 建一次 0.134 ms，与 TextKit 折行同量级——
+        /// 那一条早就有缓存了，这一条没道理每次现算。
+        ///
+        /// **只缓存高度，不缓存那串字。** 文本的度量与颜色无关，而 `cacheKey`
+        /// 里没有颜色（也不该有，否则每换一次明暗就是一条新缓存）——
+        /// 把 `hardWrapped` 的产物也存进来的话，后来的调用方会拿到**第一个**
+        /// 调用方那份属性串，颜色跟着串走（`CATextLayer` 拿属性串时
+        /// `foregroundColor` 不生效），副行就会永远停在行几何量它时用的那个色上。
+        var drawnHeight: CGFloat
     }
 
     private static var wrapCache: [String: Wrapped] = [:]
@@ -182,7 +194,9 @@ enum LyricsTextLayout {
     static func wrap(_ text: String,
                      attributes: [NSAttributedString.Key: Any],
                      width: CGFloat) -> Wrapped {
-        guard !text.isEmpty, width > 0 else { return Wrapped(fragments: [], usedSize: .zero) }
+        guard !text.isEmpty, width > 0 else {
+            return Wrapped(fragments: [], usedSize: .zero, drawnHeight: 0)
+        }
         let key = cacheKey(text: text, attributes: attributes, width: width)
         if let cached = wrapCache[key] { touchWrapCache(key); return cached }
 
@@ -214,9 +228,16 @@ enum LyricsTextLayout {
         }
 
         let used = manager.usedRect(for: container)
+        // 折出不止一行时才问 CoreText：单行两边给的高度一样，老路更省。
+        let drawn = fragments.count > 1
+            ? drawnHeight(of: assembleHardWrapped(text: text, fragments: fragments,
+                                                  attributes: attributes),
+                          width: width)
+            : used.height
         let wrapped = Wrapped(fragments: fragments,
                               usedSize: CGSize(width: min(ceil(used.width), width),
-                                               height: used.height))
+                                               height: used.height),
+                              drawnHeight: drawn)
         wrapCache[key] = wrapped
         touchWrapCache(key)
         evictWrapCacheIfNeeded()
@@ -265,10 +286,22 @@ enum LyricsTextLayout {
     /// 图层自己折行走的是 CoreText，**不认 `lineBreakStrategy`**；测量按 TextKit
     /// 的行数算、渲染按 CoreText 断的话，多断出来的那一行会被图层边界裁掉。
     /// 每个片段都已经能放下，加硬换行后图层不会再断第二次。
+    ///
+    /// **每次按调用方自己的属性现拼**，不进缓存：同一段文字会被不同的明暗各要一次
+    /// （行几何量它时用白色、落到图层上时用当前行色），而属性串里的颜色会盖过
+    /// `CATextLayer.foregroundColor`。存一份共用的话，副行就永远停在第一次那个色上。
     static func hardWrapped(_ text: String,
                             attributes: [NSAttributedString.Key: Any],
                             width: CGFloat) -> NSAttributedString {
         let fragments = wrap(text, attributes: attributes, width: width).fragments
+        return assembleHardWrapped(text: text, fragments: fragments, attributes: attributes)
+    }
+
+    private static func assembleHardWrapped(
+        text: String,
+        fragments: [Fragment],
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
         guard fragments.count > 1 else {
             return NSAttributedString(string: text, attributes: attributes)
         }
@@ -322,9 +355,7 @@ enum LyricsTextLayout {
         guard !text.isEmpty, width > 0 else { return .zero }
         let wrapped = wrap(text, attributes: attributes, width: width)
         guard !wrapped.fragments.isEmpty else { return .zero }
-        let laidOut = wrapped.fragments.count > 1
-            ? drawnHeight(of: hardWrapped(text, attributes: attributes, width: width), width: width)
-            : wrapped.usedSize.height
+        let laidOut = wrapped.drawnHeight
         let font = attributes[.font] as? NSFont
         let height = font.map { rasterSafeHeight(laidOut, font: $0) } ?? ceil(laidOut)
         return CGSize(width: wrapped.usedSize.width, height: height)
