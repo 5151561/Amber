@@ -342,7 +342,7 @@ enum SidebarEntry: Hashable {
     var sidebarItem: SidebarItem? {
         switch self {
         case .item(let item, _): return item
-        case .playlist(let playlist): return .playlist(id: playlist.id, name: playlist.name)
+        case .playlist(let playlist): return .playlist(id: playlist.id)
         case .group: return nil
         }
     }

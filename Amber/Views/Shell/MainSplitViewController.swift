@@ -76,16 +76,19 @@ final class MainSplitViewController: NSSplitViewController {
         if inspector.responds(to: revealsOnEdgeHover) {
             inspector.setValue(true, forKey: "revealsOnEdgeHoverInFullscreen")
         }
-        inspector.isCollapsed = appState.playerInspector == nil
+        inspector.isCollapsed = !appState.isInspectorOpen
         addSplitViewItem(inspector)
 
-        // 歌词 / 待播清单：`playerInspector` 为 nil 就是收起。开合走 animator，
-        // 「减弱动态效果」时直接到位。展开之前先把档位推进宿主，见 `setInspector(mode:)`。
-        appState.$playerInspector
-            .removeDuplicates()
-            .sink { [weak self] inspector in
-                self?.setInspector(mode: inspector)
-            }
+        // 歌词 / 待播清单现在是**两件事**：`inspectorMode` 是全局的档位（永不为 nil），
+        // `isInspectorOpen` 是主窗这一扇「面板列开着没有」。任一变了都重推一次，
+        // 开合走 animator、「减弱动态效果」时直接到位。
+        //
+        // `@Published` 是在 **willSet** 里发的，同步读回属性拿到的是旧值——所以
+        // 先 `receive(on:)` 落到下一轮再读（与两个迷你播放器里的订阅同一条注意事项）。
+        appState.$inspectorMode.removeDuplicates().map { _ in () }
+            .merge(with: appState.$isInspectorOpen.removeDuplicates().map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.syncInspector() }
             .store(in: &cancellables)
     }
 
@@ -95,22 +98,19 @@ final class MainSplitViewController: NSSplitViewController {
         splitViewItems.first?.isCollapsed ?? false
     }
 
-    /// 档位落地。[实测] inspector spec §2.3 的两个 `doShowHide*` 分支：
+    /// 把模型的两位（档位 + 开着没有）落到分栏上。[实测] inspector spec §2.3 的两个
+    /// `doShowHide*` 分支原样保留，只是判据从「`mode` 是不是 nil」换成了那两位：
     ///
     /// - **面板收着**：用**无动画的裸 setter** 换档再展开——面板还没露脸，
     ///   没必要淡入（也避免「展开动画 + 交叉淡入」两套动画打架）；
-    /// - **面板开着、只是换另一档**：走 `setMode(_:animated: true)` 交叉淡入，**分栏不动**。
-    ///
-    /// （Music 那边还有第三支「已经开着且正显示这一面 → 收起」，Amber 侧由
-    /// `AppState.playerInspector` 自己置 nil 表达，落到这里就是`mode == nil`。）
-    private func setInspector(mode: PlayerInspector?) {
-        guard let mode else {
-            setInspector(collapsed: true)
-            return
-        }
-        let isCollapsed = splitViewItems.last?.isCollapsed ?? true
-        inspectorContainer.setMode(mode, animated: !isCollapsed)
-        setInspector(collapsed: false)
+    /// - **面板开着、只是换另一档**：走 `setMode(_:animated: true)` 交叉淡入，**分栏不动**；
+    /// - **收起**：只收分栏，档位原样留在 `appState.inspectorMode` 上，
+    ///   下次展开还是这一档（Music 那边第三支 `doShowHide*` 的语义）。
+    private func syncInspector() {
+        let wasCollapsed = splitViewItems.last?.isCollapsed ?? true
+        let open = appState.isInspectorOpen
+        inspectorContainer.setMode(appState.inspectorMode, animated: open && !wasCollapsed)
+        setInspector(collapsed: !open)
     }
 
     private func setInspector(collapsed: Bool) {
@@ -148,19 +148,26 @@ final class MainSplitViewController: NSSplitViewController {
     func splitView(_ splitView: NSSplitView,
                    canSpringLoadRevealArrangedSubview subview: NSView) -> Bool {
         guard splitView.arrangedSubviews.last === subview else { return false }
-        // 只动容器的档位，**不动 `appState.playerInspector`**：spring-load 是拖拽期间的
-        // 临时露出，松手后 AppKit 自己收回去；写全局那一条会把面板永久留在展开态。
+        // 只动容器自己那一档，**不动 `appState.inspectorMode` / `isInspectorOpen`**：
+        // spring-load 是拖拽期间的临时露出，松手后 AppKit 自己收回去；
+        // 写进模型会把面板永久留在展开态、还会把用户上次选的档位改掉。
         // Music 这里也只有一句裸 setter（§2.8：`w0 = 1` 后 return true）。
         inspectorContainer.setMode(.queue, animated: false)
         return true
     }
 
     /// 用户直接把面板那条分隔线拖到收起时，把状态写回模型（否则再点歌词键没反应）。
+    /// AppKit 确实不会为「拖动收合」通知模型，所以这条补丁不能删。
+    ///
+    /// 但它现在只回灌「开着没有」这一位，**不碰档位**——从前这里写的是
+    /// `playerInspector = nil`，于是拖收一次就把「上次看的是待播清单」也一并忘了。
+    /// 也只回灌**收起**这一个方向：展开还有 spring-load 那条「拖拽期间临时露出」的路
+    ///（见下面的 `canSpringLoadRevealArrangedSubview`），那一下不该被记成用户开了面板。
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         super.splitViewDidResizeSubviews(notification)
         guard !isSyncingInspector, let item = splitViewItems.last else { return }
-        if item.isCollapsed, appState.playerInspector != nil {
-            appState.playerInspector = nil
+        if item.isCollapsed, appState.isInspectorOpen {
+            appState.isInspectorOpen = false
         }
     }
 }

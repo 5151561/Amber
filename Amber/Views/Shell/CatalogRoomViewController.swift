@@ -101,6 +101,8 @@ final class CatalogRoomViewController: ContentPageController {
     private var itemsByID: [RoomEntryID: CatalogItem] = [:]
     /// 宽度还没落定时挡下来的那一份快照，等 `viewDidLayout` 补灌。
     private var pendingItems: [CatalogItem]?
+    /// 上一份快照的**版式指纹**，见 `apply(items:)` 末尾。
+    private var lastLayoutSignature: String?
 
     // 分类浏览页专用
     private var selectedTag: CatalogTagRef?
@@ -115,9 +117,15 @@ final class CatalogRoomViewController: ContentPageController {
 
     private weak var hoveredCard: CatalogHoverTarget?
 
+    /// 一件的身份。**不带位置**：位置一旦进来，在网格头上插一张卡就会让后面每一件的
+    /// 身份全变，整页被判成「删光重加」——全部重建（封面重取、看得见闪动），
+    /// 也没有 Music 那种「新卡从左边长出来」的插入动画。照目录页
+    /// `CatalogPageViewController.CatalogEntryID` 那份写法，同一个 id 在本段里
+    /// **重复出现**第几次才靠 `occurrence` 区分，第一件永远是 0。
+    /// 这一页只有一个网格段，所以不必像目录页那样再带段 id。
     private struct RoomEntryID: Hashable {
-        let index: Int
         let id: String
+        let occurrence: Int
     }
 
     private static let headerSectionID = "__room-header__"
@@ -273,11 +281,14 @@ final class CatalogRoomViewController: ContentPageController {
 
     // MARK: - 分类浏览：换标签就重新取
 
+    /// 「选中哪个标签」的**唯一真相是 `selectedTag`**。页头（在屏的那个、量高的那个）
+    /// 都只是按它渲染的视图，所以这里只改它、再让在屏那个页头照它重渲染一遍。
+    /// `configure` 现在只改胶囊的选中态、不重建整条排（见`TagStripView.setTags`），
+    /// 横滚位置照旧；量高那份影子实例与选中态无关（选中只换填色，不改尺寸），不用碰。
     private func select(_ tag: CatalogTagRef) {
         guard tag != selectedTag else { return }
         selectedTag = tag
-        liveHeader?.selectTag(tag)
-        headerPrototype.selectTag(tag)
+        if let liveHeader { configure(liveHeader) }
         reloadTag()
     }
 
@@ -291,7 +302,15 @@ final class CatalogRoomViewController: ContentPageController {
             return
         }
         isLoading = true
-        apply(items: [])
+        // **旧结果原地留着**，只把 spinner 叠上去（同 `SearchResultsModel`：新词条提交后
+        // 旧结果不撤、等新结果到了再换）。从前这里先 `apply(items: [])` 再等网络，
+        // 于是换一次标签整片网格先消失变 spinner、滚动位置归零；两个标签共有的歌单
+        //（分类之间重叠很常见）也跟着闪掉，回来还是同一张卡。
+        //
+        // 重灌**同一份** items 而不是只 `updateOverlay()`：首次进这一页时`items` 还是空的，
+        // 这一句同时负责把「只有页头那一段」的首份快照灌下去——页头是恒在的第 0 段的段头，
+        // 一次快照都没灌过的话它一个像素都不画。旧结果那一路走的是零差异 diff，不重建卡。
+        apply(items: items)
         let appState = appState
         loadTask = Task { [weak self] in
             let result = await appState.provider(group.kind).playlists(tag: tag)
@@ -343,8 +362,11 @@ final class CatalogRoomViewController: ContentPageController {
         if !items.isEmpty {
             snapshot.appendSections([Self.gridSectionID])
             var ids: [RoomEntryID] = []
-            for (index, item) in items.enumerated() {
-                let id = RoomEntryID(index: index, id: item.id)
+            var occurrences: [String: Int] = [:]
+            for item in items {
+                let occurrence = occurrences[item.id, default: 0]
+                occurrences[item.id] = occurrence + 1
+                let id = RoomEntryID(id: item.id, occurrence: occurrence)
                 itemsByID[id] = item
                 ids.append(id)
             }
@@ -352,8 +374,27 @@ final class CatalogRoomViewController: ContentPageController {
         }
         setHoveredCard(nil)
         dataSource.apply(snapshot, animatingDifferences: false)
-        collectionView.collectionViewLayout?.invalidateLayout()
+        // **版式没变就别重解布局**（照目录页 `CatalogPageViewController.apply(sections:)`
+        // 末尾那条）：组合布局一 `invalidateLayout()`，网格里的 cell 会被整批重建、
+        // 封面重新异步取，界面上就是闪一下。换了哪几张卡由上面那次 diffable apply 负责。
+        let signature = layoutSignature(itemCount: items.count)
+        if signature != lastLayoutSignature {
+            lastLayoutSignature = signature
+            collectionView.collectionViewLayout?.invalidateLayout()
+        }
         updateOverlay()
+    }
+
+    /// 版式指纹：只认**影响布局解**的那两样——有没有网格段，以及页头多高。
+    ///
+    /// 网格段的解与卡数无关（列宽按容器宽算、每行列数固定、行高定值），所以卡片换了几张、
+    /// 换了内容都不必重解；段的**有无**会改段序，必须重解。
+    ///
+    /// **不含容器宽**（同目录页那条）：改窗口宽／开合侧栏不走`apply(items:)`，
+    /// 段布局由组合布局自己按新容器重求解。页头高也与容器宽无关——大标题与副标题都是
+    /// 单行标签（`fittingSize` 不随宽变），标签排的高是胶囊自己的固有高。
+    private func layoutSignature(itemCount: Int) -> String {
+        "\(itemCount > 0)|\(headerHeight)"
     }
 
     // MARK: - 加载 / 空态

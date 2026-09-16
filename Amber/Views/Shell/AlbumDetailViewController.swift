@@ -107,12 +107,13 @@ final class AlbumDetailViewController: TrackTableViewController {
         }
     }
 
+    /// 入库 / 退库换的只是行里多不多一列星级（`.detail` ↔`.libraryAlbum`），
+    /// **行高两档相同**（`TrackRowRegistry.rowHeight(for:)` 都走`compactHeight`），
+    /// 所以不必整表重排：可见行重配一次就够——`TrackRowView.build(for:)` 只增删星级那一件，
+    /// 离屏的行装回来时本来就会重走一次 `configure`。
     private func libraryStateChanged() {
-        let wanted: TrackListStyle = appState.library.isAlbumInLibrary(album) ? .libraryAlbum : .detail
-        guard wanted != style else { refreshVisibleRows(); return }
-        style = wanted
-        // 形态换了（多／少一列星级），整表重排一次。
-        apply(tracks: tracks)
+        style = appState.library.isAlbumInLibrary(album) ? .libraryAlbum : .detail
+        refreshVisibleRows()
     }
 
     private func show(_ detail: AlbumDetail) {

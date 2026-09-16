@@ -18,6 +18,10 @@ final class LibraryAlbumsViewController: LibraryPageController,
     private var laidOutItemWidth: CGFloat = 0
     /// 一张专辑都没有时那片空态（懒建，建好就留着，只切显隐）。
     private var emptyHost: NSView?
+    /// 同一轮 runloop 里的多次请求合并成一次（见 `setNeedsRefresh`）。
+    private var pendingRefresh = false
+    /// 被 `isHidden` 收着期间攒下的刷新，等 `pageDidAppear()` 补。
+    private var needsRefreshWhenShown = false
 
     init(appState: AppState, model: LibraryPageModel) {
         super.init(nativePage: appState, model: model,
@@ -65,12 +69,46 @@ final class LibraryAlbumsViewController: LibraryPageController,
 
     private func bind() {
         refresh()
-        appState.library.objectWillChange
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+        // 这一页真正读的只有四份：专辑集合、曲目（判空专辑用）、专辑喜爱（仅喜爱筛选）、
+        // 评分（按星级排序）。从前订的是 `library.objectWillChange` ——
+        // 心水一首歌、记一次播放、改一条勾选都会把这一页整个重排一遍。
+        appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums, .ratings])
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
         model.objectWillChange
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
+    }
+
+    /// 刷新入口：合批 + 可见性闸。
+    ///
+    /// **合批**照歌曲页那条（`LibrarySongsViewController.setNeedsRefresh`）：一轮 runloop
+    /// 里来 N 声只重排一次，而且推迟到下一轮再读值——`model` 那几项是`@Published`，
+    /// 在 willSet 发布，当场读到的还是旧值。
+    ///
+    /// **可见性闸**：导航容器把访问过的根页全缓存着、切页只切 `isHidden`
+    /// （`ContentNavigationController.install`），隐藏的页重排一遍没人看得见，
+    /// 只记一笔等 `pageDidAppear()` 补。
+    private func setNeedsRefresh() {
+        guard let view = viewIfLoaded, !view.isHiddenOrHasHiddenAncestor else {
+            needsRefreshWhenShown = true
+            return
+        }
+        guard !pendingRefresh else { return }
+        pendingRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh = false
+            self.refresh()
+        }
+    }
+
+    /// 切回来：被压住期间攒下的那次变动在这里补上。
+    override func pageDidAppear() {
+        super.pageDidAppear()
+        guard needsRefreshWhenShown else { return }
+        needsRefreshWhenShown = false
+        refresh()
     }
 
     /// 筛选（仅喜爱）→ 搜索（专辑名 / 艺人名）→ 排序。规则与旧 `LibraryAlbumsPage` 一字不差。

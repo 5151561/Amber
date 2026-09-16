@@ -185,8 +185,32 @@ final class PlayQueueModel: ObservableObject {
     static func sections(queue: [Track], origins: [PlayerController.QueueOrigin],
                          currentIndex: Int?) -> Sections {
         var result = Sections()
+        for item in items(queue: queue, origins: origins, currentIndex: currentIndex) {
+            switch item.section {
+            case .history: result.history.append(item)
+            case .upNext: result.upNext.append(item)
+            case .continuePlaying: result.continuePlaying.append(item)
+            case .autoplay: result.autoplay.append(item)
+            }
+        }
+        return result
+    }
+
+    /// 同一份推导，但**按队列原序**交出来，不分捡进四个数组。
+    ///
+    /// 侧栏面板要的是分区（`sections`），整窗播放器那块盘`TrackSectionsPlatter` 要的是
+    /// 一条平铺的清单——从前它自己按数组下标认行（`ForEach(...enumerated(), id: \.offset)`），
+    /// 于是队列中间插一首/删一首，插入点之后每一行的身份都指到了另一首歌，整块盘从插入点
+    /// 往下刷一片占位块再逐个淡回来（design-ref/reactive-ui-review.md §2.2）。
+    /// 同一份队列在两处必须是同一套身份，所以身份只在这里生成一次，两边共用。
+    ///
+    /// `section` 照旧算出来跟着项走：平铺展示用不上它，但菜单与拖放要按分区判语义。
+    static func items(queue: [Track], origins: [PlayerController.QueueOrigin],
+                      currentIndex: Int?) -> [PlayQueueItem] {
         // 每个 track.id 已经出现过几次 —— identifier 的第二个分量，见 `PlayQueueItem`。
         var occurrences: [String: Int] = [:]
+        var result: [PlayQueueItem] = []
+        result.reserveCapacity(queue.count)
         for (index, track) in queue.enumerated() {
             let origin = index < origins.count ? origins[index] : .source
             let section: PlayQueueSection
@@ -201,14 +225,8 @@ final class PlayQueueModel: ObservableObject {
             }
             let occurrence = occurrences[track.id, default: 0]
             occurrences[track.id] = occurrence + 1
-            let item = PlayQueueItem(identifier: "\(track.id):\(occurrence)",
-                                     queueIndex: index, track: track, section: section)
-            switch section {
-            case .history: result.history.append(item)
-            case .upNext: result.upNext.append(item)
-            case .continuePlaying: result.continuePlaying.append(item)
-            case .autoplay: result.autoplay.append(item)
-            }
+            result.append(PlayQueueItem(identifier: "\(track.id):\(occurrence)",
+                                        queueIndex: index, track: track, section: section))
         }
         return result
     }

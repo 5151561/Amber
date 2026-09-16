@@ -23,9 +23,12 @@ final class InspectorContainerViewController: NSViewController {
 
     /// [实测] §1.1：`mode` **0 = 歌词、1 = 队列**；§1.5：没有显式赋值 →
     /// **默认站在歌词**。这里的 `mode` 是容器实例自己的字段（一扇窗一份），
-    /// 与全局 `AppState.playerInspector`（nil = 收起）不是一回事：
-    /// 面板收起期间容器仍记着上一次的档位。
-    private(set) var mode: PlayerInspector = .lyrics
+    /// 是**视图层的当前画面**——哪一档由宿主推进来（主窗是 `MainSplitViewController`、
+    /// 迷你窗是 `MiniPlayerContentView` 的形态机），宿主读的是全局那一份
+    /// `AppState.inspectorMode`。容器自己不订阅 `inspectorMode`：
+    /// 迷你窗那台的档位是从 `currState` 的跳表里出来的，容器绕过宿主自己换档
+    /// 会与那台形态机打架。
+    private(set) var mode: PlayerInspector
 
     init(appState: AppState) {
         self.appState = appState
@@ -33,6 +36,9 @@ final class InspectorContainerViewController: NSViewController {
         self.lyrics = appState.hostingController {
             InspectorLyricsView()
         }
+        // 起手就站在全局那一档：面板收起期间档位也记着，新建的容器（比如迷你窗那台）
+        // 不该一律从歌词开始。
+        self.mode = appState.inspectorMode
         super.init(nibName: nil, bundle: nil)
         // [实测] §1.5：两个都 `addChildViewController`。
         addChild(queue)

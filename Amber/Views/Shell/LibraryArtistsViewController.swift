@@ -51,6 +51,36 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     // 数据缓存
     private var artists: [Artist] = []
     private var selectedID: String?
+    /// 我们自己往左列写选中时置位，免得代理回调把这一下再回灌进 `selectedID`
+    /// （照侧栏 `SidebarOutlineController.isSyncing` 的写法）。
+    ///
+    /// 缺了它，`restoreSelection()` 里那句`deselectAll(nil)` 会经代理把`selectedID`
+    /// 清成 nil，与它自己那句注释「保持 selectedID 但表格无选中」正相反：
+    /// 搜一个不匹配当前艺人的词就**永久**丢掉选中，清空搜索也回不来
+    /// （nil 会被 `refreshData()` 兜成「所有艺人」）。
+    private var isSyncing = false
+    /// 同一轮 runloop 里的多次刷新请求合并成一次（见 `setNeedsRefresh`）。
+    private var pendingRefresh = false
+    /// 被 `isHidden` 收着期间攒下的刷新，等 `pageDidAppear()` 补。
+    private var needsRefreshWhenShown = false
+
+    /// 左列的行构成：第 0 行固定是「所有艺人」，其后依次是 `artists`。
+    /// 行号换算只此一处——从前是四处各写一个字面量 `+1`，置顶行一加减就集体错位。
+    private enum LeftRow {
+        /// 固定置顶行占掉的行数。
+        static let fixedCount = 1
+        /// 「所有艺人」那一行。
+        static let allArtists = 0
+    }
+
+    /// 艺人下标 → 左列行号。
+    private func leftRow(forArtistAt index: Int) -> Int { index + LeftRow.fixedCount }
+
+    /// 左列行号 → 艺人下标；落在固定置顶行上（或越界）时给 nil。
+    private func artistIndex(forLeftRow row: Int) -> Int? {
+        let index = row - LeftRow.fixedCount
+        return artists.indices.contains(index) ? index : nil
+    }
     /// 详情面的行。选中某位艺人时全是 `.album`；「所有艺人」时按艺人分组，
     /// 每组前插一行 `.artistHeader`（Music 实拍就是这么排的）。
     private enum DetailRow {
@@ -62,7 +92,12 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     private var presentedID: String?
     private var currentAlbums: [Album] = []
     private var resolvedAvatars: [String: String] = [:]
+    /// 头像解析的排队作业。见 `resolveAvatars()`：在飞的那一轮不重启，只往队列里补人。
     private var avatarTask: Task<Void, Never>?
+    private var avatarQueue: [Artist] = []
+    /// 已经排在队列里或正在飞的艺人名，防止同一个人被排两次。
+    /// 处理完就摘掉——这一轮没搜到头像的，下一次 `refreshData()` 还会重新排上。
+    private var avatarQueuedNames: Set<String> = []
     /// 详情面用来算封面边长的宽度。**行高与专辑块必须读同一个数**：
     /// 行高是 `reloadData` 当场问出来的（那一刻表格可能还没铺开、`bounds.width`
     /// 还是列的最小宽 200），块视图却要等这一轮布局才建（那时已是真宽），
@@ -134,6 +169,11 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
 
     override func pageDidAppear() {
         super.pageDidAppear()
+        // 切回来：被压住期间攒下的那次资料库变动在这里补上（见 `setNeedsRefresh`）。
+        if needsRefreshWhenShown {
+            needsRefreshWhenShown = false
+            refreshData()
+        }
         consumePendingSelection()
     }
 
@@ -321,16 +361,19 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
 
     private func bind() {
         let library = appState.library
-        library.objectWillChange
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.refreshData() }
-            }
+        // 这一页真正读的：曲目与专辑（`libraryArtists()` / `albums(byArtist:)` /
+        // `tracks(in:)` 都从这两份派生）、艺人喜爱（左列尾随 ★ 与头部那枚）、
+        // 专辑喜爱（「仅喜爱」筛的正是「这位艺人有没有被喜爱的碟」）、
+        // 评分（专辑块与音轨行的五星是 `configure` 时读进去的，星控件自己不写回）。
+        // 从前订的是 `library.objectWillChange` ——记一次播放、改一条勾选
+        // 都会让左表与右表各重灌一遍。
+        library.changes(affecting: [.tracks, .albums, .favoriteArtists,
+                                    .favoriteAlbums, .ratings])
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
 
         model.objectWillChange
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.refreshData() }
-            }
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
 
         appState.$pendingLibraryArtistID
@@ -354,6 +397,28 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
                 self?.refreshTrackStates()
             }
             .store(in: &cancellables)
+    }
+
+    /// 刷新入口：合批 + 可见性闸。
+    ///
+    /// **合批**照歌曲页那条（`LibrarySongsViewController.setNeedsRefresh`）：这一页一次
+    /// `refreshData()` 是左表 + 右表**各一遍** `reloadData()`，来几声就刷几遍代价最大；
+    /// 而且要推迟到下一轮再读值——`model` 那几项是`@Published`，在 willSet 发布。
+    ///
+    /// **可见性闸**：导航容器把访问过的根页全缓存着、切页只切 `isHidden`，
+    /// 隐藏的页重排一遍没人看得见，只记一笔等 `pageDidAppear()` 补。
+    private func setNeedsRefresh() {
+        guard let view = viewIfLoaded, !view.isHiddenOrHasHiddenAncestor else {
+            needsRefreshWhenShown = true
+            return
+        }
+        guard !pendingRefresh else { return }
+        pendingRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh = false
+            self.refreshData()
+        }
     }
 
     private func refreshData() {
@@ -410,17 +475,24 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         emptyLibraryHost?.isHidden = false
     }
 
+    /// 把 `selectedID` 回灌到左列的选中上。**这是程序化写选中**，
+    /// 所以整段罩在 `isSyncing` 里：代理不该把我们自己写的这一下再解释成
+    /// 「用户改了选中」，尤其是下面那句 `deselectAll(nil)`（见`isSyncing` 的注释）。
     private func restoreSelection() {
+        isSyncing = true
+        defer { isSyncing = false }
         guard let selectedID else {
             leftTableView.deselectAll(nil)
             return
         }
         if selectedID == Self.allArtistsID {
-            leftTableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            leftTableView.selectRowIndexes(IndexSet(integer: LeftRow.allArtists),
+                                           byExtendingSelection: false)
             return
         }
         if let idx = artists.firstIndex(where: { $0.id == selectedID }) {
-            leftTableView.selectRowIndexes(IndexSet(integer: idx + 1), byExtendingSelection: false)
+            leftTableView.selectRowIndexes(IndexSet(integer: leftRow(forArtistAt: idx)),
+                                           byExtendingSelection: false)
         } else {
             // 搜索过滤后当前选中者被移除了，保持 selectedID 但表格无选中
             leftTableView.deselectAll(nil)
@@ -454,9 +526,6 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         let library = appState.library
         let isAll = selectedID == Self.allArtistsID
 
-        // 换了对象就清掉音轨行的选中，红底不跨艺人带走
-        selectedTrackID = nil
-
         if isAll {
             // Music 的「所有艺人」是**分组视图**：每位艺人一个组头（名字 + 四枚钮 +
             // 细线，无副标题），组头下面是他自己的专辑块。没有一个叫「所有艺人」的大标题，
@@ -487,10 +556,14 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
             headerView.setFavorite(visible: artist != nil,
                                    isFavorite: artist.map(library.isFavoriteArtist) ?? false)
         }
+        // 换没换呈现对象，决定「清音轨选中」与「滚回顶部」这两件；留在同一位艺人上时
+        // 两件都不做。音轨行的红底从前是无条件清的（写在这个方法开头），于是任何一次
+        // 资料库变动——这一页还订着曲目/专辑/喜爱/评分——都会把用户刚点亮的那一行抹掉。
+        let switchedTarget = presentedID != selectedID
+        // 清在 reloadData 之前：行是靠 `configure(selectedTrackID:)` 把红底吃进去的。
+        if switchedTarget { selectedTrackID = nil }
         detailTableView.reloadData()
-        // 只有换了选中对象才回到顶部。留在同一位艺人上时，心水一首歌、喜爱一位艺人
-        // 都会经 library.objectWillChange 走到这里，不能把人家的滚动位置甩回 0。
-        if presentedID != selectedID {
+        if switchedTarget {
             presentedID = selectedID
             if !detailRows.isEmpty { detailTableView.scrollRowToVisible(0) }
         }
@@ -534,8 +607,8 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         library.toggleFavoriteArtist(target)
 
         // 左列那一行的尾随 ★
-        if let row = artists.firstIndex(where: { $0.id == target.id }) {
-            leftTableView.reloadData(forRowIndexes: IndexSet(integer: row + 1),
+        if let index = artists.firstIndex(where: { $0.id == target.id }) {
+            leftTableView.reloadData(forRowIndexes: IndexSet(integer: leftRow(forArtistAt: index)),
                                      columnIndexes: IndexSet(integer: 0))
         }
         // 详情面的 ★：固定头直接改，分组头只重配那一行
@@ -606,29 +679,46 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
 
     // MARK: - 头像异步解析
 
+    /// 把还没有头像的艺人排进解析队列，**已经在跑就别重启**。
+    ///
+    /// 从前这里是 `avatarTask?.cancel()` 后整批重来，而它由每次`refreshData()` 尾部调用：
+    /// 资料库连续变动（导入、账号同步、回填）期间每一声都把在飞的那次搜索砍掉重排，
+    /// 队伍永远从头开始——头像一个都解析不出来。改成「一条队伍、一个消费者」之后，
+    /// 新增的艺人只是接在队尾，已经搜到的那些不会被重搜。
+    ///
+    /// 这一轮没搜到头像的（音源查无此人、或者网络当时不通）会在处理完时从
+    /// `avatarQueuedNames` 里摘掉，下一次`refreshData()` 还会重新排上——与从前同。
     private func resolveAvatars() {
-        let library = appState.library
-        let artistsToResolve = library.libraryArtists().filter { resolvedAvatars[$0.name] == nil }
-        guard !artistsToResolve.isEmpty else { return }
-
-        avatarTask?.cancel()
+        let pending = appState.library.libraryArtists().filter {
+            resolvedAvatars[$0.name] == nil && !avatarQueuedNames.contains($0.name)
+        }
+        guard !pending.isEmpty else { return }
+        avatarQueue.append(contentsOf: pending)
+        for artist in pending { avatarQueuedNames.insert(artist.name) }
+        // 已经有消费者在跑：新人已经排进队列了，不要再起一条。
+        guard avatarTask == nil else { return }
         avatarTask = Task { [weak self] in
-            for artist in artistsToResolve {
-                guard !Task.isCancelled else { return }
-                guard let appState = self?.appState else { return }
-                let hits = (try? await appState.provider(artist.kind)
-                    .searchArtists(keyword: artist.name, limit: 3, offset: 0)) ?? []
-                let match = hits.first { $0.name == artist.name } ?? hits.first
-                if let avatar = match?.avatarURL {
-                    await MainActor.run {
-                        self?.resolvedAvatars[artist.name] = avatar
-                        if let idx = self?.artists.firstIndex(where: { $0.name == artist.name }) {
-                            self?.leftTableView.reloadData(forRowIndexes: IndexSet(integer: idx + 1),
-                                                           columnIndexes: IndexSet(integer: 0))
-                        }
-                    }
-                }
-            }
+            await self?.drainAvatarQueue()
+        }
+    }
+
+    /// 队列的唯一消费者。整个方法是主线程隔离的（类上 `@MainActor`），
+    /// `await` 挂起后回到主线程继续，所以读写`avatarQueue` / `resolvedAvatars`
+    /// 不再需要往 `MainActor.run` 里塞。
+    private func drainAvatarQueue() async {
+        defer { avatarTask = nil }
+        while !avatarQueue.isEmpty {
+            guard !Task.isCancelled else { return }
+            let artist = avatarQueue.removeFirst()
+            let hits = (try? await appState.provider(artist.kind)
+                .searchArtists(keyword: artist.name, limit: 3, offset: 0)) ?? []
+            avatarQueuedNames.remove(artist.name)
+            let match = hits.first { $0.name == artist.name } ?? hits.first
+            guard let avatar = match?.avatarURL else { continue }
+            resolvedAvatars[artist.name] = avatar
+            guard let index = artists.firstIndex(where: { $0.name == artist.name }) else { continue }
+            leftTableView.reloadData(forRowIndexes: IndexSet(integer: leftRow(forArtistAt: index)),
+                                     columnIndexes: IndexSet(integer: 0))
         }
     }
 
@@ -656,7 +746,7 @@ extension LibraryArtistsViewController: NSTableViewDataSource, NSTableViewDelega
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         if tableView === leftTableView {
-            return 1 + artists.count
+            return LeftRow.fixedCount + artists.count
         } else {
             return detailRows.count
         }
@@ -685,14 +775,15 @@ extension LibraryArtistsViewController: NSTableViewDataSource, NSTableViewDelega
             let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? LibraryArtistRowCellView
                 ?? LibraryArtistRowCellView(identifier: identifier)
 
-            if row == 0 {
-                cell.configure(title: M.allArtistsRowTitle, avatarURL: nil, isAll: true, isFavorite: false)
-            } else {
-                let artist = artists[row - 1]
+            // 落不到艺人下标上的就是固定置顶那一行（见 `LeftRow`）。
+            if let index = artistIndex(forLeftRow: row) {
+                let artist = artists[index]
                 cell.configure(title: artist.name,
                                avatarURL: resolvedAvatars[artist.name],
                                isAll: false,
                                isFavorite: appState.library.isFavoriteArtist(artist))
+            } else {
+                cell.configure(title: M.allArtistsRowTitle, avatarURL: nil, isAll: true, isFavorite: false)
             }
             return cell
         }
@@ -732,13 +823,17 @@ extension LibraryArtistsViewController: NSTableViewDataSource, NSTableViewDelega
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard let tableView = notification.object as? NSTableView, tableView === leftTableView else { return }
+        // 我们自己写进去的那一下不回灌（见 `isSyncing`）。
+        guard !isSyncing else { return }
         let row = tableView.selectedRow
         if row < 0 {
             selectedID = nil
-        } else if row == 0 {
+        } else if row == LeftRow.allArtists {
             selectedID = Self.allArtistsID
+        } else if let index = artistIndex(forLeftRow: row) {
+            selectedID = artists[index].id
         } else {
-            selectedID = artists[row - 1].id
+            return
         }
         updateDetailContent()
     }

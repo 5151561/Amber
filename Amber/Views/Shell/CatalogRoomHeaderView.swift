@@ -138,11 +138,6 @@ final class CatalogRoomHeaderView: NSView, NSCollectionViewElement, TrackTableHe
         needsLayout = true
     }
 
-    /// 换选中的标签：只改胶囊的样子，不重建整条排（横滚位置照旧）。
-    func selectTag(_ tag: CatalogTagRef) {
-        tagStrip.select(tag)
-    }
-
     private func setSubtitle(_ value: String?) {
         subtitleLabel.stringValue = value ?? ""
         subtitleLabel.isHidden = (value ?? "").isEmpty
@@ -336,8 +331,19 @@ private final class TagStripView: NSView {
             + Self.gap * CGFloat(pills.count - 1)
     }
 
+    /// **标签数组没变就只改各枚胶囊的选中态**，一枚都不重建。
+    ///
+    /// 页头那句「换选中的标签：只改胶囊的样子，不重建整条排（横滚位置照旧）」的承诺
+    /// 必须落在这里：段头是复用视图，换完标签之后它会被重新 dequeue、再走一遍
+    /// `configure(title:tags:selected:onSelect:)`，于是「换标签」这条路上照样会回到这句。
+    /// 从前这里一上来就 `removeFromSuperview()` 整排重建，横滚位置随之归零。
     func setTags(_ tags: [CatalogTagRef], selected: CatalogTagRef?,
                  onSelect: ((CatalogTagRef) -> Void)?) {
+        self.onSelect = onSelect
+        if pills.map(\.ref) == tags {
+            for pill in pills { pill.isSelectedTag = pill.ref == selected }
+            return
+        }
         pills.forEach { $0.removeFromSuperview() }
         pills = tags.map { tag in
             let pill = CatalogTagPill(ref: tag)
@@ -347,12 +353,7 @@ private final class TagStripView: NSView {
             addSubview(pill)
             return pill
         }
-        self.onSelect = onSelect
         needsLayout = true
-    }
-
-    func select(_ tag: CatalogTagRef) {
-        for pill in pills { pill.isSelectedTag = pill.ref == tag }
     }
 
     @objc private func pillClicked(_ sender: CatalogTagPill) {

@@ -14,10 +14,22 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
     private var collectionView: LibraryGridCollectionView!
     private var sections: [(String, [Album])] = []
     private var laidOutItemWidth: CGFloat = 0
+    /// 同一轮 runloop 里的多次请求合并成一次（见 `setNeedsRefresh`）。
+    private var pendingRefresh = false
+    /// 被 `isHidden` 收着期间攒下的刷新，等 `pageDidAppear()` 补。
+    private var needsRefreshWhenShown = false
     /// 标题栏标题跟着滚动联动当前段名时的迟滞。
     /// [推] 刚进页面时第一段头还完整可见，这时标题该还是页名「最近添加」——
     /// 旧 SwiftUI 版同样留了 8pt（`displayTitle` 那段注释）。
     private static let titleHysteresis: CGFloat = 8
+    /// 标题栏标题跟着滚动联动的当前段名（nil = 用页名「最近添加」）。
+    ///
+    /// **这一位属于这一页**，不再挂在四页共用的 `LibraryPageModel` 上：它是一次性显示态，
+    /// 摆在共享模型里迟早又会被谁接成整页刷新（§5「滚过段头 = 整页重灌」）。
+    /// 消费方只有标题件那一条链（`LibraryPageController.displayTitleSource`）。
+    private let sectionTitle = CurrentValueSubject<String?, Never>(nil)
+
+    override var displayTitleSource: CurrentValueSubject<String?, Never>? { sectionTitle }
 
     init(appState: AppState, model: LibraryPageModel) {
         super.init(nativePage: appState, model: model,
@@ -61,12 +73,41 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
             self, selector: #selector(scrollBoundsChanged),
             name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         refresh()
-        appState.library.objectWillChange
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+        // 这一页读的是：专辑集合与 `albumAddedAt`（分段键）、专辑喜爱（仅喜爱筛选），
+        // 外加曲目——`albumAddedDate(for:)` 在旧存档没有 albumAddedAt 时回落取
+        // 这张碟里曲目 `addedAt` 的最大值，所以入库/退库一首歌也可能改分段。
+        appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums])
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
-        model.objectWillChange
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+        // **只订这一页真读的那两项**，不要 `model.objectWillChange`：
+        // 标题栏标题跟着滚动联动是靠 `updateDisplayTitle()` 写`sectionTitle`，
+        // 那一位从前也长在这个共用模型上（`@Published displayTitle`），
+        // 接整个 `objectWillChange` 就成了自激——滚过一个段头 = 整页重分组 +
+        // `reloadData()` 一次。现在那一位已经搬回这一页自己身上，标题那条链
+        // 工具栏直接订 `displayTitleSource`（`ContentToolbar`），页面这条本来就是多余的。
+        // 这一页没有排序菜单（`hasSort: false`），所以 `sort` 也不订。
+        model.$search
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
+        model.$favoritesOnly
+            .sink { [weak self] _ in self?.setNeedsRefresh() }
+            .store(in: &cancellables)
+    }
+
+    /// 刷新入口：合批 + 可见性闸，写法与其余四页同一条
+    /// （见 `LibraryAlbumsViewController.setNeedsRefresh` 上的原委）。
+    private func setNeedsRefresh() {
+        guard let view = viewIfLoaded, !view.isHiddenOrHasHiddenAncestor else {
+            needsRefreshWhenShown = true
+            return
+        }
+        guard !pendingRefresh else { return }
+        pendingRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh = false
+            self.refresh()
+        }
     }
 
     override func viewDidLayout() {
@@ -75,9 +116,14 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
         updateDisplayTitle()
     }
 
-    /// 切回来时视图没被摘过，`viewDidLayout` 不一定还会来，标题得自己补一次。
+    /// 切回来时视图没被摘过，`viewDidLayout` 不一定还会来，标题得自己补一次；
+    /// 被压住期间攒下的那次资料库变动也在这里补。
     override func pageDidAppear() {
         super.pageDidAppear()
+        if needsRefreshWhenShown {
+            needsRefreshWhenShown = false
+            refresh()
+        }
         updateDisplayTitle()
     }
 
@@ -98,9 +144,9 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
             guard header.frame.minY - top <= Self.titleHysteresis else { break }
             title = sections[index].0
         }
-        // 滚动每帧都会来一次，只在段名真的换了时才写回模型。
-        guard title != model.displayTitle else { return }
-        model.displayTitle = title
+        // 滚动每帧都会来一次，只在段名真的换了时才发。
+        guard title != sectionTitle.value else { return }
+        sectionTitle.value = title
     }
 
     /// 切走：导航容器只把视图 `isHidden` 掉，鼠标不会再发 exited。

@@ -14,9 +14,13 @@ import SwiftUI
 /// stiffness = ω²，damping = 2ζω——这是 SwiftUI `spring(response:dampingFraction:)`
 /// 的定义式，两边同一条曲线）。
 ///
-/// 过渡期里面仍是 SwiftUI：一小片根视图观察 `showingNowPlaying`，把值交给
-/// `NowPlayingView(isPresented:)`（那一位控制背景律动、rollover 计时的启停，
-/// 不能只靠「看不看得见」）。
+/// 过渡期里面仍是 SwiftUI：`isPresented` 由本控制器**换 rootView 推进去**
+/// （那一位控制背景律动、rollover 计时的启停，不能只靠「看不看得见」）。
+///
+/// 从前是一小片 `NowPlayingRoot` 以 `@ObservedObject` 观察整份`AppState` 再取
+/// `showingNowPlaying`——那等于让 AppState 上的每一次变化（toast、导航意图、侧栏选中）
+/// 都把整棵 `NowPlayingView` 重算一遍。换 rootView 是 AppKit 主动推一次状态，
+/// 见 `PageHosting.hostingRoot` 的注释。
 @MainActor
 final class NowPlayingHostController: NSViewController {
 
@@ -35,7 +39,7 @@ final class NowPlayingHostController: NSViewController {
     override func loadView() {
         let container = NowPlayingContainerView()
         container.wantsLayer = true
-        let host = appState.hostingView { NowPlayingRoot(appState: appState) }
+        let host = appState.hostingView { nowPlayingRoot(isPresented: isPresented) }
         host.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(host)
         NSLayoutConstraint.activate([
@@ -46,6 +50,13 @@ final class NowPlayingHostController: NSViewController {
         ])
         self.host = host
         view = container
+        container.isInert = !isPresented
+    }
+
+    /// 整窗播放器那棵 SwiftUI 子树。`ignoresSafeArea` 铺满全窗，位移归本控制器。
+    private func nowPlayingRoot(isPresented: Bool) -> some View {
+        NowPlayingView(isPresented: isPresented, appState: appState)
+            .ignoresSafeArea()
     }
 
     /// 宿主（窗口根）布局时调一次：整块与窗口同尺寸，按当前状态放在窗内或窗下。
@@ -56,18 +67,18 @@ final class NowPlayingHostController: NSViewController {
     }
 
     func setPresented(_ presented: Bool, animated: Bool) {
-        guard let superview = view.superview else {
-            isPresented = presented
-            return
-        }
         let changed = presented != isPresented
         isPresented = presented
+        // `isPresented` 是 SwiftUI 侧的入参（背景律动、rollover 计时、歌词每帧驱动
+        // 全看它），由 AppKit 换 rootView 主动推进去。这一步在「还没挂进窗口」时
+        // 也要做，不然首次上屏那一下推的是旧值。
+        if changed, let host { host.rootView = appState.hostingRoot { nowPlayingRoot(isPresented: presented) } }
         if presented {
-            // 收起时是 `isHidden`（等价于 SwiftUI 的`allowsHitTesting(false)` +
-            // `accessibilityHidden`），展开要先放回来才看得见。
-            host?.isHidden = false
-            view.isHidden = false
+            // 收起期间只是「不参与命中测试、不进辅助功能树」+ alpha 0，展开先还原。
+            (view as? NowPlayingContainerView)?.isInert = false
+            view.alphaValue = 1
         }
+        guard let superview = view.superview else { return }
 
         let bounds = superview.bounds
         let targetY = bounds.minY + (presented ? 0 : -bounds.height)
@@ -103,11 +114,26 @@ final class NowPlayingHostController: NSViewController {
         }
     }
 
-    /// 动画结束再藏：藏早了就看不到落下去的那一段。
-    /// 藏起来之后这一整棵子树不参与命中测试，也不进辅助功能树。
+    /// 动画结束再收尾：收早了就看不到落下去的那一段。
+    ///
+    /// 类头注释真正要的只有两件事——**不参与命中测试、不进辅助功能树**。
+    /// 从前是拿 `isHidden` 一并办掉的，代价是`NSHostingView` 一旦被隐藏，
+    /// 里面那棵 SwiftUI 就**停止更新**（`PageHosting.swift` 自己记着这条规律）：
+    /// 收起期间从迷你播放器换了歌，`NowPlayingView` 的`.task(id: track?.id)` 不跑，
+    /// 再按开先看到上一首的封面/空态再淡入新的——正是本类头注释说要避免的那一幕
+    /// （design-ref/reactive-ui-review.md 故障 16）。
+    ///
+    /// 所以两件事各用各的开关，`isHidden` 这把过度的锤子收起来：
+    /// 命中测试由 `NowPlayingContainerView.hitTest` 短路、辅助功能树由
+    /// `accessibilityHidden` 摘掉，画面上再压一道 `alphaValue = 0`
+    ///（整块本来就已经位移到窗外，这一道是保险）。
+    ///
+    /// 「收起后 CPU ≈ 0」不靠这里：那是 SwiftUI 侧`isPresented` 的事——
+    /// 背景律动、粒子、歌词每帧驱动、待播盘电平条、连时间行那 10 Hz 的走时
+    /// （`PlaybackTimeReader.isActive`）全按它停，见 `NowPlayingView`。
     private func hideAfterCollapse() {
-        host?.isHidden = true
-        view.isHidden = true
+        (view as? NowPlayingContainerView)?.isInert = true
+        view.alphaValue = 0
     }
 }
 
@@ -118,17 +144,21 @@ final class NowPlayingHostController: NSViewController {
 /// 彻底避免背后的表格/内容页发生穿透滚动。
 private final class NowPlayingContainerView: NSView {
 
+    /// 收起期间「当它不存在」：不接命中测试、不进辅助功能树。
+    /// **不动 `isHidden`**——那会连带把里面那棵 SwiftUI 的更新一起停掉，
+    /// 理由见 `NowPlayingHostController.hideAfterCollapse`。
+    var isInert = false {
+        didSet {
+            guard isInert != oldValue else { return }
+            setAccessibilityHidden(isInert)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isInert ? nil : super.hitTest(point)
+    }
+
     override func scrollWheel(with event: NSEvent) {
         // 吸收未被内部视图消费的滚轮与触控板滑动手势，拦截穿透。
-    }
-}
-
-/// 只为把 `showingNowPlaying` 变成`NowPlayingView` 的入参而存在的一小片根视图。
-private struct NowPlayingRoot: View {
-    @ObservedObject var appState: AppState
-
-    var body: some View {
-        NowPlayingView(isPresented: appState.showingNowPlaying)
-            .ignoresSafeArea()
     }
 }

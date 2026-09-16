@@ -57,7 +57,7 @@ final class SearchLandingViewController: ContentPageController {
 
     // MARK: 状态
 
-    private enum LandingSection {
+    private enum LandingSection: Equatable {
         case recents
         case browse
     }
@@ -216,9 +216,17 @@ final class SearchLandingViewController: ContentPageController {
         snapshot.appendItems(SearchLandingCategory.catalog.map { "brick:\($0.term)" },
                              toSection: Self.browseSectionID)
 
+        // **版式没变就别重解布局**（照目录页 `CatalogPageViewController.apply(sections:)`
+        // 末尾那条「版式指纹 + 条件失效」）：这一页的布局解只跟段序有关——最近搜索段
+        // 整段出现／消失；砖块网格的解按容器宽算，与砖块内容无关，而改窗口宽不走这条路
+        //（组合布局自己按新容器重求解），所以指纹里不含宽。
+        //
+        // 从前这里无条件 `invalidateLayout()`：每次从结果页返回落地页，
+        // 10 块一件没变的「浏览类别」砖都会连同各自的渐变层整批重建。
+        let layoutChanged = sections != layoutSections
         layoutSections = sections
         dataSource.apply(snapshot, animatingDifferences: false)
-        collectionView.collectionViewLayout?.invalidateLayout()
+        if layoutChanged { collectionView.collectionViewLayout?.invalidateLayout() }
     }
 
     private func layoutSection(at index: Int) -> LandingSection? {

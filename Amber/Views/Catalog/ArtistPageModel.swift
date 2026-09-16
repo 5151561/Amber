@@ -71,14 +71,22 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
             let provider = appState.provider(artist.kind)
             let detail = try await provider.artistDetail(artist)
             guard !Task.isCancelled else { return }
-            state = .content(title: detail.artist.name, sections: sections(for: detail))
 
             // 相似艺人是**另一条**请求，且不进 `ArtistDetail`：它与正文（热门歌曲/专辑）
-            // 无关，交不出来时整段省掉就行，不该并进详情去决定这一页成不成立。
-            // 所以先让正文上屏，再补这一段——串在同一条 `reloadTask` 里，
+            // 无关，交不出来时整段省掉就行，不该并进详情去决定这一页成不成立——
+            // 所以只 `await` 不 `try`，失败给空数组。串在同一条`reloadTask` 里，
             // 页面重载时跟着一起被取消。
+            //
+            // **但它要与正文一次上屏。** 从前是先发一次 `.content`（正文）、等这条回来
+            // 再发第二次：段数 +1 必然改引擎的版式指纹 → `invalidateLayout()` →
+            // 所有横向货架的 cell 整批重建、封面重新异步取，实机就是进艺人页一两秒后
+            // 所有货架集体闪一下（代价见 `CatalogPageViewController.apply(sections:)` 末尾）。
+            //
+            // 取舍：正文要多等这一条请求才出来。另一条路是「一开始就给相似艺人段占好
+            // 确定的段序」，但引擎会把 0 件的段整段滤掉（`isRenderable`），占不住位，
+            // 得改引擎的三态——为一栏货架不划算。
             similarArtists = await provider.similarArtists(detail.artist)
-            guard !Task.isCancelled, !similarArtists.isEmpty else { return }
+            guard !Task.isCancelled else { return }
             state = .content(title: detail.artist.name, sections: sections(for: detail))
         } catch {
             guard !Task.isCancelled else { return }
@@ -87,6 +95,16 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
     }
 
     // MARK: - 段 → 卡
+
+    /// 「查看全部」那两条路由的身份（见 `RouteCargo`）。
+    ///
+    /// **`CatalogSection.id` 单独用不得**：每位艺人的「专辑」段 id 都是同一个字面量
+    /// `"artist-albums"`、「单曲和 EP」都是 `"artist-singles"`，从前两位艺人的这两页
+    /// 不撞纯粹是因为数组不一样。载荷退出身份之后就得靠这里把艺人补进去。
+    /// 带上 `kind`：两个音源的艺人 id 各自编号，光有数字会撞。
+    private func sectionKey(_ sectionID: String) -> String {
+        "artist:\(artist.kind.rawValue):\(artist.id)/\(sectionID)"
+    }
 
     /// hero 这一段其实在数据到位**之前**就能摆（艺人名与头像随路由一起进来），
     /// Music 那边也是先出大图再补货架。这里仍然等数据齐了再一起上屏：
@@ -134,7 +152,8 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
         if !tracks.isEmpty {
             // › 挂在右半那个标题上：点进去是热门歌曲的全部列表。
             section.trailingTitle = "热门歌曲"
-            section.destination = .trackGrid(title: "热门歌曲", tracks: tracks)
+            section.destination = .trackGrid(key: sectionKey("artist-band"), title: "热门歌曲",
+                                             tracks: RouteCargo(tracks))
             section.showsChevron = true
         }
         return section
@@ -177,7 +196,8 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
         let albums = sortedByNewest(detail.albums.filter { Self.isStudioAlbum($0) })
         guard !albums.isEmpty else { return nil }
         var section = CatalogSection(id: "artist-albums", layout: .squares(rows: 1), title: "专辑")
-        section.destination = .albumGrid(title: "专辑", albums: albums)
+        section.destination = .albumGrid(key: sectionKey("artist-albums"), title: "专辑",
+                                         albums: RouteCargo(albums))
         section.showsChevron = true
         section.items = albums.map(albumCard)
         return section
@@ -190,7 +210,8 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
         guard !singles.isEmpty else { return nil }
         var section = CatalogSection(id: "artist-singles", layout: .squares(rows: 1),
                                      title: "单曲和 EP")
-        section.destination = .albumGrid(title: "单曲和 EP", albums: singles)
+        section.destination = .albumGrid(key: sectionKey("artist-singles"), title: "单曲和 EP",
+                                         albums: RouteCargo(singles))
         section.showsChevron = true
         section.items = singles.map(albumCard)
         return section
@@ -202,7 +223,8 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
         guard !live.isEmpty else { return nil }
         var section = CatalogSection(id: "artist-live", layout: .squares(rows: 1),
                                      title: "现场演出专辑")
-        section.destination = .albumGrid(title: "现场演出专辑", albums: live)
+        section.destination = .albumGrid(key: sectionKey("artist-live"), title: "现场演出专辑",
+                                         albums: RouteCargo(live))
         section.showsChevron = true
         section.items = live.map(albumCard)
         return section

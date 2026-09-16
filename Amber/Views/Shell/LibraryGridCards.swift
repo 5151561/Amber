@@ -130,11 +130,30 @@ final class LibraryGridCollectionView: NSCollectionView {
         setHoveredCard(target)
     }
 
+    /// **判据不能只是「还是不是同一个对象」。** 卡片自己那一位`isHovering` 会在
+    /// `prepareForReuse` 里被清成 false，而`reloadData()` 正是让在屏 item 全走一遍
+    /// `prepareForReuse`——重载之后`hoveredCard` 仍指着同一个对象，只按对象相等短路的话
+    /// 这一下就再也发不出去：光标停在一张卡上，此时一个下载完成或别处点了个喜爱，
+    /// 这张卡的暗罩和悬浮播放键当场消失、鼠标不动就回不来，播放键也点不到
+    /// （design-ref/reactive-ui-review.md 故障 10 前半）。
+    /// 所以再加一条「卡自己记的那一位与期望不一致也重新下发」。
     private func setHoveredCard(_ card: LibraryGridCardView?) {
-        guard card !== hoveredCard else { return }
+        if card === hoveredCard, card?.isHovering ?? true { return }
         hoveredCard?.setHovering(false)
         hoveredCard = card
         card?.setHovering(true)
+    }
+
+    /// 每轮布局落定之后按鼠标现在压在哪儿重判一次。
+    ///
+    /// 挂在 `layout()` 而不是各页重载完各调一次：`reloadData()` 会把在屏 item 全丢回
+    /// 复用队列，同一个卡视图很可能被换去装另一张碟——那时「悬浮的是哪张卡」已经变了，
+    /// 而鼠标一动不动，不会再来 `mouseMoved`。列宽变了（改窗宽、开合侧栏）也是同一回事。
+    /// 这里做一次 hitTest 就全覆盖了，各页也不用各记一次；且必须在`super.layout()`
+    /// 之后——卡片的 frame 是那一句才落定的。
+    override func layout() {
+        super.layout()
+        refreshHover()
     }
 }
 
@@ -477,7 +496,7 @@ final class LibraryPlaylistCardView: LibraryGridCardView {
             actions.syncAccount = { Task { await appState.syncAccountPlaylists(manual: true) } }
         }
         actions.deleteFromLibrary = {
-            if appState.sidebarSelection == .playlist(id: playlist.id, name: playlist.name) {
+            if appState.sidebarSelection == .playlist(id: playlist.id) {
                 appState.sidebarSelection = .allPlaylists
             }
             appState.library.deletePlaylist(id: playlist.id)

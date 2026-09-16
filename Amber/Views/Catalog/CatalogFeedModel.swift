@@ -17,6 +17,9 @@ final class CatalogFeedModel: ObservableObject {
     @Published private(set) var state: CatalogPageState = .loading
 
     let title: String
+    /// 这一页在路由身份里的名字（`listen-now` / `browse` / `radio`）。
+    /// 标题是给人看的、会随本地化改，`key` 是给 `Route` 认页面用的，两者分开。
+    let pageKey: String
     let emptyMessage: String
     let emptyImage: String
     /// 页面结构；用最近播放当种子的段（「<歌名> ›」）要看资料库，所以是个函数
@@ -27,10 +30,12 @@ final class CatalogFeedModel: ObservableObject {
     private var library: LibraryStore { appState.library }
     private var reloadTask: Task<Void, Never>?
 
-    init(appState: AppState, title: String, emptyMessage: String, emptyImage: String,
+    init(appState: AppState, title: String, pageKey: String,
+         emptyMessage: String, emptyImage: String,
          sections: @escaping (AppState) -> [CatalogPageSection]) {
         self.appState = appState
         self.title = title
+        self.pageKey = pageKey
         self.emptyMessage = emptyMessage
         self.emptyImage = emptyImage
         self.sections = sections
@@ -39,7 +44,7 @@ final class CatalogFeedModel: ObservableObject {
     // MARK: - 三页入口
 
     static func home(appState: AppState) -> CatalogFeedModel {
-        CatalogFeedModel(appState: appState, title: "主页",
+        CatalogFeedModel(appState: appState, title: "主页", pageKey: "listen-now",
                          emptyMessage: "当前音乐源暂无推荐内容。",
                          emptyImage: "house",
                          // 种子货架要拿当前音源的曲目去查相似，别的源的 id 查不出东西
@@ -50,14 +55,14 @@ final class CatalogFeedModel: ObservableObject {
     }
 
     static func discover(appState: AppState) -> CatalogFeedModel {
-        CatalogFeedModel(appState: appState, title: "新发现",
+        CatalogFeedModel(appState: appState, title: "新发现", pageKey: "browse",
                          emptyMessage: "当前音乐源暂无新发现内容。",
                          emptyImage: "square.grid.2x2",
                          sections: { _ in CatalogPages.browse })
     }
 
     static func radio(appState: AppState) -> CatalogFeedModel {
-        CatalogFeedModel(appState: appState, title: "广播",
+        CatalogFeedModel(appState: appState, title: "广播", pageKey: "radio",
                          emptyMessage: "当前音乐源暂未提供广播内容。",
                          emptyImage: "dot.radiowaves.left.and.right",
                          sections: { _ in CatalogPages.radio })
@@ -162,6 +167,16 @@ final class CatalogFeedModel: ObservableObject {
 
     // MARK: 段 → 卡片
 
+    /// 「查看全部」那三条路由的身份（见 `RouteCargo`）。
+    ///
+    /// **`plan.id` 单独用不得**：它只在一页之内唯一（`CatalogPages` 三张表各自不重），
+    /// 而三页共用这一台引擎、换音源前后也是同一串。载荷退出身份之后，
+    /// 「主页的『为你推荐最新作品 ›』」与「新发现的『本周新发行 ›』」这类两两之间
+    /// 只剩 key 能分开，所以把音源与页名一起作用域化进来。
+    private func sectionKey(_ plan: CatalogPageSection) -> String {
+        "\(appState.selectedProvider.rawValue)/\(pageKey)/\(plan.id)"
+    }
+
     private func section(_ plan: CatalogPageSection, _ result: CatalogSlotResult) -> CatalogSection {
         var section = CatalogSection(id: plan.id, layout: layout(plan.style),
                                      title: result.title ?? plan.title,
@@ -175,20 +190,24 @@ final class CatalogFeedModel: ObservableObject {
             section.showsChevron = true
         } else if plan.showsChevron {
             let title = section.title ?? plan.title ?? ""
+            let key = sectionKey(plan)
             switch result.items {
             case .albums(let albums):
                 if !albums.isEmpty {
-                    section.destination = .albumGrid(title: title, albums: albums)
+                    section.destination = .albumGrid(key: key, title: title,
+                                                     albums: RouteCargo(albums))
                     section.showsChevron = true
                 }
             case .playlists(let playlists):
                 if !playlists.isEmpty {
-                    section.destination = .playlistGrid(title: title, playlists: playlists)
+                    section.destination = .playlistGrid(key: key, title: title,
+                                                        playlists: RouteCargo(playlists))
                     section.showsChevron = true
                 }
             case .tracks(let tracks):
                 if !tracks.isEmpty {
-                    section.destination = .trackGrid(title: title, tracks: tracks)
+                    section.destination = .trackGrid(key: key, title: title,
+                                                     tracks: RouteCargo(tracks))
                     section.showsChevron = true
                 }
             case .mixed(let entries):
@@ -197,7 +216,8 @@ final class CatalogFeedModel: ObservableObject {
                     return nil
                 }
                 if !playlists.isEmpty {
-                    section.destination = .playlistGrid(title: title, playlists: playlists)
+                    section.destination = .playlistGrid(key: key, title: title,
+                                                        playlists: RouteCargo(playlists))
                     section.showsChevron = true
                 }
             default:
@@ -262,8 +282,12 @@ final class CatalogFeedModel: ObservableObject {
         }
     }
 
+    /// 身份只取 `playlist.id`：**标题不进身份**。音源的每日/每周歌单标题常带日期
+    /// （「每日30首 · 3月9日」），带上名字就意味着换了个日期＝换了一件，
+    /// diff 判成 delete + insert，卡整张重建、封面重新异步取。段内同一份歌单摆两次
+    /// 本来就有 `CatalogEntryID.occurrence` 兜底，这个`-name` 后缀是多余的。
     private func item(_ playlist: Playlist, _ style: CatalogStyle, _ eyebrow: String?) -> CatalogItem {
-        CatalogItem(id: "\(playlist.id)-\(playlist.name)", kind: kind(style),
+        CatalogItem(id: playlist.id, kind: kind(style),
                     title: playlist.name,
                     artworkURL: playlist.coverURL,
                     eyebrow: eyebrow,

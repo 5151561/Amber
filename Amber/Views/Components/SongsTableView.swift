@@ -49,6 +49,18 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
     private var appliedRowHeight: CGFloat = 0
     /// 「始终显示」不在列状态里（它只影响补白行），得单独记一份，否则勾了没反应。
     private var appliedAlwaysShowsArtwork = false
+    /// 上一次上屏用的排序与筛选。它俩变了 = **用户主动换了看法**，这一类才滚回选中行。
+    private var appliedSort: SongsTableSort?
+    private var appliedFilter: SongsTableFilter?
+
+    /// 「下一次 `update(rows:)` 之后滚回选中行」。
+    ///
+    /// 排序与筛选这一台控制器自己看得见（`settings`），页面那一侧的意图
+    /// （搜索词、「显示重复项目」）看不见，由页面在改词时置位。
+    /// **不要**拿「行变了」当代理指标：任何一次资料库写入（评分回写、播放次数、
+    /// 下载完成改变云端列排序）都会让行变，于是在大资料库里往下浏览时，
+    /// 表格会自己滚回先前选中的那一首。
+    var scrollsToSelectionOnNextUpdate = false
 
     init(settings: SongsTableSettings, listSize: ListViewSizeStore, appState: AppState) {
         self.settings = settings
@@ -69,6 +81,12 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         let rowHeight = settings.columns.rowHeight(base: listSize.rowHeight)
         let heightChanged = abs(rowHeight - appliedRowHeight) > 0.01
         let rowsChanged = newRows != rows
+        // 用户主动换了排序 / 筛选，或者页面说了「这一次是搜索」——只有这三条路才滚。
+        let userChangedOrder = settings.sort != appliedSort || settings.filter != appliedFilter
+            || scrollsToSelectionOnNextUpdate
+        appliedSort = settings.sort
+        appliedFilter = settings.filter
+        scrollsToSelectionOnNextUpdate = false
         appliedAlwaysShowsArtwork = settings.alwaysShowArtwork
         rows = newRows
 
@@ -91,7 +109,10 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         }
         rebuildLayout()
         table.reloadData()
-        restore(selection: selected, scroll: rowsChanged)
+        restore(selection: selected, scroll: userChangedOrder)
+        // 重载之后行与曲目的对应关系全变了，悬浮记号指的已经是另一首歌；
+        // 鼠标停着不动就不会再来一次 `mouseMoved`，所以这里按指针现算一次。
+        table.syncRolloverFromMouse()
     }
 
     /// 某一行上的曲目；补白行没有曲目。
@@ -106,6 +127,8 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
 
     /// 重排 / 换筛选 / 改搜索词之后把选中找回来，并**滚回第一个选中行**
     /// （`performPreservingSelection:`，`[实测]`）。
+    ///
+    /// `scroll` 要的是**用户意图**，不是「行变了」：见`scrollsToSelectionOnNextUpdate`。
     private func restore(selection ids: Set<String>, scroll: Bool) {
         guard let table = tableView, !ids.isEmpty else { return }
         var found = IndexSet()
@@ -930,6 +953,21 @@ final class TrackDisplayTableView: NSTableView {
 
     /// 拖拽走了之后收悬浮态：拖的这一路上没有 mouseExited。
     func clearRollover() { setRollover(-1) }
+
+    /// `reloadData()` 之后按指针现场重算悬浮行。
+    ///
+    /// `rolloverRow` 是**行下标**：重载之后那一行换了首歌，而鼠标停着不动就不会再来
+    /// `mouseMoved`/`mouseEntered`，于是云端下载键、空心心水星、空心评分星
+    /// 显形在错的一行上。与 `TrackRowView.syncHoverFromMouse()` 同一条。
+    func syncRolloverFromMouse() {
+        // 先清掉旧记号（此刻旧行视图已经作废，`rowView(atRow:makeIfNecessary: false)` 回 nil），
+        // 再按指针落一次；装配新行时 `rowViewForRow` 会照`rolloverRow` 把状态带上。
+        setRollover(-1)
+        guard NSApp.isActive, let window, window.isVisible else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard visibleRect.contains(point) else { return }
+        setRollover(row(at: point))
+    }
 
     override func scrollWheel(with event: NSEvent) {
         super.scrollWheel(with: event)

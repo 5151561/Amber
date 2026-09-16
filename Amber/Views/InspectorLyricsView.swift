@@ -15,8 +15,9 @@ import SwiftUI
 /// - **`.amberTrackDrop` 落点**：拖入已经由`PlayQueueViewController` 用
 ///   `TrackTransfer.pasteboardType` 在表格上重接（§3 的`acceptTracks`）。
 ///
-/// 哪一档由谁说了算仍是「一扇窗一份」：容器实例自己的 `mode`（inspector spec §1），
-/// 不是全局 `AppState.playerInspector`——不然在迷你窗里点歌词会把主窗的面板列一起掀开。
+/// 「面板开着没有」是一扇窗一份（主窗是 `AppState.isInspectorOpen`、迷你窗是那扇窗
+/// 自己的形态），**档位则是全局一份**（`AppState.inspectorMode`）：在迷你窗里点歌词
+/// 只换本窗的抽屉，不会把主窗的面板列掀开，但两处显示的确实是同一档。
 struct InspectorLyricsView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var player: PlayerController

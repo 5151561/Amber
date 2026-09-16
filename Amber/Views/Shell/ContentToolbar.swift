@@ -179,6 +179,14 @@ class LibraryPageController: ContentPageController {
     /// 造出来的标题件。「最近添加」的标题会跟着滚动联动当前段名，得留着改它。
     private weak var titleItem: NSToolbarItem?
 
+    /// 标题栏标题的覆盖流（nil = 这一页不覆盖，一直用页名）。默认不覆盖，
+    /// 只有「最近添加」覆写成自己那条（段名跟着滚动走）。
+    ///
+    /// 用 `CurrentValueSubject` 而不是共用模型上的 `@Published`：这一位是**那一页
+    /// 自己的一次性显示态**，不该混进四页共用的 `LibraryPageModel`（原委见那边的注释）；
+    /// 而 subject 带着当前值，下面建标题件时直接问它就行，不用再存一份镜像。
+    var displayTitleSource: CurrentValueSubject<String?, Never>? { nil }
+
     init(appState: AppState, model: LibraryPageModel, title: String, allItemsTitle: String,
          placeholder: String, hasSort: Bool,
          @ViewBuilder content: @escaping () -> some View) {
@@ -210,7 +218,7 @@ class LibraryPageController: ContentPageController {
     override func makePageToolbarItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
         switch identifier {
         case .amberPageTitle:
-            let item = ContentToolbarItems.title(model.displayTitle ?? pageTitle)
+            let item = ContentToolbarItems.title(displayTitleSource?.value ?? pageTitle)
             titleItem = item
             return item
         case .amberFilter:
@@ -224,9 +232,9 @@ class LibraryPageController: ContentPageController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // 「最近添加」的标题跟着滚动联动当前段名（Music 同）：页面把当前段名写进模型，
-        // 标题件在这里跟着改。别的页面不写这一位，标题就一直是 `pageTitle`。
-        model.$displayTitle
+        // 「最近添加」的标题跟着滚动联动当前段名（Music 同）：那一页把当前段名发上来，
+        // 标题件在这里跟着改。别的页面不给这条流，标题就一直是 `pageTitle`。
+        displayTitleSource?
             .removeDuplicates()
             .sink { [weak self] title in
                 guard let self else { return }

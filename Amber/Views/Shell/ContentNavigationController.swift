@@ -15,7 +15,7 @@ import Combine
 final class ContentNavigationController: NSViewController {
 
     private let appState: AppState
-    private var stack: [ContentPageController] = []
+    private var stack: [StackEntry] = []
     private var cancellables = Set<AnyCancellable>()
     /// 栈顶变了要通知窗口重建工具栏。
     var onStackChanged: (() -> Void)?
@@ -53,8 +53,19 @@ final class ContentNavigationController: NSViewController {
 
         // 「前往专辑 / 前往艺人」、目录卡片的 `NavigationLink` 垫片都只登记意图，
         // 入栈在这里做（逻辑与旧 `MainView.onChange(of: appState.pendingRoute)` 相同）。
+        //
+        // **那一跳 `receive(on:)` 是必需的，不是顺手加的。** `@Published` 在 **willSet**
+        // 发布：`appState.push(route)` 那次赋值的顺序是「发布 → 订阅同步跑完 → 外层赋值
+        // 才把 route 写进存储」。少这一跳，下面那句 `pendingRoute = nil` 写完立刻被外层
+        // 赋值覆盖掉，字段永远停在最后一条路由上（`.trackGrid` 能带上百个 `Track`，
+        // 见 design-ref/reactive-ui-review.md §2.1）。推到下一轮，清空才落在赋值之后。
+        // 同一仓库里 `LibraryArtistsViewController` 的 `pendingLibraryArtistID` 早就是这么写的。
+        //
+        // 这一步只是把语义修对，**不是终态**：计划 §2 铁律 4 的终态是导航意图走响应链冒泡
+        // （或者至少换成 `PassthroughSubject`），别把「可变状态当一次性信箱」这条路留下来。
         appState.$pendingRoute
             .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] route in
                 guard let self else { return }
                 self.push(route)
@@ -65,9 +76,24 @@ final class ContentNavigationController: NSViewController {
 
     // MARK: - 栈
 
-    var top: ContentPageController? { stack.last }
+    /// 栈里的一格：页面 + **把它推上来的那条 `Route`**。
+    ///
+    /// route 记在栈这一侧而不是记在 `ContentPageController` 上：页面控制器是工厂按
+    /// `Route` 造出来的，它自己不需要知道「我是被哪条路由推上来的」；「这一层是不是
+    /// 同一个落点」从头到尾只有导航栈关心。根页由侧栏选中项决定、不是 push 进来的，
+    /// route 给 nil（唯一的例外见 `rootRoute(for:)`）。
+    private struct StackEntry {
+        let route: Route?
+        let page: ContentPageController
+    }
+
+    var top: ContentPageController? { stack.last?.page }
     var depth: Int { stack.count }
     var canGoBack: Bool { stack.count > 1 }
+
+    /// 栈深上限。每一层都攥着一整页视图与它取回的数据，而再深也不会有人按这么多次返回。
+    /// 有了下面 push 的去重之后正常用法根本够不到这个数，它只是最后一道闸。
+    private static let maxDepth = 16
 
     /// 侧栏每一项的根页建一次就留着（Music 也是：主页/新发现/广播来回切不重拉、
     /// 滚动位置也还在）。只有「播放列表」组那些行不缓存——数量随资料库涨。
@@ -89,38 +115,70 @@ final class ContentNavigationController: NSViewController {
             if case .playlist = item {} else { rootPages[item] = page }
         }
         let outgoing = stack
-        stack = [page]
-        install(page, replacing: outgoing.last, animated: false)
-        for controller in outgoing where controller !== page {
-            if isCachedRoot(controller) { conceal(controller) } else { retire(controller) }
+        stack = [StackEntry(route: Self.rootRoute(for: item), page: page)]
+        install(page, replacing: outgoing.last?.page, animated: false)
+        for entry in outgoing where entry.page !== page {
+            if isCachedRoot(entry.page) { conceal(entry.page) } else { retire(entry.page) }
         }
     }
 
+    /// 根页里唯一能用 `Route` 指到的一页：侧栏「播放列表」组的那一行，与`.libraryPlaylist`
+    /// 是同一份歌单、同一张详情页。登记上它，站在这份歌单上再点一次指向它自己的落点
+    /// （待播清单分区头的「来自《…》」、卡片菜单里的「前往歌单」）才判得出「已经在这儿了」。
+    /// 其余根页（搜索、主页、资料库四页…）压根没有对应的 `Route`，给 nil。
+    private static func rootRoute(for item: SidebarItem) -> Route? {
+        if case .playlist(let id) = item { return .libraryPlaylist(id: id) }
+        return nil
+    }
+
+    /// 往栈上推一层。**`Route` 是 `Hashable`，这里就拿它当页面的身份。**
+    ///
+    /// - **栈顶就是它**：什么都不做。从前每点一次都新建一个 VC——待播清单分区头那条
+    ///   「来自《某某》」连点五次＝五层同一张歌单，每一层各发一遍 `playlistDetail`
+    ///   网络请求、视图全留在容器里（`install` 只切 `isHidden`），要按五次返回才出得来
+    ///   （design-ref/reactive-ui-review.md 故障 12）。目录卡片那 21 处 `RouteLink` 同理。
+    /// - 不是栈顶就真造一页，**哪怕栈里更深处已经有同一页**。「专辑 → 艺人 → 又回同一张
+    ///   专辑」是一次合法的绕圈，返回该回到刚才那位艺人；跳回旧的那一层会把中间几层
+    ///   连同它们的滚动位置一起吞掉。而且 `Route` 的载荷是整份值——`Route.album(of:)`
+    ///   造的是 `trackCount: 0` 的合成 `Album`，同一张碟从不同入口进来压根不相等——
+    ///   按「栈里有没有」判会时灵时不灵，那比不判更糟。栈无限长由`trimToMaxDepth` 兜底。
     func push(_ route: Route) {
+        // 栈顶就是它：什么都不做。这一条是确定对的——同一个落点连点几次，
+        // 载荷同源、必然相等。
+        guard stack.last?.route != route else { return }
+        trimToMaxDepth()
         let page = ContentPageFactory.page(for: route, appState: appState)
-        let previous = stack.last
-        stack.append(page)
+        let previous = stack.last?.page
+        stack.append(StackEntry(route: route, page: page))
         install(page, replacing: previous, animated: true)
     }
 
-    @discardableResult
-    func pop() -> Bool {
-        guard stack.count > 1 else { return false }
-        let outgoing = stack.removeLast()
-        // 拆视图必须等淡入淡出跑完，中途 `removeFromSuperview` 会把动画截断。
-        install(stack[stack.count - 1], replacing: outgoing, animated: true) { [weak self] in
-            self?.retire(outgoing)
+    /// 顶到上限时从**栈底往上**丢（根页不动）：最近那几层才是返回链上真会走回去的。
+    private func trimToMaxDepth() {
+        while stack.count >= Self.maxDepth, stack.count > 1 {
+            let entry = stack.remove(at: 1)
+            if !isCachedRoot(entry.page) { retire(entry.page) }
         }
-        return true
     }
 
-    func popToRoot() {
-        guard stack.count > 1 else { return }
-        let outgoing = Array(stack.dropFirst())
-        stack = [stack[0]]
-        install(stack[0], replacing: outgoing.last, animated: true) { [weak self] in
-            for controller in outgoing { self?.retire(controller) }
+    @discardableResult
+    func pop() -> Bool { popTo(stack.count - 2) }
+
+    func popToRoot() { popTo(0) }
+
+    /// 返回到栈里第 `index` 层，把压在它上面的全部出栈。`pop()` /`popToRoot()` /
+    /// push 撞上「栈里已经有」都走这一条。
+    @discardableResult
+    private func popTo(_ index: Int) -> Bool {
+        guard index >= 0, index < stack.count - 1 else { return false }
+        let outgoing = Array(stack[(index + 1)...])
+        stack.removeSubrange((index + 1)...)
+        // 拆视图必须等淡入淡出跑完，中途 `removeFromSuperview` 会把动画截断。
+        install(stack[index].page, replacing: outgoing.last?.page, animated: true) { [weak self] in
+            guard let self else { return }
+            for entry in outgoing where !self.isCachedRoot(entry.page) { self.retire(entry.page) }
         }
+        return true
     }
 
     /// 换音乐源：把跟着音源走的根页（主页 / 新发现 / 广播）**整页丢掉重建**，
@@ -142,8 +200,8 @@ final class ContentNavigationController: NSViewController {
             rootPages[item] = fresh
             // 根页只可能在栈底。它就是栈顶时（没进二级页）当场换上；被压在下面时
             // 只换栈里那一格，等用户返回时 `pop()` 自己会把它装上。
-            if let index = stack.firstIndex(where: { $0 === page }) {
-                stack[index] = fresh
+            if let index = stack.firstIndex(where: { $0.page === page }) {
+                stack[index] = StackEntry(route: stack[index].route, page: fresh)
                 if index == stack.count - 1 { install(fresh, replacing: page, animated: false) }
             }
             retire(page)

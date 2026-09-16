@@ -1,4 +1,3 @@
-import Combine
 import SwiftUI
 
 /// 歌词面板与整窗播放器之间的桥。
@@ -12,6 +11,9 @@ import SwiftUI
 /// LyricsOptions                      _isVisible / _isActive / _buildOptionsMenu / _$observationRegistrar
 /// LyricsViewController               lyrics: NSViewController / options / activeBaselineConstraint / offsetObservation
 /// ```
+///
+/// `LyricsOptions` 那三个字段在 Amber 里各自归位、不再单立一个`ObservableObject`，
+/// 对照表见下面「LyricsOptions 的三个字段落在哪儿」那一段。
 ///
 /// 三件事照搬过来：
 ///
@@ -27,21 +29,24 @@ import SwiftUI
 /// 而「哪一行、怎么亮、怎么滚」全在 `Amber/Lyrics/` 那套 Music 的歌词模块复刻里
 /// （lyrics 侧规格，lyrics 规格），本文件一概不碰。
 
-// MARK: - LyricsOptions
+// MARK: - LyricsOptions 的三个字段落在哪儿
 
-/// [TYPE] `LyricsOptions`：`_isVisible` / `_isActive` / `_buildOptionsMenu`。
-///
-/// 两个 Bool 不是一回事：`isVisible` 是**抽屉开着**（底栏那颗键的开关态），
-/// `isActive` 是**面板真的在跟随**（有歌词内容、且没被折叠遮住）。
-/// Music 的底栏键读前者、歌词自身的动画节流读后者。
-@MainActor
-final class LyricsOptions: ObservableObject {
-    @Published var isVisible = true
-    @Published var isActive = false
-    // [TYPE] 第三个字段 `_buildOptionsMenu: (() -> NSMenu?)?`（歌词自己供菜单、宿主只负责摆）
-    // 在 Amber 里落成 `LyricsOptionsMenu`——SwiftUI 的菜单内容直接挂在底栏那颗键的
-    // `.contextMenu` 上，不需要再存一个闭包。
-}
+// [TYPE] `LyricsOptions`：`_isVisible` / `_isActive` / `_buildOptionsMenu`。三个都没有
+// 落成 Amber 的类型，各自归位到了已经存在的地方——从前它是一个独立的
+// `ObservableObject`，两个 Bool 各发一次 `objectWillChange`，再由`NowPlayingLyrics`
+// 转发一次、`NowPlayingViewModel` 再转发一次，最后把整棵`NowPlayingView` 重算
+//（design-ref/reactive-ui-review.md §2.1）：
+//
+// - `isVisible`（**抽屉开着**，底栏那颗键的开关态）= 宿主自己的
+//   `NowPlayingViewModel.isInspectorOpen` × 全局的 `AppState.inspectorMode`。
+//   面板开合是「一扇窗一份」、档位是「全局一份」，歌词这一侧不该再存第三份。
+// - `isActive`（**面板真的在跟随**）= `FullWindowHostedContentView(isActive:)` 那个入参，
+//   由整窗播放器的 `isPresented` 供给（收起即停每帧驱动，见`SyncedLyricsView`）。
+//   从前还另外算了一份 `options.isActive = isVisible && !isEmpty && isPlaying` 写进
+//   `LyricsOptions`，**全仓没有一个读取点**，每次播/停、每次抽屉开合、每次取到词
+//   都白发一轮失效——一并删掉。
+// - `_buildOptionsMenu`（歌词自己供菜单、宿主只负责摆）落成 `LyricsOptionsMenu`，
+//   SwiftUI 的菜单内容直接挂在底栏那颗键的 `.contextMenu` 上，不需要再存一个闭包。
 
 // MARK: - 时间源
 
@@ -53,43 +58,34 @@ final class LyricsOptions: ObservableObject {
 
 // MARK: - 歌词模型（Lyrics）
 
+/// **只装歌词数据**：抽屉开着没有、摆的是哪一档都不在这里（见上面那段注释），
+/// 所以它不再转发任何别人的 `objectWillChange`，谁要听歌词就
+/// `@ObservedObject` 它自己（`FullWindowHostedContentView` / 底栏那颗翻译键）。
 @MainActor
 final class NowPlayingLyrics: ObservableObject {
-    let options = LyricsOptions()
 
     @Published private(set) var lines: [LyricLine] = []
     @Published private(set) var isLoading = false
     /// 当前这份歌词是哪首歌的。换歌时先清空再取，避免上一首的词挂在新歌上。
     @Published private(set) var loadedTrackID: String?
 
-    private var optionsObserver: AnyCancellable?
-
-    init() {
-        // 嵌套的 ObservableObject 不会自动向上冒泡，转发一次，
-        // 这样 `NowPlayingViewModel.isLyricsOpen` 才跟着开关变。
-        optionsObserver = options.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
-    }
-
     var isEmpty: Bool { lines.isEmpty }
 
     func clear() {
         lines = []
         loadedTrackID = nil
-        options.isActive = false
     }
 
     /// 取词走 `LyricsStore` 的**显示口**：勾了「自定义歌词」就用用户手打的那份，
     /// 否则是音源那份。与侧栏歌词共用一份缓存，同一首在两处之间来回切只打一次网络。
     /// 命中缓存时不先清空——直接从上一首的词换成这一首的，中间不插一帧空态。
-    func load(track: Track?, using provider: any MusicProvider, isPlaying: Bool) async {
+    func load(track: Track?, using provider: any MusicProvider) async {
         guard let track else {
             clear()
             return
         }
         if let cached = LyricsStore.shared.cachedDisplayLyrics(for: track) {
-            apply(cached, of: track, isPlaying: isPlaying)
+            apply(cached, of: track)
             return
         }
         clear()
@@ -98,20 +94,12 @@ final class NowPlayingLyrics: ObservableObject {
         let loaded = await LyricsStore.shared.displayLyrics(for: track, using: provider)
         // 换歌时 `.task(id:)` 会取消上一份，取消后回来的结果不能再写进去。
         guard !Task.isCancelled else { return }
-        apply(loaded, of: track, isPlaying: isPlaying)
+        apply(loaded, of: track)
     }
 
-    private func apply(_ loaded: [LyricLine], of track: Track, isPlaying: Bool) {
+    private func apply(_ loaded: [LyricLine], of track: Track) {
         lines = loaded
         loadedTrackID = track.id
-        updateActivity(isPlaying: isPlaying)
-    }
-
-    /// [TYPE] `LyricsOptions._isActive`：面板**真的在跟随**＝抽屉开着、有词、且在播。
-    /// 与 `isVisible`（抽屉开关）分开——底栏那颗键读`isVisible`，
-    /// 跟随相关的节流读 `isActive`。
-    func updateActivity(isPlaying: Bool) {
-        options.isActive = options.isVisible && !isEmpty && isPlaying
     }
 }
 
