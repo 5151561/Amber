@@ -486,6 +486,12 @@ extension SyncedLyricsVisualExperienceManager {
     /// - 回填只在 `.regular` 下做。用户手还在内容上（`.scroll` / `.tracking`）时
     ///   整表本来就该是清的（§9.9 `clearAllBlur`），这里不去跟它抢。
     func syncBlurToPlaybackState() {
+        // 静态档（整份无戳纯文本）整面墙恒清晰：`unblurredLineViewIDs` 在这一档
+        // 恒空（墙不进 `selectedLineViews`、也没有滚动焦点行），
+        // `restoreBlurAfterPause` 的「其余行」＝全部行，播放/暂停切一次墙就糊掉。
+        // 早退放在函数开头，一处覆盖两个调用方
+        // （`displayLinkFired` 与 `SyncedLyricsViewController.updateDisplayLink`）。
+        guard specs.renderingMode != .static else { return }
         guard let paused = timingProvider?.isPaused else { return }
         let previous = isPlaybackPausedForBlur
         let changed = previous != paused
@@ -667,6 +673,12 @@ extension SyncedLyricsVisualExperienceManager {
     /// `deselecting all` / `selecting line` 把外观带回来的。这里显式做一次，
     /// 免得用户拖完之后不再翻行（例如停在同一句上）时外观卡在 40% 白。`[补]`
     func endScrollingAppearance() {
+        // 与 `beginScrollingAppearance` 对称的那道闸。静态档少了它照样出事：
+        // `scrollViewWillBeginScrolling` 在这一档仍会跑、置 `mode = .scroll` 并起
+        // 3 秒计时器，到点 `returnControlToPlayback` 调进来，尾部就把不在
+        // `unblurredLineViewIDs`（这一档恒空）里的行——也就是整面墙——糊回去。
+        guard specs.renderingMode != .static else { return }
+
         // 同 `clearAllBlur`：屏外行直接落值，屏内行照旧走那条 0.12s 的淡变。
         let onScreen = Set((viewController?.visibleLineViews() ?? []).map(ObjectIdentifier.init))
         for view in lineViews {

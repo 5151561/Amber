@@ -32,6 +32,15 @@ struct LyricsSpecs {
 
     // MARK: 排版
 
+    /// 渲染档。**触发条件与 Music 不同。**
+    ///
+    /// 本仓的注释一路把 `.static` 说成「侧栏那一档」——那是 Music 的用法：
+    /// 同一份带时间轴的词，在侧栏检查器里退化成不可交互的静态排版。
+    /// Amber 把它**重新定义**为「这份词没有时间轴」（`[LyricLine].isUntimed`，
+    /// 整份都是无戳纯文本），侧栏照旧走 `.synced`。
+    ///
+    /// 渲染契约是同一套（整份铺开、统一亮度、用户自己滚、不高亮不自动滚
+    /// 不点击跳转），换的只是谁来打开它。所以八个判据点原样复用，不改值。
     var renderingMode: RenderingMode = .synced                    //[实测]
     var displayScale: CGFloat = 1.0                               //[实测]
     var firstLineStartingPosition: CGFloat = 60                   //[实测]

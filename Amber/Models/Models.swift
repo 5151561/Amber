@@ -284,7 +284,7 @@ struct LyricSyllable: Hashable, Sendable {
 }
 
 struct LyricLine: Identifiable, Hashable, Sendable {
-    /// 歌词轨里除了正文还有两种非正文行，跟 Music 一致。
+    /// 歌词轨里除了正文还有三种非「带时间轴的正文」的行，跟 Music 一致。
     enum Kind: Hashable, Sendable {
         /// 正文
         case lyric
@@ -292,6 +292,18 @@ struct LyricLine: Identifiable, Hashable, Sendable {
         case interlude
         /// 尾部创作者（词在前、曲在后），只在整首歌最后出现一次
         case credits
+        /// **没有时间戳的纯文本正文行。**
+        ///
+        /// 音源不给「歌词是什么格式」这个类别位——[实测 2026-09-16 curl] QQ 的
+        /// `GetPlayLyricInfo` 对一份 253 行、零个时间戳的词回的是 `qrc=0` /
+        /// `lyric_style=0`，与普通 LRC 的响应一模一样；网易的纯文本与行级 LRC
+        /// 共用 `lrc` 这一个字段。所以这个类别只能由 Amber 自己按形态立
+        ///（整份一个时间戳都没有），且只在解析时判一次，不在渲染时临时嗅探。
+        ///
+        /// 与 `.lyric` 分开是为了让编译器把每一处 `kind` 判据都指出来：
+        /// 混进 `.lyric` 的话，LRC 写出会给它补一个 `[00:00.00]`、
+        /// 适配层会造出 `startTime = 0` 的行，被选行状态机在 t=0 一次性全选中。
+        case plain
     }
 
     /// 这一行由谁唱。
@@ -316,6 +328,10 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     /// 逐字时间轴；为空表示这行只有整行时间。
     let syllables: [LyricSyllable]
     let kind: Kind
+    /// 这一行是不是段首。**只有 `.plain` 会置真**：纯文本里空行是仅有的段落信息
+    ///（实测网易《国王的新衣》正文里多处空行分段），而带时间轴那条路上的段落由间奏行
+    /// 表达——「按空隙猜段落」早就被证伪过，见 `LyricsAdapter` 里那段注释，别改回去。
+    let startsParagraph: Bool
     /// 唱这一行的人。`nil` = 这首歌没有歌手提示行，或这行排在第一条提示之前。
     let vocalist: Vocalist?
 
@@ -324,7 +340,7 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     init(index: Int, time: TimeInterval, end: TimeInterval, text: String,
          translation: String? = nil, transliteration: String? = nil,
          syllables: [LyricSyllable] = [], kind: Kind = .lyric,
-         vocalist: Vocalist? = nil) {
+         vocalist: Vocalist? = nil, startsParagraph: Bool = false) {
         self.index = index
         self.time = time
         self.end = end
@@ -334,6 +350,18 @@ struct LyricLine: Identifiable, Hashable, Sendable {
         self.syllables = syllables
         self.kind = kind
         self.vocalist = vocalist
+        self.startsParagraph = startsParagraph
+    }
+}
+
+extension Array where Element == LyricLine {
+
+    /// 整份歌词一个时间戳都没有 ⇒ 走静态档（`Lyrics.type == .static`）。
+    ///
+    /// **空数组不算**：那是「确认没词」，归 `LyricsStore` 的负结果缓存管，
+    /// 不能把面板翻进静态档。`.credits` 放行是因为无戳那条路照样会在尾部补一行创作者。
+    var isUntimed: Bool {
+        !isEmpty && allSatisfy { $0.kind == .plain || $0.kind == .credits }
     }
 }
 

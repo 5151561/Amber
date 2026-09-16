@@ -158,6 +158,13 @@ enum LyricsLineGeometry {
     static func firstLineY(specs: LyricsSpecs,
                            lineHeight: CGFloat,
                            containerHeight: CGFloat) -> CGFloat {
+        // 静态档（整份无戳纯文本）没有「当前行」，`selectedLinePosition` 那套锚点
+        // 无从谈起：整份词从顶部内边距起铺。`staticTopContentInset`(=22) 的唯一
+        // 使用方就是这里——两处宿主都传 `.center(rect:)`，不分这一档的话整窗下
+        // 首行上方会凭空空出三百多 pt。底部留白另有出口（见 +Instrumental 的
+        // `staticBottomContentInset`）。
+        guard specs.renderingMode != .static else { return specs.staticTopContentInset }
+
         switch specs.selectedLinePosition {
         case .top, .topRelative:
             return specs.firstLineStartingPosition

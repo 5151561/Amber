@@ -241,6 +241,24 @@ final class LyricParserTests: XCTestCase {
         XCTAssertEqual(LyricParser.parse("[ti:只有元数据]"), [])
     }
 
+    /// 无戳那条路没有「认不出时间戳就丢」这道天然滤网（带戳那路靠 `parseLRCLine`
+    /// 匹配不到时间戳就返回空来「忽略」元信息），标签要显式滤掉，
+    /// 否则 `[ti:歌名]` 会原样上屏成一行歌词。
+    func testUntimedDropsLRCTagLines() {
+        let lines = plainLines(LyricParser.parse("""
+        [ti:歌名]
+        [ar:歌手]
+        [al:专辑]
+        [by:某人]
+        [offset:500]
+        第一句
+        第二句
+        """))
+        XCTAssertEqual(lines.map(\.text), ["第一句", "第二句"])
+        // 整份只有元信息 ⇒ 仍然是「没有词」，不能造出一堵标签墙。
+        XCTAssertEqual(LyricParser.parse("[ti:只有元数据]\n[ar:歌手]"), [])
+    }
+
     func testMetadataLinesIgnored() {
         let lrc = """
         [ti:歌名]
@@ -716,4 +734,224 @@ final class LyricParserTests: XCTestCase {
     [01:55.93]TAEYANG：
     [01:56.30]난 불을 질러
     """
+
+    // MARK: - 无时间戳
+    //
+    // 整份词一条时间戳都没有（纯文本歌词）：静态整页，全部 `.plain`。
+    // 今天这类输入一律返回 `[]`——`parseLRCLine` 对无戳行产出零条 `RawLine`。
+
+    /// 只取无戳正文行
+    private func plainLines(_ lines: [LyricLine]) -> [LyricLine] {
+        lines.filter { $0.kind == .plain }
+    }
+
+    func testUntimedBodyBecomesPlainLines() {
+        let text = """
+        从前有一个国王
+        他最喜欢的是穿新衣服
+        """
+        let lines = LyricParser.parse(text)
+        XCTAssertEqual(lines.map(\.kind), [.plain, .plain])
+        XCTAssertEqual(lines.map(\.text), ["从前有一个国王", "他最喜欢的是穿新衣服"])
+    }
+
+    /// **原序**：文件顺序是纯文本歌词仅有的顺序信息。
+    ///
+    /// 样本要 ≥20 行且文本序与文件序明显不同——带戳那条路末尾的
+    /// `sorted { $0.time < $1.time }` 在全 0 时间上不保序（introsort），
+    /// 小 N 下它恰好保序，三行的测试证明不了任何事。
+    func testUntimedKeepsFileOrder() {
+        let expected = Self.scrambledOrder.map { "第\($0)句没有时间戳" }
+        XCTAssertNotEqual(expected, expected.sorted(), "样本本身要乱序，否则这条什么都没证明")
+        XCTAssertGreaterThanOrEqual(expected.count, 20)
+        let lines = LyricParser.parse(expected.joined(separator: "\n"))
+        XCTAssertEqual(lines.map(\.text), expected)
+    }
+
+    private static let scrambledOrder =
+        [17, 3, 21, 8, 14, 1, 23, 6, 11, 19, 2, 16, 9, 24, 5, 13, 20, 7, 22, 10, 4, 18, 12, 15]
+
+    /// 只要有**一条**真正带时间戳的行，整份就还走同步那条路，散文行照旧丢掉。
+    func testPartiallyTimedStaysOnTimedPath() {
+        let lrc = """
+        [00:10.00]有时间
+        没有时间的一行
+        另一行也没有
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["有时间"])
+        XCTAssertTrue(plainLines(lines).isEmpty)
+    }
+
+    /// 网易的「JSON 制作人信息头 + 无戳正文」：头行有 `time = 0` 但不是歌词，
+    /// 判据写成「`raw` 为空」的话这份输入照旧返回 `[]`。
+    func testNeteaseJSONHeaderWithUntimedBody() {
+        let text = """
+        {"t":0,"c":[{"tx":"作词: 甲"}]}
+        从前有一个国王
+        他最喜欢的是穿新衣服
+        """
+        let lines = LyricParser.parse(text)
+        XCTAssertEqual(plainLines(lines).map(\.text), ["从前有一个国王", "他最喜欢的是穿新衣服"])
+        XCTAssertEqual(lines.last?.kind, .credits)
+        XCTAssertEqual(lines.last?.text, "创作者：甲")
+    }
+
+    /// 头块、尾块、`【…】` 声明行、歌手提示行——四件事在无戳这条路上一模一样，
+    /// 证明清洗是**复用**（同一套 `classify` / `markAgentCues`）而不是重写。
+    func testUntimedReusesCreditStripping() {
+        let text = """
+        国王的新衣 - 某某
+        词：甲
+        曲：乙
+        【本作品声明，著作权权利保留。未经著作权人书面许可，不得以任何方式使用。】
+        丙：
+        从前有一个国王
+        他最喜欢的是穿新衣服
+        混音：丁
+        母带：戊
+        """
+        let lines = LyricParser.parse(text)
+        XCTAssertEqual(plainLines(lines).map(\.text), ["从前有一个国王", "他最喜欢的是穿新衣服"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：甲、乙"])
+        XCTAssertEqual(plainLines(lines).first?.vocalist?.name, "丙", "提示行不上屏，归属留下")
+    }
+
+    /// 「整首都像键：值时尾块不摘」那条保护跟着继承
+    func testUntimedTrailingBlockNotStrippedWhenItWouldEatAll() {
+        let text = """
+        词：甲
+        曲：乙
+        编曲：丙
+        """
+        XCTAssertTrue(plainLines(LyricParser.parse(text)).isEmpty)
+    }
+
+    /// 段落：空行是纯文本里仅有的段落信息。首行按「与带戳那路同解」也算段首
+    ///（`LyricsAdapter` 里 `.lyric` 的 `isFirstLineOfParagraph = previousEnd == nil`）。
+    func testBlankLinesMarkParagraphs() {
+        let text = """
+        第一段第一行
+        第一段第二行
+
+        第二段第一行
+
+        第三段第一行
+        第三段第二行
+        """
+        let lines = plainLines(LyricParser.parse(text))
+        XCTAssertEqual(lines.map(\.text).count, 5)
+        XCTAssertEqual(lines.map(\.startsParagraph), [true, false, true, true, false])
+    }
+
+    /// 带戳那条路一律不置段首位：那里的段落由间奏行表达
+    func testTimedInputHasNoParagraphFlags() {
+        let lrc = """
+        [00:00.00]一
+
+        [00:04.00]二
+        """
+        XCTAssertTrue(LyricParser.parse(lrc).allSatisfy { !$0.startsParagraph })
+    }
+
+    /// [实测] 网易《国王的新衣》正文首行带着 BOM
+    func testBOMStrippedFromUntimedBody() {
+        let lines = LyricParser.parse("\u{feff}国王的新衣\n从前有一个国王")
+        XCTAssertEqual(lines.map(\.text), ["国王的新衣", "从前有一个国王"])
+        XCTAssertFalse(lines.contains { $0.text.contains("\u{feff}") })
+    }
+
+    /// QQ 的 `//` 占位行在这条路上没有占位的必要（副行按下标配对，不按时间）
+    func testUntimedPlaceholderLinesDropped() {
+        XCTAssertEqual(LyricParser.parse("第一行\n//\n第二行").map(\.text), ["第一行", "第二行"])
+    }
+
+    /// 无戳译文：行数完全相等 ⇒ 按下标配上
+    func testUntimedTranslationPairedByIndex() {
+        let lines = plainLines(LyricParser.parse("第一行\n第二行", translation: "line one\nline two"))
+        XCTAssertEqual(lines.map(\.translation), ["line one", "line two"])
+    }
+
+    /// ★ 行数不等 ⇒ 整份丢弃。错位的译文严格比没有译文更糟，不加容差也不按比例猜。
+    func testUntimedTranslationDiscardedOnCountMismatch() {
+        let lines = plainLines(LyricParser.parse("第一行\n第二行\n第三行",
+                                                 translation: "line one\nline two"))
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertTrue(lines.allSatisfy { $0.translation == nil })
+    }
+
+    /// `tlyric` 会把头块原样回显一遍：两边各摘一次才对得上行数
+    func testUntimedTranslationCreditEchoIsStripped() {
+        let text = """
+        作词 : 甲
+        第一行
+        第二行
+        """
+        let translation = """
+        作词 : 甲
+        line one
+        line two
+        """
+        let lines = plainLines(LyricParser.parse(text, translation: translation))
+        XCTAssertEqual(lines.map(\.text), ["第一行", "第二行"])
+        XCTAssertEqual(lines.map(\.translation), ["line one", "line two"])
+    }
+
+    /// 正文无戳、副行带戳：两边没有可对齐的结构，整份丢弃，不猜
+    func testTimedSecondaryDiscardedForUntimedBody() {
+        let lines = plainLines(LyricParser.parse("第一行\n第二行",
+                                                 translation: "[00:10.00]一\n[00:20.00]二",
+                                                 transliteration: "[00:10.00]yi\n[00:20.00]er"))
+        XCTAssertTrue(lines.allSatisfy { $0.translation == nil && $0.transliteration == nil })
+    }
+
+    /// 发音副行与译文各走各的
+    func testUntimedTransliterationPairedByIndex() {
+        let lines = plainLines(LyricParser.parse("第一行\n第二行", transliteration: "di yi hang\ndi er hang"))
+        XCTAssertEqual(lines.map(\.transliteration), ["di yi hang", "di er hang"])
+        XCTAssertTrue(lines.allSatisfy { $0.translation == nil })
+    }
+
+    /// 网易《国王的新衣》[实测 2026-09-16] 的形状：
+    /// 无戳的两行头 + BOM 开头的标题行 + 多处空行分段的正文。
+    private static let untimedKingsClothes = """
+    作词 : Hans Christian Andersen
+    作曲 : 郑钧
+    \u{feff}国王的新衣
+
+    从前有一个国王
+    他最喜欢的是穿新衣服
+
+    两个骗子来到了城里
+    他们说能织出最美的布
+    """
+
+    func testKingsClothesShape() {
+        let lines = LyricParser.parse(Self.untimedKingsClothes)
+        let body = plainLines(lines)
+        XCTAssertEqual(body.map(\.text),
+                       ["国王的新衣", "从前有一个国王", "他最喜欢的是穿新衣服",
+                        "两个骗子来到了城里", "他们说能织出最美的布"])
+        XCTAssertEqual(body.map(\.startsParagraph), [true, true, false, true, false])
+        XCTAssertEqual(body.map(\.index), [0, 1, 2, 3, 4], "index 就是数组下标")
+        XCTAssertEqual(lines.last?.kind, .credits)
+        XCTAssertEqual(lines.last?.text, "创作者：Hans Christian Andersen、郑钧")
+    }
+
+    /// QQ《满腹经纶》[实测 2026-09-16] 的形状：二百多行、行内全角括号、无头无尾 credits。
+    /// 逐行照抄没有意义，按同一形状生成同样规模的样本——这条要的是规模与括号形态。
+    private static func crosstalkFixture(_ count: Int) -> [String] {
+        (1...count).map { index in
+            index.isMultiple(of: 2) ? "（乙）第\(index)句捧哏" : "（甲）第\(index)句逗哏"
+        }
+    }
+
+    func testLongCrosstalkKeepsEveryLine() {
+        let texts = Self.crosstalkFixture(243)
+        let lines = LyricParser.parse(texts.joined(separator: "\n"))
+        XCTAssertEqual(lines.count, texts.count, "无头无尾 credits，一行不多一行不少")
+        XCTAssertTrue(lines.allSatisfy { $0.kind == .plain })
+        XCTAssertEqual(lines.map(\.text), texts)
+        XCTAssertEqual(lines.map(\.index), Array(0..<texts.count))
+    }
 }

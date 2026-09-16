@@ -17,11 +17,19 @@ import Foundation
 ///   与`.interlude` / `.credits` 同档，是界面用的结构信息而不是歌词原文。
 /// - `translation` 保留，紧跟正文再写一行**同时间戳**的译文。这是双语 LRC 的通行写法：
 ///   认的播放器叠成上下两行，不认的顶多多显示一行，不会坏。
+///
+/// **无时间戳的那一档（`lines.isUntimed`）照样写，只是一个时间戳都不带。**
+/// 这不是降级：这些标签的原生内容本来就是纯文本——ID3 的 `USLT` 全称是
+/// "Unsynchronised lyric/text transcription"，`©lyr` 与 Vorbis 的`LYRICS=` 同为纯文本字段，
+/// 同步歌词才是后来借时间戳挤进去的那一种。反过来给每行补一个 `[00:00.00]` 更糟：
+/// 规矩的播放器会把整首歌当成第 0 秒的一整行。上面那三条取舍（发音不写、创作者不写、
+/// 译文紧跟正文）在这一档原样沿用。
 enum LyricsLRC {
 
     /// 序列化。滤完没有任何非空正文时返回 nil——宁可这一格不写，
     /// 也别给文件塞一串只有时间戳的空壳。
     nonisolated static func text(from lines: [LyricLine]) -> String? {
+        if lines.isUntimed { return untimedText(from: lines) }
         // 入参不保证有序（歌词可能是从几路数据归并出来的），自己排一次。
         // LRC 本身就要求按时间递增，同一时刻再按 index 稳住原有先后。
         let ordered = lines
@@ -38,6 +46,24 @@ enum LyricsLRC {
             // 免得译文成了孤儿行。
             if let translation = line.translation.map(sanitized), !translation.isEmpty {
                 out.append(stamp + translation)
+            }
+        }
+        return out.isEmpty ? nil : out.joined(separator: "\n")
+    }
+
+    /// 无戳那一档：`.plain` 行原样写，译文紧跟它那一行。
+    ///
+    /// **不排序**——`time` 在这一档全是 0，排了也只是按 index 走一遍；而文件顺序
+    /// （解析时的行序）本来就是纯文本仅有的顺序信息，照原样传下去最稳妥。
+    /// `.credits` 与 `transliteration` 同带戳那支一样不写。
+    private static func untimedText(from lines: [LyricLine]) -> String? {
+        var out: [String] = []
+        for line in lines where line.kind == .plain {
+            let body = sanitized(line.text)
+            guard !body.isEmpty else { continue }
+            out.append(body)
+            if let translation = line.translation.map(sanitized), !translation.isEmpty {
+                out.append(translation)
             }
         }
         return out.isEmpty ? nil : out.joined(separator: "\n")

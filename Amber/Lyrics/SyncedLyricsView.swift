@@ -67,6 +67,10 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
     /// 把覆盖项叠到基线 spec 上。
     private func makeSpecs() -> LyricsSpecs {
         var specs = LyricsSpecs()
+        // 整份词没有时间轴（全是 `.plain` / `.credits`）时切到静态档：一次铺开、
+        // 统一亮度、用户自己滚，不高亮不自动滚不点击跳转。判据在数据侧
+        // （`[LyricLine].isUntimed`），渲染契约在 `LyricsSpecs.renderingMode`。
+        specs.renderingMode = lyrics.isUntimed ? .static : .synced
         specs.showsTranslation = showsTranslation
         specs.showsTransliteration = showsTransliteration
         specs.largerSecondary = settings.values.largerText
@@ -121,6 +125,7 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
     func makeNSViewController(context: Context) -> SyncedLyricsViewController {
         let specs = makeSpecs()
         context.coordinator.appliedOverrides = overrides
+        context.coordinator.appliedRenderingMode = specs.renderingMode
 
         let controller = SyncedLyricsViewController()
         controller.specs = specs
@@ -166,23 +171,34 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
         }()
         let marginsChanged =
             coordinator.appliedOverrides.horizontalMargin != overrides.horizontalMargin
+        // 有戳 ⇄ 无戳换歌时渲染档也得跟着换。**必须并进重建行视图那条析取**：
+        // 换歌本来就因 `identity` 变了而重建行，但 specs 还停在上一首的档上，
+        // 静态档等于没开；而「诞生模糊 / 诞生即选中」恰恰是在建行那一步落下去的，
+        // 跟字号档同理——光改 specs 不会让已经建好的行改外观。
+        let renderingMode: LyricsSpecs.RenderingMode = lyrics.isUntimed ? .static : .synced
+        let modeChanged = coordinator.appliedRenderingMode != renderingMode
 
         if marginsChanged {
             controller.margins = contentMargins
             controller.relayoutEverything()
         }
 
-        if fontsChanged || rectChanged || marginsChanged {
+        if fontsChanged || rectChanged || marginsChanged || modeChanged {
             let specs = makeSpecs()
             controller.specs = specs
             controller.manager?.specs = specs
             coordinator.appliedOverrides = overrides
             coordinator.appliedLargerText = settings.values.largerText
+            coordinator.appliedRenderingMode = renderingMode
+            // 每帧驱动的开关也读 `renderingMode`（静态档不起链），而它只在
+            // `isVisible` / `isActive` 变化时才被推一次——换档这条路没人推，
+            // 这里显式补一次。两个方向都要：切进静态档要停链，切回来要重开。
+            controller.updateDisplayLink()
         }
 
         // 只在真的换了歌词时重建行视图——SwiftUI 每次更新都重排的话，
         // 一首歌几十个 `NSView` 加一堆`CATextLayer` 会被反复拆建。
-        if coordinator.lyricsIdentity != identity || fontsChanged {
+        if coordinator.lyricsIdentity != identity || fontsChanged || modeChanged {
             coordinator.lyricsIdentity = identity
             controller.setLyrics(LyricsAdapter.makeLyrics(from: lyrics))
         } else if rectChanged {
@@ -211,6 +227,8 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
         /// 上一次落到行视图上的「更大字体」档。它不在 `Overrides` 里（那是整窗
         /// 播放器的覆盖项，这条是应用级偏好），单记一份。
         var appliedLargerText = AppSettings.shared.values.largerText
+        /// 上一次下发的渲染档。有戳 ⇄ 无戳来回换歌时靠它判断要不要重建行视图。
+        var appliedRenderingMode: LyricsSpecs.RenderingMode = .synced
 
         init(player: PlayerController) { self.player = player }
 
