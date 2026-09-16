@@ -20,6 +20,10 @@ import SwiftUI
 struct InspectorLyricsView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var player: PlayerController
+    /// 订阅曲目简介：在「显示简介 › 歌词」里改完自定义歌词要立刻反映到这一片上。
+    /// `infos` 是 `@Published`，这里跟 `SyncedLyricsView` 订阅 `AppSettings.shared`
+    /// 同一个先例——store 是进程级单例，视图只是挂上去听。
+    @ObservedObject private var trackInfo = TrackInfoStore.shared
     @State private var lyrics: [LyricLine] = []
     @State private var lyricsLoading = false
     @AppStorage(LyricsTranslationOptions.showTranslationKey)
@@ -32,7 +36,10 @@ struct InspectorLyricsView: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .task(id: track?.id) { await loadLyrics() }
+            // 键是「曲目 id + 这首的自定义歌词」：换歌要重取，改完自定义词也要重取。
+            .task(id: LyricsStore.displayToken(for: track, trackInfo: trackInfo)) {
+                await loadLyrics()
+            }
     }
 
     @ViewBuilder
@@ -96,7 +103,8 @@ struct InspectorLyricsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 取词统一走 `LyricsStore`：同一首在这里与整窗歌词之间来回切只打一次网络，
+    /// 取词统一走 `LyricsStore` 的**显示口**：勾了「自定义歌词」就用用户那份，
+    /// 否则是音源那份；同一首在这里与整窗歌词之间来回切只打一次网络，
     /// 命中缓存时同步就能拿到，连转圈那一帧都省了。
     ///
     /// 旧的 `track.id == self.track?.id` 竞态判断换成`Task.isCancelled`——
@@ -107,15 +115,15 @@ struct InspectorLyricsView: View {
             lyrics = []
             return
         }
-        if let cached = appState.lyricsStore.cachedLyrics(for: track) {
+        if let cached = appState.lyricsStore.cachedDisplayLyrics(for: track) {
             lyrics = cached
             return
         }
         lyrics = []
         lyricsLoading = true
         defer { lyricsLoading = false }
-        let loaded = await appState.lyricsStore.lyrics(for: track,
-                                                       using: appState.provider(track.kind))
+        let loaded = await appState.lyricsStore.displayLyrics(
+            for: track, using: appState.provider(track.kind))
         guard !Task.isCancelled else { return }
         lyrics = loaded
     }
