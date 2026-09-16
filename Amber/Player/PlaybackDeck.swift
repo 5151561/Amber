@@ -75,6 +75,60 @@ final class PlaybackDeck {
         return seconds
     }
 
+    // MARK: - seek 落点门控
+
+    /// 发出去的最后一次 seek 的号，与已经落点的那一次的号。不相等 = 这一路正在 seek 途中。
+    private var pendingSeekID = 0
+    private var landedSeekID = 0
+
+    /// seek 已经发出、播放器还没落到点上。
+    ///
+    /// 这一段里时间观察器报的是 seek **之前**采到的位置（观察器回调还要绕一次
+    /// `Task { @MainActor }` 才派发，采样与派发之间必然隔了一跳；网络流上
+    /// `tolerance = .zero` 的精确 seek 落点更慢，落点前会连报好几跳旧位置）。
+    /// 认那几跳就是「先跳到目标点、往回闪一下、再跳回来」。
+    var isSeekPending: Bool { pendingSeekID != landedSeekID }
+
+    /// 未落点时的目标位置。落点之后是 nil。
+    private(set) var pendingSeekTarget: TimeInterval?
+
+    /// 这一路的 seek 统一走这里，好把「有没有未落点的 seek」记在自己身上。
+    /// 返回这一次 seek 的号，与 `load` 返回装载代号同理。
+    ///
+    /// - Parameter completion: 落点之后要做的事（起播前挪到「开始时间」那处要它）。
+    ///   **被后一次 seek 打断时也照调**：门控由号说了算，这一支只管它自己的后续动作。
+    @discardableResult
+    func seek(to time: CMTime, tolerance: CMTime,
+              completion: (@MainActor () -> Void)? = nil) -> Int {
+        pendingSeekID &+= 1
+        let id = pendingSeekID
+        pendingSeekTarget = time.seconds.isFinite ? time.seconds : nil
+        player.seek(to: time, toleranceBefore: tolerance, toleranceAfter: tolerance) {
+            [weak self] _ in
+            // `finished` 不看：被后一次 seek 打断时它是 false，但那一次自己会来清场，
+            // 号对不上的这一次本来就该什么都不做。
+            Task { @MainActor [weak self] in
+                self?.finishSeek(id)
+                completion?()
+            }
+        }
+        return id
+    }
+
+    /// 标记 `id` 这一次 seek 落点。号不是最新的（被后一次打断）就什么都不做。
+    func finishSeek(_ id: Int) {
+        guard id == pendingSeekID else { return }
+        landedSeekID = id
+        pendingSeekTarget = nil
+    }
+
+    /// 撤掉门控。`load` / `unload` 换 item 时调：旧 item 的 seek 回调再回来也不该算数，
+    /// 顺带堵死「回调万一不来 → 进度条永久停在目标点」。
+    private func clearSeekGate() {
+        landedSeekID = pendingSeekID
+        pendingSeekTarget = nil
+    }
+
     // MARK: - 装载
 
     /// 装一支 item 进这一路。返回这次装载的代号，异步回调回来时用它对号。
@@ -87,6 +141,7 @@ final class PlaybackDeck {
         self.mix?.invalidate()
 
         generation &+= 1
+        clearSeekGate()
         let gen = generation
         self.item = item
         self.track = track
@@ -169,6 +224,7 @@ final class PlaybackDeck {
         streamFormat = nil
         isReady = false
         generation &+= 1
+        clearSeekGate()
     }
 
     // MARK: - 边界观察
