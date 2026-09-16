@@ -8,7 +8,7 @@ import SwiftUI
 //
 // 1. `title + albums`  「为你推荐最新作品」「本周新发行」…（副标题「N 张专辑」）
 // 2. `title + playlists`「歌单已更新」「风格电台」…（副标题「N 个播放列表」）
-// 3. `recentlyPlayed`  主页「最近播放 ›」（按专辑收起来，页头只有大标题）
+// 3. `recentlyPlayed`  主页「最近播放 ›」（按容器收起来，页头只有大标题）
 // 4. `tagGroup`        「探索更多」（大标题 + 一排标签胶囊，切标签重新向音源取）
 //
 // 骨架照 `CatalogPageViewController`（阶段 3 批 A）那一台引擎搭：
@@ -55,7 +55,8 @@ final class CatalogRoomViewController: ContentPageController {
     enum Content {
         case albums(title: String, albums: [Album])
         case playlists(title: String, playlists: [Playlist])
-        case recentlyPlayed(LocalTrackList)
+        /// 无载荷：格子由资料库的容器台账（`LibraryStore.recentContainers`）给。
+        case recentlyPlayed
         case tagGroup(CatalogTagGroup)
     }
 
@@ -77,8 +78,8 @@ final class CatalogRoomViewController: ContentPageController {
         self.init(appState: appState, content: .playlists(title: title, playlists: playlists))
     }
 
-    convenience init(appState: AppState, recentlyPlayed list: LocalTrackList) {
-        self.init(appState: appState, content: .recentlyPlayed(list))
+    convenience init(recentlyPlayedIn appState: AppState) {
+        self.init(appState: appState, content: .recentlyPlayed)
     }
 
     convenience init(appState: AppState, tagGroup group: CatalogTagGroup) {
@@ -197,8 +198,11 @@ final class CatalogRoomViewController: ContentPageController {
             apply(items: albums.map(albumItem))
         case .playlists(_, let playlists):
             apply(items: playlists.map(playlistItem))
-        case .recentlyPlayed(let list):
-            apply(items: recentItems(list.tracks))
+        case .recentlyPlayed:
+            // 与货架同一份实现、同一批格子（`CatalogFeedModel.recentItems`）。
+            // 实时性照旧：上屏时读一次，不订阅。
+            apply(items: CatalogFeedModel.recentItems(appState.library.recentContainers,
+                                                      appState: appState))
         case .tagGroup:
             reloadTag()
         }
@@ -242,42 +246,6 @@ final class CatalogRoomViewController: ContentPageController {
                            onPlay: { Task { await appState.playPlaylist(playlist) } })
     }
 
-    /// 最近播放**按专辑收起来**：一张专辑一张卡，顺序按这张专辑最近一次出现的位置。
-    ///
-    /// 网易云的播客单集 `albumId` 指的是电台节目本身（见`Route.album(of:)`），
-    /// 那一类收成歌单卡；连专辑都没有的曲目（本地导入等）收不进去，各自留一张单曲卡。
-    private func recentItems(_ tracks: [Track]) -> [CatalogItem] {
-        var seen: Set<String> = []
-        var items: [CatalogItem] = []
-        for (index, track) in tracks.enumerated() {
-            switch Route.album(of: track) {
-            case .album(let album)?:
-                guard seen.insert(album.id).inserted else { continue }
-                items.append(albumItem(album))
-            case .playlist(let playlist)?:
-                guard seen.insert(playlist.id).inserted else { continue }
-                items.append(playlistItem(playlist))
-            default:
-                items.append(trackItem(track, index: index))
-            }
-        }
-        return items
-    }
-
-    /// 最近播放里收不进专辑的那些曲目：点封面进专辑、点副标题进艺人，右键是曲目菜单
-    /// （`CatalogCardContentView` 见到`track` 就走`TrackActions.catalogRow()`，
-    /// 否则走 `CatalogCardActions`）。
-    private func trackItem(_ track: Track, index: Int) -> CatalogItem {
-        let appState = appState
-        return CatalogItem(id: "\(index)-\(track.id)", kind: .square, title: track.title,
-                           artworkURL: track.artworkURL,
-                           subtitle: track.artistName,
-                           route: Route.album(of: track),
-                           subtitleRoute: Route.artist(of: track),
-                           onPlay: { appState.player.play([track]) },
-                           track: track)
-    }
-
     // MARK: - 页头
 
     private func configure(_ header: CatalogRoomHeaderView) {
@@ -288,10 +256,10 @@ final class CatalogRoomViewController: ContentPageController {
         case .playlists(let title, let playlists):
             header.configure(title: title, subtitle: "\(playlists.count) 个播放列表",
                              onPlay: nil, onShuffle: nil)
-        case .recentlyPlayed(let list):
-            // 这一页收的是专辑，不是一条播放队列：没有整页的播放 / 随机播放，
+        case .recentlyPlayed:
+            // 这一页收的是格子，不是一条播放队列：没有整页的播放 / 随机播放，
             // 大标题下面也不摆计数。
-            header.configure(title: list.title, subtitle: nil, onPlay: nil, onShuffle: nil)
+            header.configure(title: "最近播放", subtitle: nil, onPlay: nil, onShuffle: nil)
         case .tagGroup(let group):
             header.configure(title: group.name, tags: group.tags, selected: selectedTag) {
                 [weak self] tag in self?.select(tag)

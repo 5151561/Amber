@@ -270,8 +270,11 @@ final class CatalogArtworkView: NSView {
         loadTask?.cancel()
         loadTask = nil
         requestedURL = nil
-        artwork.contents = nil
-        artwork.isHidden = true
+        // 清封面走 `showArtwork(nil)` 这条唯一通路（它把隐式动画关掉），别直接写
+        // `contents = nil`：手加的 sublayer 是吃隐式动画的，那一下会给复用中的层挂一次
+        // `contents` 淡出，紧接着 `configure` 贴上的新图就成了「上一张淡成这一张」——
+        // 正是 `showArtwork` 注释里要躲开的那件事。
+        showArtwork(nil)
         glyph.isHidden = true
         CatalogCardKit.setOpacity(hoverScrim, 0, animated: false)
     }

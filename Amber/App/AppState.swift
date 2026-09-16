@@ -130,7 +130,22 @@ final class AppState: ObservableObject {
         // 听歌记账全部由播放器发起：从前只在视图层的点击入口记，播放器自动连播那几首
         // 一次都不算，一张专辑放完只有双击的那首 +1。
         player.onSkip = { [weak self] track in self?.library.recordSkip(track) }
-        player.onTrackStarted = { [weak self] track in self?.library.noteStarted(track) }
+        // 这条回调**必须在 `queueSource` 落定之后才发**：台账要记的是「在哪儿听的」，
+        // 早一步发就只剩上一队的来源。两处调用点（`PlayerController` 的 readyToPlay 与
+        // `startFromStandby`）都在主线程同步调它，而 `play()` 在`startCurrent()` 之前
+        // 就写好了 `queueSource`，`startFromStandby` 也只从`startCurrent()` 进来。
+        player.onTrackStarted = { [weak self] track in
+            guard let self else { return }
+            // 自动连播续上的歌不属于起播那份列表，别记进那张歌单的账。
+            let fromSource = self.player.currentIndex.map {
+                self.player.queueOrigins.indices.contains($0)
+                    && self.player.queueOrigins[$0] == .source
+            } ?? false
+            self.library.noteStarted(
+                track,
+                container: .resolve(track: track,
+                                    source: fromSource ? self.player.queueSource : nil))
+        }
         player.onTrackPlayed = { [weak self] track in self?.library.notePlayed(track) }
         // 设置 › 通用 ›「歌曲列表复选框」：自动连播跳过没勾的（手动切歌不认勾，与 Music 同）。
         player.isTrackChecked = { [weak self] in self?.library.isChecked($0) ?? true }
@@ -783,6 +798,12 @@ enum Route: Hashable {
     case album(Album)
     case artist(Artist)
     case localTracks(LocalTrackList)
+    /// 「最近播放 ›」的网格二级页。**无载荷**：那一页自己去读资料库的容器台账。
+    ///
+    /// 早先是靠 `.localTracks` 的 id/标题字符串匹配路由的，用户新建一份叫「最近播放」的
+    /// 本地列表就会被劫持；顺带也让导航栈里不用再塞一份最多 200 条 Track 的载荷
+    /// （每次 `Hashable` 比较都要整份走一遍）。
+    case recentlyPlayed
     /// 「探索更多」的落点：音源分类分组的浏览页
     case tagGroup(CatalogTagGroup)
     /// 目录页分段「查看全部」的专辑网格二级页
