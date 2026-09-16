@@ -472,4 +472,123 @@ final class LyricParserTests: XCTestCase {
         let lines = lyricLines(LyricParser.parse(lrc))
         XCTAssertEqual(lines[0].end, 11.0, accuracy: 0.001)
     }
+
+    // MARK: - 尾部制作表
+
+    /// 结尾那一块制作表也要整块摘掉：正文末句必须还在
+    func testTrailingCreditBlockStripped() {
+        let lrc = """
+        [00:02.23]从未见过的海 - 告五人
+        [00:04.40]词：告五人云安 Pan Pan An
+        [00:06.82]曲：告五人云安 Pan Pan An
+        [00:47.71]今早的闹钟唤醒
+        [04:06.84]告诉我们不要再等待
+        [04:10.86]制作人Produer：陈君豪 Howe@成绩好工作室
+        [04:11.79]编曲Arrangement：告五人 Accusefive
+        [04:12.42]小号Trumpet：David Smith
+        [04:15.55]录音师Recording Engineer：叶育轩 YuHsuan Yeh/蔡周翰 Chou Han Tsay
+        [04:16.44]混音师Mixing Engineer：黄文萱 Ziya Huang
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["今早的闹钟唤醒", "告诉我们不要再等待"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：告五人云安 Pan Pan An"])
+    }
+
+    /// 双语角色名的长度由形态决定，不由字符数决定
+    /// [实测]「人声/吉他录音师 Vocal/Guitar Recording Engineer」是 40 个字符的真角色名
+    func testLongBilingualCreditKeyStillRecognized() {
+        let lrc = """
+        [00:00.21]词 Lyric：告五人云安 Pan Pan An
+        [00:01.58]正文
+        [04:15.24]人声/吉他录音师 Vocal/Guitar Recording Engineer：叶育轩 YuHsuan Yeh
+        [04:15.55]鼓录音室 Drum Recording Studio：112F Studio
+        [04:16.44]制作助理 Production Assistant：林颉 Jie Lin
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text), ["正文"])
+    }
+
+    /// 尾块的扫描方向朝着正文去，认不出的末行不能被上面认得出的那条带走
+    func testTrailingCreditsDoNotEatLastLyricLine() {
+        let lrc = """
+        [00:00.00]词：某人
+        [00:20.00]第一句
+        [00:24.00]他说：我不走了
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text), ["第一句", "他说：我不走了"])
+    }
+
+    /// 头块有词曲时，尾块那份重复的不覆盖
+    func testTrailingCreditsOnlyFillMissingSongwriters() {
+        let lrc = """
+        [00:00.00]词：甲
+        [00:01.00]曲：乙
+        [00:20.00]正文
+        [03:00.00]作词：丙
+        [03:01.00]作曲：丁
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["正文"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：甲、乙"])
+    }
+
+    /// 词曲只写在结尾的歌（独立厂牌常见排法）也要排得出创作者
+    func testTrailingCreditsSupplyMissingSongwriters() {
+        let lrc = """
+        [00:20.00]正文
+        [03:00.00]词：甲
+        [03:01.00]曲：乙
+        [03:02.00]混音：丙
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["正文"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：甲、乙"])
+    }
+
+    /// 整首都像「键：值」时尾块一行不摘——宁可漏，不能把歌吃光
+    func testTrailingBlockNotStrippedWhenItWouldEatAll() {
+        let lrc = """
+        [00:00.00]词：甲
+        [00:01.00]曲：乙
+        [00:02.00]编曲：丙
+        """
+        XCTAssertTrue(lyricLines(LyricParser.parse(lrc)).isEmpty)
+    }
+
+    // MARK: - 版权声明行
+
+    /// 声明行不中断块扫描：它和它上面已认的两行要一起摘干净
+    func testNoticeLineDoesNotBreakCreditBlock() {
+        let lrc = """
+        [00:00.00]我天生-有梦版 - 告五人
+        [00:00.21]词 Lyric：告五人云安 Pan Pan An
+        [00:00.44]曲 Compose：告五人云安 Pan Pan An
+        [00:00.68]【本作品声明，著作权权利保留。未经著作权人书面许可，不得以任何方式（包括翻唱、翻录等）使用。】
+        [00:01.58]我天生有病才会喜欢你
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["我天生有病才会喜欢你"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text),
+                       ["创作者：告五人云安 Pan Pan An"])
+    }
+
+    /// ★ 圆括号那一族是真·和声与旁白，一个都不许摘
+    func testParenthesizedBackingVocalLineSurvives() {
+        let lrc = """
+        [00:00.00]词：周杰伦
+        [00:20.00]正文
+        [00:24.00]（斑驳的家徽擦拭了一夜。）
+        [00:28.00]（哎呦不错哦）
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text),
+                       ["正文", "（斑驳的家徽擦拭了一夜。）", "（哎呦不错哦）"])
+    }
+
+    /// 合取规则的边界：只有括号、没有句号的段落标记不摘
+    func testSectionMarkerWithoutSentenceEndSurvives() {
+        let lrc = """
+        [00:20.00]正文
+        [00:24.00]【副歌】
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text), ["正文", "【副歌】"])
+    }
 }
