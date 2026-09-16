@@ -45,6 +45,7 @@ enum LyricParser {
         // 词曲只在头块缺位时才由尾块补——见 `Credits.fillGaps`。
         credits.fillGaps(from: stripTrailingCredits(&raw))
         guard !raw.isEmpty else { return [] }
+        markAgentCues(&raw)
 
         let trans = translation.map { parseTimedLines($0) } ?? []
         // 音译（Music 界面上叫「发音」）：QQ 的 `roma` 常常是 QRC 逐字格式、
@@ -65,6 +66,10 @@ enum LyricParser {
         /// 网易那种 JSON 制作人信息行（见 `parseNeteaseMetaLine`）。
         /// 它们**一定**不是歌词，摘除时不受 `creditKeys` 白名单约束。
         var isMetadata = false
+        /// 独立成行的歌手提示行（`TAEYANG：`）。**留到最后一刻才摘**，见 `markAgentCues`。
+        var isAgentCue = false
+        /// 这一行归谁唱。由上方最近一条提示行给出。
+        var vocalist: LyricLine.Vocalist?
     }
 
     private static let lrcTimestamp = try! NSRegularExpression(
@@ -373,6 +378,12 @@ enum LyricParser {
         // 版权声明按定义就不是歌词，且**不中断块扫描**——《我天生-有梦版》里它排在
         // 「词：/曲：」之后、正文之前，中断的话它连同上面已认的两行一起留在屏上。
         if isNoticeLine(line.text) { return .confirmed(role: .none, value: "") }
+        // 值为空的「键：」有两种去向：角色名是制作残行（`编曲：`），人名是歌手提示行。
+        // 后者留给 `markAgentCues`，这里只摘前者。判据与 `speakerCue` 用**同一句**，
+        // 两边才不会对同一行给出两种解释。
+        if let key = emptyValueKey(in: line.text) {
+            return isCreditKey(key, insideBlock: false) ? .confirmed(role: .none, value: "") : .stop
+        }
         guard let (key, value) = creditPair(in: line.text) else {
             // 网易那种 JSON 信息行按定义就不是歌词，认不出角色名也照样摘掉。
             return line.isMetadata ? .confirmed(role: .none, value: "") : .stop
@@ -410,6 +421,82 @@ enum LyricParser {
     private static let noticeBrackets: [Character: Character] = [
         "【": "】", "〖": "〗", "〔": "〕",
     ]
+
+    // MARK: - 歌手提示行
+
+    /// 独立成行、**值为空**的「名字：」。QQ 用它标下一段由谁唱
+    /// （`TAEYANG：` `T.O.P：` `周杰伦：`）。
+    ///
+    /// 判据只有一条：**冒号后面什么都没有**。`creditPair` 要求两侧非空，所以它对这种行
+    /// 返回 nil，今天它就当普通唱词排上了屏。有值的那种（`他说：我不走了`、
+    /// `权志龙 G-DRAGON：Let's go`）走的是另一条路，这里一概不碰——所以名册有没有、
+    /// 有几个人，都不会改变行内前缀那类行的解释。
+    ///
+    /// `编曲：` 这种空值的制作残行先被 `isCreditKey` 拦下：它不是人名。
+    private static func speakerCue(in text: String) -> String? {
+        guard let name = emptyValueKey(in: text),
+              !isCreditKey(name, insideBlock: false)
+        else { return nil }
+        return name
+    }
+
+    /// 「键：」——冒号后面什么都没有。`creditPair` 要求两侧非空，认不出这种行。
+    private static func emptyValueKey(in text: String) -> String? {
+        guard let separator = text.rangeOfCharacter(from: CharacterSet(charactersIn: "：:")) else { return nil }
+        guard text[separator.upperBound...].trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let key = text[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
+        return looksLikeRoleName(key) ? key : nil
+    }
+
+    /// 建名册、给每行标歌手。**只打标记，不删行。**
+    ///
+    /// 删除推迟到 `assemble` 的发射环节，因为提示行必须留在 `claim` 的输入里替自己
+    /// 吃掉那条占位副行：`G-DRAGON：`（54.748）与下一句（55.294）只差 0.546 秒，
+    /// 而 `secondaryMaxDrift` 是 0.6——提前摘掉，下一句就会去认领它那条空的。
+    ///
+    /// 名册只做三件事：去重、按首次出现序编号、给出规模。**从不拿来匹配正文文本**——
+    /// 归属是「上方最近的那条提示」这个位置关系定的，不是在正文里找名字。
+    private static func markAgentCues(_ lines: inout [RawLine]) {
+        var roster: [String: Int] = [:]
+        var order: [String] = []
+        for index in lines.indices {
+            guard let name = speakerCue(in: lines[index].text) else { continue }
+            let key = normalizedVocalistName(name)
+            if roster[key] == nil {
+                roster[key] = order.count
+                order.append(name)
+            }
+            lines[index].isAgentCue = true
+            lines[index].vocalist = LyricLine.Vocalist(name: order[roster[key]!], index: roster[key]!)
+        }
+        guard !roster.isEmpty else { return }
+
+        var current: LyricLine.Vocalist?
+        var used = false
+        for index in lines.indices {
+            if lines[index].isAgentCue {
+                current = lines[index].vocalist
+                continue
+            }
+            lines[index].vocalist = current
+            if current != nil { used = true }
+        }
+        // 一条提示都没有管到正文（末行孤零零一个「XX：」之类）：整份名册作废，
+        // 免得把一首独唱歌判成对唱。
+        guard used else {
+            for index in lines.indices {
+                lines[index].isAgentCue = false
+                lines[index].vocalist = nil
+            }
+            return
+        }
+    }
+
+    /// 名册去重用的归一化：大小写与空白。跨语言的两种写法（`G-DRAGON` / `지드래곤`）
+    /// 归不到一起，接受——那要的是人名库，不是规律。`[推]`
+    private static func normalizedVocalistName(_ name: String) -> String {
+        name.lowercased().filter { !$0.isWhitespace }
+    }
 
     /// 首行的「歌名 - 歌手」
     private static func isHeaderLine(_ text: String) -> Bool {
@@ -693,12 +780,22 @@ enum LyricParser {
         var result: [LyricLine] = []
         func append(_ make: (Int) -> LyricLine) { result.append(make(result.count)) }
 
-        // 开头的长前奏也是间奏
-        if raw[0].time >= interludeMinGap {
-            append { LyricLine(index: $0, time: 0, end: raw[0].time, text: "", kind: .interlude) }
+        // 歌手提示行到这里才摘：上面的 `claim` 与 `ends` 都要按**完整的 `raw`** 算，
+        // 否则它那条占位副行会被下一句认领走（见 `markAgentCues`）。
+        // 副行取值仍用 `offset`（对齐 `raw`），只有发射顺序按 `emitted`。
+        let emitted = raw.indices.filter { !raw[$0].isAgentCue }
+        guard let firstEmitted = emitted.first, let lastEmitted = emitted.last else { return [] }
+
+        // 开头的长前奏也是间奏。起点取第一条**排得上屏**的行——摘完开头那块制作表之后，
+        // `raw[0]` 可能正是一条提示行（BIGBANG 是 12.85，首句在 14.10）。
+        if raw[firstEmitted].time >= interludeMinGap {
+            append {
+                LyricLine(index: $0, time: 0, end: raw[firstEmitted].time, text: "", kind: .interlude)
+            }
         }
 
-        for (offset, line) in raw.enumerated() {
+        for (rank, offset) in emitted.enumerated() {
+            let line = raw[offset]
             let translationText = translations[offset].map { translation[$0].text }
             // 音译与正文**逐字同源**（QQ 的 roma 是 QRC），发音还要按音节归位，
             // 所以这里要的是整条 `RawLine`，不只是文本。
@@ -717,9 +814,10 @@ enum LyricParser {
                 LyricLine(index: $0, time: line.time, end: ends[offset], text: line.text,
                           translation: translationText,
                           transliteration: transliterationText,
-                          syllables: syllables, kind: .lyric)
+                          syllables: syllables, kind: .lyric,
+                          vocalist: line.vocalist)
             }
-            let nextStart = offset + 1 < raw.count ? raw[offset + 1].time : nil
+            let nextStart = rank + 1 < emitted.count ? raw[emitted[rank + 1]].time : nil
             if let nextStart, nextStart - ends[offset] >= interludeMinGap {
                 append {
                     LyricLine(index: $0, time: ends[offset], end: nextStart, text: "", kind: .interlude)
@@ -728,7 +826,7 @@ enum LyricParser {
         }
 
         if !credits.isEmpty {
-            let start = ends.last ?? raw[raw.count - 1].time
+            let start = ends[lastEmitted]
             let text = "创作者：" + credits.names.joined(separator: "、")
             append {
                 LyricLine(index: $0, time: start, end: start + creditsDuration,

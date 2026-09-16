@@ -91,7 +91,7 @@ extension SBS_TextContentLayer {
         let baseColor = LyricsSpecs.cgColor(self.baseColor, in: appearance)
         let rubyColor = LyricsSpecs.cgColor(translationColor, in: appearance)
         let sungColor = LyricsSpecs.cgColor(specs.lineProgressionGradientColor, in: appearance)
-        let isRightToLeft = line.agentAlignment == .flipped
+        let isRightToLeft = line.direction == .rightToLeft
         // 块是按**词**切的（`RubyLayout` 用`NLTokenizer` 的`.word`），一个块里可能
         // 有好几个音节，而强调载荷在原版是词级的（§23.6）。`RubyLayout.Block.Syllable`
         // 不带这个字段，所以按起点回查 `line.syllables`——两边的时间是同一份拷贝，

@@ -89,6 +89,14 @@ struct TextLine: LyricsLine, Sendable {
     var primaryVocalsEndTime: TimeInterval = 0
     var isFirstLineOfParagraph = false          // 段间距 39 靠它
     var agentAlignment: Lyrics.AgentAlignment = .normal
+    /// 这一行的书写方向。与 `agentAlignment` 是**两件事**：前者管排版靠哪边，
+    /// 它管逐字从哪头开始扫。原版也是两个并列字段（`InstrumentalLine.lyricsDirection`
+    /// 同源，§15.2「书写方向随行走，不是全局设置」）。
+    ///
+    /// 对唱翻转侧是「右对齐的拉丁/CJK 行」——顶到右边，但仍从左往右唱。
+    /// 早先这三处遮罩方向读的是 `agentAlignment == .flipped`，`.flipped` 一旦出现
+    /// 就会把它们倒过来扫。
+    var direction: Lyrics.Direction = .leftToRight
     var capabilities: Lyrics.Capability = []
     var backgroundVocals: BackgroundVocals?
 
