@@ -1714,6 +1714,48 @@ final class LyricsKitTests: XCTestCase {
                        .flipped)
     }
 
+    /// 对唱翻转侧的行在行盒里顶右；普通行贴左（行盒右缘本来就压在栏右缘）。
+    func testFlippedRowIsFlushRight() {
+        let x = { (isFlipped: Bool, rowWidth: CGFloat) in
+            SBS_TextContentLayer.rowOriginX(rowWidth: rowWidth, boxWidth: 510, isFlipped: isFlipped)
+        }
+        XCTAssertEqual(x(false, 200), 0)
+        XCTAssertEqual(x(false, 510), 0)
+        XCTAssertEqual(x(true, 200), 310)   // 510 − 200
+        XCTAssertEqual(x(true, 510), 0)
+        // 墨迹比盒子还宽（测量与渲染差一点）时不许倒着挪
+        XCTAssertEqual(x(true, 560), 0)
+    }
+
+    /// ★ 顶右与「从右往左扫」是两件事：翻转侧仍从左往右唱。
+    func testFlippedLineStillSweepsLeftToRight() {
+        var flipped = TextLine()
+        flipped.agentAlignment = .flipped
+        XCTAssertEqual(flipped.direction, .leftToRight)
+
+        var rtl = TextLine()
+        rtl.direction = .rightToLeft
+        XCTAssertEqual(rtl.agentAlignment, .normal, "书写方向不该顺带把行推到右栏去")
+    }
+
+    /// 解析 → 适配 → 几何：对唱行一路走到行宽收窄那一档
+    func testDuetLineIsVocalGroupEndToEnd() {
+        let lrc = """
+        [00:00.00]甲：
+        [00:02.00]甲唱的
+        [00:06.00]乙：
+        [00:08.00]乙唱的
+        """
+        let lyrics = LyricsAdapter.makeLyrics(from: LyricParser.parse(lrc))
+        XCTAssertEqual(lyrics.vocalistsType, .duet)
+        let texts = lyrics.lines.compactMap { $0 as? TextLine }
+        XCTAssertEqual(texts.map(\.text), ["甲唱的", "乙唱的"])
+        XCTAssertFalse(LyricsLineGeometry.isVocalGroup(texts[0]))
+        XCTAssertTrue(LyricsLineGeometry.isVocalGroup(texts[1]))
+        XCTAssertEqual(LyricsLineGeometry.lineAlignment(agent: texts[1].agentAlignment,
+                                                        textAlignment: nil), .flipped)
+    }
+
     /// 可用宽度 = documentView 宽 − 左右边距；[PX] 实测 margins ≈ 0。
     func testAvailableWidthSubtractsMargins() {
         XCTAssertEqual(LyricsLineGeometry.availableWidth(documentWidth: 683,

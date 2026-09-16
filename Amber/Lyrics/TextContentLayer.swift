@@ -80,10 +80,16 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
             layer.string = nil
             return .zero
         }
+        // 对唱翻转侧顶右：行盒子已经被排到栏的右半边（收窄 85% + 右推 15%，
+        // 右缘压在栏右缘），盒子里的文字也要贴右缘。整行档三条（正文、发音、翻译）
+        // 都走这里，一起跟过去。
+        let alignment: NSTextAlignment? =
+            line?.agentAlignment == .flipped ? .right : specs.lineTextAlignment
         let attributes = LyricsTextLayout.attributes(
             for: text, font: font, color: color,
-            alignment: specs.lineTextAlignment,
+            alignment: alignment,
             lineHeightAdjustment: lineHeightAdjustment)
+        layer.alignmentMode = LyricsTextLayout.alignmentMode(alignment)
         layer.string = LyricsTextLayout.hardWrapped(text, attributes: attributes, width: width)
         return LyricsTextLayout.size(text, attributes: attributes, width: width)
     }

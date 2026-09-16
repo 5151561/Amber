@@ -105,7 +105,10 @@ extension SBS_TextContentLayer {
         var y: CGFloat = 0
         for layout in layoutRows {
             let row = Row()
-            row.frame = CGRect(x: 0, y: y, width: layout.width, height: layout.height)
+            row.frame = CGRect(x: Self.rowOriginX(rowWidth: layout.width,
+                                                  boxWidth: bounds.width,
+                                                  isFlipped: isFlipped),
+                               y: y, width: layout.width, height: layout.height)
             row.textHeight = layout.textHeight
             row.base.frame = row.frame
             row.sung.frame = row.frame

@@ -23,6 +23,9 @@ enum LyricsDebugFlags {
     ///
     /// 本轮把行框宽从墨迹宽改成了测量宽（`recomputeLineFrames`，理由见那里的注释）。
     /// 带上这个参数就退回改动之前的取值。
+    ///
+    /// 注意它会让**对唱翻转侧看着像没右对齐**：顶右靠的是「行盒右缘压在栏右缘」
+    /// （`0.15 + 0.85 = 1`），退回墨迹宽之后盒子缩到墨迹上，盒内再顶右也不动地方。
     static let usesInkLineWidth = flag("-inklinewidth")
 
     /// `-lyricsblur <值>`：现场改非聚焦行的高斯模糊半径，省得为了试一个数重装一遍。
