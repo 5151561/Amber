@@ -197,7 +197,7 @@ extension SBS_TextContentLayer {
 
         let baseColor = LyricsSpecs.cgColor(self.baseColor, in: appearance)
         let sungColor = LyricsSpecs.cgColor(specs.lineProgressionGradientColor, in: appearance)
-        let isRightToLeft = line.agentAlignment == .flipped
+        let isRightToLeft = line.direction == .rightToLeft
 
         var y: CGFloat = 0
         for metric in metrics {
@@ -411,7 +411,7 @@ extension SBS_TextContentLayer {
     /// 音译那条渐变的固定参数。与主行同一套：软边宽度、方向、内外余量。
     /// 宽度每帧由 `applyProgress` 推，这里只摆好其余部分。
     private func configureTransliterationGradient(height: CGFloat) {
-        let isRightToLeft = line?.agentAlignment == .flipped
+        let isRightToLeft = line?.direction == .rightToLeft
         transliterationGradient.color =
             LyricsSpecs.cgColor(specs.lineProgressionGradientColor, in: appearance)
         transliterationGradient.featherWidth = specs.lineProgressionGradientFeather

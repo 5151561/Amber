@@ -136,4 +136,17 @@ final class LyricsLRCTests: XCTestCase {
             [00:10.00]后一句
             """)
     }
+
+    /// 歌手提示行与间奏、创作者同档：它标的是结构，不是歌词原文，不写进标签
+    func testAgentCueLinesAreNotWritten() {
+        let lrc = """
+        [00:00.00]某某：
+        [00:02.00]第一句
+        [00:06.00]第二句
+        """
+        XCTAssertEqual(LyricsLRC.text(from: LyricParser.parse(lrc)), """
+            [00:02.00]第一句
+            [00:06.00]第二句
+            """)
+    }
 }

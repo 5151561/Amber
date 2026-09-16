@@ -172,8 +172,11 @@ final class LyricParserTests: XCTestCase {
         XCTAssertTrue(lines.hasTransliteration)
     }
 
-    /// 歌手提示行（`G-DRAGON：`）与下一句只差 0.546 秒。各行独立「找最近的一条」
-    /// 时它会把下一句的译文抢过来，两行显示同一句译文。
+    /// 提示行的摘除必须发生在副行认领**之后**。
+    ///
+    /// `G-DRAGON：`（54.748）与下一句（55.294）只差 0.546 秒，而 `secondaryMaxDrift`
+    /// 是 0.6——提前摘掉，下一句就会去认领它那条空的占位，两行显示同一句译文。
+    /// 提示行留到 `assemble` 的发射环节才摘，它先替自己把那条占位吃掉。
     func testAgentLineDoesNotStealNextLineSecondaries() {
         let lyric = """
         [54748,546]G-DRAGON：(54748,546)
@@ -188,11 +191,11 @@ final class LyricParserTests: XCTestCase {
         [55294,2000]chong (55294,500)ma jeun (55794,700)geot cheo reom(56494,800)
         """
         let lines = lyricLines(LyricParser.parse(lyric, translation: trans, transliteration: roma))
-        XCTAssertEqual(lines.count, 2)
-        XCTAssertNil(lines[0].translation)
+        XCTAssertEqual(lines.count, 1, "提示行不上屏")
+        XCTAssertEqual(lines[0].text, "총 맞은 것처럼")
+        XCTAssertEqual(lines[0].vocalist?.name, "G-DRAGON", "它是被认成提示行，不是被当噪音扔了")
+        XCTAssertEqual(lines[0].translation, "好似被中枪一般", "0.546 秒外那条占位不能被认过来")
         XCTAssertNil(lines[0].transliteration)
-        XCTAssertTrue(lines[0].syllables.allSatisfy { $0.transliteration == nil })
-        XCTAssertEqual(lines[1].translation, "好似被中枪一般")
     }
 
     /// 副行的占位行要留着占位：丢掉的话后面每一行都可能去认领上一条。
@@ -409,7 +412,7 @@ final class LyricParserTests: XCTestCase {
                        ["权志龙 G-DRAGON：Let's go", "第二句"])
     }
 
-    /// 正文里的「XX：YY」不能被当成创作者摘掉
+    /// 正文里的「XX：YY」不能被当成创作者摘掉（末行那条兼守尾块不吃末句）
     func testColonInsideBodyIsNotTreatedAsCredit() {
         let lrc = """
         [00:00.00]词：某人
@@ -591,4 +594,126 @@ final class LyricParserTests: XCTestCase {
         """
         XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text), ["正文", "【副歌】"])
     }
+
+    // MARK: - 歌手提示行
+
+    /// BIGBANG《BANG BANG BANG》[实测]：五条提示行落在正文中间，一条都不许上屏
+    func testAgentCueLinesRemovedFromBody() {
+        let lines = lyricLines(LyricParser.parse(Self.bangBangBang))
+        XCTAssertFalse(lines.contains { $0.text.hasSuffix("：") })
+        XCTAssertEqual(lines.map(\.text).prefix(2),
+                       ["난 깨어나 까만 밤과 함께", "다 들어와 담엔 누구 차례"])
+    }
+
+    /// 提示行标出来的归属落在它**下面**那几行上
+    func testAgentCueAssignsVocalistToFollowingLines() {
+        let lines = lyricLines(LyricParser.parse(Self.bangBangBang))
+        XCTAssertEqual(lines[0].vocalist?.name, "TAEYANG")
+        XCTAssertEqual(lines[0].vocalist?.index, 0)
+        XCTAssertEqual(lines.first { $0.text == "찌질한 분위기를 전환해" }?.vocalist?.name, "T.O.P")
+    }
+
+    /// 名册按首次出现序编号；同一个人再出现仍是同一个号
+    func testAgentRosterIsOrderedByFirstAppearance() {
+        let lines = lyricLines(LyricParser.parse(Self.bangBangBang))
+        let roster = lines.compactMap(\.vocalist).reduce(into: [Int: String]()) { $0[$1.index] = $1.name }
+        // [实测] 五个人，点名序：TAEYANG / T.O.P / 승리 / G-DRAGON / 대성
+        XCTAssertEqual(roster, [0: "TAEYANG", 1: "T.O.P", 2: "승리", 3: "G-DRAGON", 4: "대성"])
+        // 末尾那段又回到 TAEYANG，仍是 0 号
+        XCTAssertEqual(lines.last { $0.vocalist?.name == "TAEYANG" }?.vocalist?.index, 0)
+    }
+
+    /// 两位歌手的 feat. 曲：《圣诞星》周杰伦 / 杨瑞代 / 周杰伦 [实测]
+    func testTwoSingerDuetRoster() {
+        let lrc = """
+        [00:00.29]圣诞星 (feat. 杨瑞代) - 周杰伦
+        [00:02.20]词：周杰伦
+        [00:16.02]周杰伦：
+        [00:17.34]驯鹿的响铃 和雪花的相遇
+        [01:43.00]杨瑞代：
+        [01:45.00]第二位唱的
+        [01:57.45]周杰伦：
+        [01:59.00]又轮回来
+        """
+        let lines = lyricLines(LyricParser.parse(lrc))
+        XCTAssertEqual(lines.map(\.text), ["驯鹿的响铃 和雪花的相遇", "第二位唱的", "又轮回来"])
+        XCTAssertEqual(lines.map { $0.vocalist?.index }, [0, 1, 0])
+    }
+
+    /// 有名册也不改变行内前缀那类行的解释：判据是「冒号后有没有内容」，与名册无关
+    func testInlineSpeakerPrefixIsNotACue() {
+        let lrc = """
+        [00:00.00]G-DRAGON：
+        [00:02.00]第一句
+        [00:06.00]权志龙 G-DRAGON：Let's go
+        """
+        let lines = lyricLines(LyricParser.parse(lrc))
+        XCTAssertEqual(lines.map(\.text), ["第一句", "权志龙 G-DRAGON：Let's go"])
+        XCTAssertEqual(lines[1].vocalist?.name, "G-DRAGON", "它归属于上方那条提示，而不是自成一条")
+    }
+
+    /// 空值的制作残行（`编曲：`）不是人名：按制作信息摘，不进名册
+    func testEmptyValueCreditKeyIsNotAVocalist() {
+        let lrc = """
+        [00:00.00]编曲：
+        [00:02.00]词：某人
+        [00:20.00]正文
+        """
+        let lines = lyricLines(LyricParser.parse(lrc))
+        XCTAssertEqual(lines.map(\.text), ["正文"])
+        XCTAssertNil(lines[0].vocalist)
+    }
+
+    /// 末行孤零零一个「XX：」管不到任何正文：整份名册作废，别把独唱歌判成对唱
+    func testLoneTrailingCueDoesNotMakeADuet() {
+        let lrc = """
+        [00:00.00]第一句
+        [00:04.00]第二句
+        [00:08.00]某某：
+        """
+        let lines = lyricLines(LyricParser.parse(lrc))
+        XCTAssertEqual(lines.map(\.text), ["第一句", "第二句", "某某："])
+        XCTAssertTrue(lines.allSatisfy { $0.vocalist == nil })
+    }
+
+    /// 前奏长度按第一条**排得上屏**的行算
+    /// [实测] BIGBANG 首条提示行 12.85、首句 14.10——按提示行算会把前奏截短 1.25 秒
+    func testLeadingInterludeIgnoresAgentCue() {
+        let lines = LyricParser.parse(Self.bangBangBang)
+        XCTAssertEqual(lines[0].kind, .interlude)
+        XCTAssertEqual(lines[0].end, 14.10, accuracy: 0.001)
+    }
+
+    /// 提示行不参与间奏判定：它夹在长空白里时，间奏要接到真正的下一句
+    func testAgentCueDoesNotSplitInterlude() {
+        let lrc = """
+        [00:00.00]第一句
+        [00:10.00]某某：
+        [00:20.00]第二句
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lines.map(\.kind), [.lyric, .interlude, .lyric])
+        XCTAssertEqual(lines[1].end, 20.0, accuracy: 0.001)
+    }
+
+    /// 《BANG BANG BANG》开头那一段，QQ 原文 [实测]
+    private static let bangBangBang = """
+    [00:00.97]BANG BANG BANG (뱅뱅뱅) - BIGBANG (빅뱅)
+    [00:02.13]词：TEDDY/G-DRAGON/T.O.P
+    [00:03.41]曲：TEDDY/G-DRAGON
+    [00:04.41]编曲：TEDDY
+    [00:12.85]TAEYANG：
+    [00:14.10]난 깨어나 까만 밤과 함께
+    [00:17.56]다 들어와 담엔 누구 차례
+    [00:27.73]T.O.P：
+    [00:28.65]찌질한 분위기를 전환해
+    [00:43.04]승리：
+    [00:43.55]난 불을 질러
+    [00:54.74]G-DRAGON：
+    [00:55.29]총 맞은 것처럼
+    [01:26.29]대성：
+    [01:26.93]널 데려가 지금 이 순간에
+    [01:55.93]TAEYANG：
+    [01:56.30]난 불을 질러
+    """
 }

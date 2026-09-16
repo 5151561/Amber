@@ -294,6 +294,17 @@ struct LyricLine: Identifiable, Hashable, Sendable {
         case credits
     }
 
+    /// 这一行由谁唱。
+    ///
+    /// 来源是歌词里那些**独立成行、冒号后为空**的歌手提示行（`TAEYANG：`、`周杰伦：`）——
+    /// QQ 用它标下一段换人了。提示行本身不上屏，它标出来的归属留在这里。
+    struct Vocalist: Hashable, Sendable {
+        /// 提示行里的原样写法（`T.O.P`、`周杰伦`）。
+        let name: String
+        /// 在本首歌名册里的位置，按**首次出现序**。同一个人的所有行同号。
+        let index: Int
+    }
+
     let index: Int
     let time: TimeInterval
     /// 本行唱完的时刻。Music 是「唱完就翻页、到点才高亮」，翻页依据是它而不是下一行的起点。
@@ -305,12 +316,15 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     /// 逐字时间轴；为空表示这行只有整行时间。
     let syllables: [LyricSyllable]
     let kind: Kind
+    /// 唱这一行的人。`nil` = 这首歌没有歌手提示行，或这行排在第一条提示之前。
+    let vocalist: Vocalist?
 
     var id: Int { index }
 
     init(index: Int, time: TimeInterval, end: TimeInterval, text: String,
          translation: String? = nil, transliteration: String? = nil,
-         syllables: [LyricSyllable] = [], kind: Kind = .lyric) {
+         syllables: [LyricSyllable] = [], kind: Kind = .lyric,
+         vocalist: Vocalist? = nil) {
         self.index = index
         self.time = time
         self.end = end
@@ -319,6 +333,7 @@ struct LyricLine: Identifiable, Hashable, Sendable {
         self.transliteration = transliteration
         self.syllables = syllables
         self.kind = kind
+        self.vocalist = vocalist
     }
 }
 
