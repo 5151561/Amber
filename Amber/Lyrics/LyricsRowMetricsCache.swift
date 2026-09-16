@@ -16,7 +16,7 @@ import AppKit
 /// (文本, 字体, 宽度) 第一次出现时建一次，之后连 `rebuild` 一起复用。
 ///
 /// **结果与不带缓存时逐像素相同**：命中与否返回的是同一批 `RowMetrics` 值，
-/// 没有任何近似或重新计算（对照断言见 `LyricsKitTests.testMeasureRowsMatchesCoreTextReference`）。
+/// 没有任何近似或重新计算（对照断言见 `LyricsLineGeometryTests.testMeasureRowsMatchesCoreTextReference`）。
 enum LyricsRowMetricsCache {
 
     /// 上限与 `LyricsTextLayout.wrapCacheLimit` 同量级：一行正文一条，
