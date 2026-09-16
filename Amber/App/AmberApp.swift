@@ -371,6 +371,29 @@ extension AppDelegate {
                 }
             }
         }
+        // 歌单页同上：`-playlistdemo [-q 关键词]`，再带`-playlistabout` 就把简介末行
+        // 那枚「更多」按一下（弹 `AboutPanel`）。
+        if arguments.contains("-playlistdemo") {
+            Task {
+                let provider = appState.provider(appState.selectedProvider)
+                var keyword = "华语流行"
+                if let qi = arguments.firstIndex(of: "-q"), qi + 1 < arguments.count {
+                    keyword = arguments[qi + 1]
+                }
+                let playlist = (try? await provider.searchPlaylists(keyword: keyword,
+                                                                    limit: 5, offset: 0))?.first
+                guard let playlist else { return }
+                await MainActor.run { appState.push(.playlist(playlist)) }
+                guard arguments.contains("-playlistabout") else { return }
+                try? await Task.sleep(for: .seconds(4))
+                await MainActor.run {
+                    guard let root = NSApp.keyWindow?.contentView,
+                          let header = Self.findView(of: PlaylistHeaderView.self, in: root)
+                    else { return }
+                    header.debugPresentAbout()
+                }
+            }
+        }
         // 艺人页同上（阶段 4 最后一批换成 AppKit）：`-artistdemo [-q 关键词]`。
         if arguments.contains("-artistdemo") {
             Task {

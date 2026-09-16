@@ -137,7 +137,8 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
 
     // MARK: - 介绍面板
 
-    /// 艺人页 hero 上那枚 ⓘ、专辑页头简介末行的「更多」点开的那张卡（`AboutPanel.swift`）。
+    /// 艺人页 hero 上那枚 ⓘ、专辑页头与歌单页头简介末行的「更多」点开的那张卡
+    /// （`AboutPanel.swift`）。
     /// 挂在窗口根上、盖在所有东西之上，与迷你播放器/整窗播放器/toast 同一套做法。
     /// 面板本身是 AppKit 覆盖层而不是 sheet，理由写在 `AboutPanelOverlayView` 的注释里。
     private var aboutOverlay: AboutPanelOverlayView?
