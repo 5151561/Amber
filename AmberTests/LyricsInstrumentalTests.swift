@@ -39,17 +39,45 @@ final class LyricsInstrumentalTests: XCTestCase, LyricsKitFixtures {
         XCTAssertTrue(layer.breathDuration.isInfinite)
     }
 
-    /// 点阵的时间窗与行的可见寿命是**对齐**的，这条不变量靠间奏行的两个字段成立：
+    /// 点阵的原点是**行张开**那一刻，不是撑开落定那一刻。
     ///
-    /// - `startTime` = 展开动画跑完那一刻 —— 点在它之后 1.0 s 才浮出来
-    ///   （`firstDotDelay`，[PX] 实测「撑开完全落定之后」，见
-    ///   `testInstrumentalInitialAppearanceMatchesAssembly`）；
+    /// 两者差一个展开动画（`scrollLead ≈ 0.89 s`）。合成一个字段的话点会白等它一次：
+    /// 5 秒的间奏里「点真正在动」的窗口（第一个点亮起 → 淡出起跑）从 2.2 秒
+    /// 塌到 0.4 秒，而一个点淡入就要 `initialDotAnimationDuration`（0.8 秒）。
+    /// 呼吸门槛跟着从「空档 ≥ 5.8 s」抬到 ≥ 7.6 s——门槛变长就是这条断了的信号。
+    func testInstrumentalDotsAreAnchoredOnWhenTheRowOpens() throws {
+        let lead = LyricsSpecs().scrollLead
+        // 一段 5 秒空档经适配层之后：张开 0、落定 lead、收起 5 − lead。
+        let source = [
+            LyricLine(index: 0, time: 0, end: 8, text: "上一句"),
+            LyricLine(index: 1, time: 8, end: 13, text: "", kind: .interlude),
+            LyricLine(index: 2, time: 13, end: 18, text: "下一句"),
+        ]
+        let line = LyricsAdapter.makeLyrics(from: source, handover: lead).lines[1]
+        let instrumental = try XCTUnwrap(line as? InstrumentalLine)
+        XCTAssertEqual(try XCTUnwrap(instrumental.openTime), 8, accuracy: 1e-9, "行张开 = 空档起点")
+        XCTAssertEqual(instrumental.startTime, 8 + lead, accuracy: 1e-9, "落定晚一个展开动画")
+
+        let layer = InstrumentalContentLayer()
+        layer.line = instrumental
+        layer.makeDots()
+        layer.reset()
+        XCTAssertEqual(layer.openStartTime, 8, accuracy: 1e-9)
+
+        // 「点真正在动」的窗口：第一个点亮起 → 淡出起跑。
+        let active = (instrumental.endTime - InstrumentalContentLayer.fadeOutLeadTime)
+            - (layer.openStartTime + InstrumentalContentLayer.firstDotDelay)
+        XCTAssertGreaterThan(active, InstrumentalContentLayer.initialDotAnimationDuration,
+                             "窄到装不下一个点的淡入就是塌了")
+    }
+
+    /// 点阵的时间窗与行的可见寿命是**对齐**的，这条不变量靠间奏行的三个字段成立：
+    ///
+    /// - `openTime` = 行张开那一刻（行高瞬时变 40，点从这里起就在屏幕上）——
+    ///   `firstDotDelay` 的 1.0 秒从它量（[PX]：行 3.13 开始 / 3.67 落定 / 点 4.05）；
+    /// - `startTime` = 展开动画跑完那一刻，选行状态机读的是它；
     /// - `endTime` = 收起动画**起跑**那一刻（间奏行被淘汰、行高 40 → 0）。
     ///   收起是瞬时落值，点会被当场切掉，所以淡出必须整段落在它之前。
-    ///
-    /// 两个数由 `LyricsAdapter` 给出（空档两头各让一个翻行的量）。让错了这条就断：
-    /// 早先 `endTime` 是「下一句开唱」，而收起发生在它前 0.1 s ——
-    /// 只是碰巧那 0.1 s 还在淡完之后；余量从 0.4 s 变成现在的 0.5 s。
     func testInstrumentalDotsFinishFadingBeforeTheRowCollapses() {
         let layer = InstrumentalContentLayer()
         var line = InstrumentalLine()

@@ -168,6 +168,17 @@ extension SyncedLyricsViewController {
               let target = manager.scrollTargetLineView(at: manager.currentElapsedTime())
                 ?? manager.selectedLineViews.last
         else { return }
+        // 打开着的间奏行由 `animateInstrumentalExpansion` 自己落位——展开期间视口
+        // 一格不动（§16.3 的理由二、commit 789d029）。这和 `followScrollTarget` 里
+        // `plan.view !== instrumentalBreakVisibleView` 是同一道闸，只是那边管每帧、
+        // 这边管重排顺带的那次滚动。
+        //
+        // 间奏行准入的**同一帧**上一句就会被淘汰（集合这才满 2），
+        // 而 `deselectLine → relayout → 这里` 的锚点正是刚展开的那一行。
+        // 没有这道闸也能靠三重巧合躲过去（`moved` 为空、`targetOrigin` 对打开的
+        // 间奏行按 0 高算、死区判定排在 `scrollAnimationGeneration` 推进之前），
+        // 但那三条哪条松了都会变成 789d029 那种闪动——写成闸，别指望巧合。
+        guard target !== manager.instrumentalBreakVisibleView else { return }
         scroll(toLineView: target, animation: animation, animated: animated)
     }
 

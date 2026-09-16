@@ -278,7 +278,9 @@ final class LyricParserTests: XCTestCase {
         XCTAssertEqual(lines.count, 1)
         XCTAssertEqual(lines[0].text, "故事的小黄花")
         XCTAssertEqual(lines[0].time, 10.0, accuracy: 0.001)
-        XCTAssertEqual(lines[0].end, 12.0, accuracy: 0.001)
+        // 行槽声明的是 2.0 秒，最后一个音节却唱到 12.4 —— **以音节为准**。
+        // 照行槽算的话这一行在它自己最后一个字唱完之前就算「结束」了。
+        XCTAssertEqual(lines[0].end, 12.4, accuracy: 0.001)
         XCTAssertEqual(lines[0].syllables.count, 6)
         XCTAssertEqual(lines[0].syllables[0].text, "故")
         XCTAssertEqual(lines[0].syllables[1].time, 10.4, accuracy: 0.001)
@@ -466,6 +468,35 @@ final class LyricParserTests: XCTestCase {
         // 间奏从上一句唱完接到下一句起点
         XCTAssertEqual(lines[1].time, lines[0].end, accuracy: 0.001)
         XCTAssertEqual(lines[1].end, 60.0, accuracy: 0.001)
+    }
+
+    /// 「这一句唱完没有」以**音节**为准，不是行头那个 `[start,duration]`。
+    ///
+    /// 行槽可以把尾部留白也算进去，也可以（如实测的晴天那条）短于自己的音节。
+    /// 它决定上一句什么时候变暗、间奏行从哪一刻起算，所以不能拿槽长顶替。
+    func testLineEndsAtTheLastSyllableNotTheDeclaredSlot() {
+        // 槽声明 5 秒，实际唱到 10 + 1.2 = 11.2。首句在 10 秒，开头那条前奏占下标 0。
+        let qrc = "[10000,5000]短(10000,600)句(10600,600)"
+        let lines = LyricParser.parse(qrc)
+        XCTAssertEqual(lines.map(\.kind), [.interlude, .lyric])
+        XCTAssertEqual(lines[1].end, 11.2, accuracy: 0.001)
+    }
+
+    /// 带尾部留白的行槽会把真·间奏吃掉一截 —— 以音节为准之后才认得出来。
+    ///
+    /// 槽是 `[10000,8000]`（到 18 秒），音节 11.6 秒就唱完；下一句在 17 秒。
+    /// 照槽算空档是 0（还被下一句起点截住），一行间奏都插不出来；
+    /// 照音节算是 5.4 秒，够 `interludeMinGap` 的门槛。
+    func testPaddedLineSlotStillDetectsTheInterlude() {
+        let qrc = """
+        [10000,8000]短(10000,800)句(10800,800)
+        [17000,2000]下(17000,300)句(17300,300)
+        """
+        let lines = LyricParser.parse(qrc)
+        XCTAssertEqual(lines.map(\.kind), [.interlude, .lyric, .interlude, .lyric],
+                       "开头 10 秒前奏 + 中间 5.4 秒间奏")
+        XCTAssertEqual(lines[2].time, 11.6, accuracy: 0.001)
+        XCTAssertEqual(lines[2].end, 17.0, accuracy: 0.001)
     }
 
     func testShortGapIsNotInterlude() {

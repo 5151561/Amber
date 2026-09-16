@@ -777,15 +777,21 @@ enum LyricParser {
     private static func assemble(_ raw: [RawLine], translation: [RawLine],
                                  transliteration: [RawLine],
                                  credits: Credits) -> [LyricLine] {
-        // 先算每行的结束时刻：QRC 有现成的，LRC 按字数估，且不越过下一行起点。
+        // 先算每行的结束时刻：有逐字就按音节，否则用行槽声明的时长，再否则按字数估；
+        // 一律不越过下一行起点。
+        //
+        // **逐字排在 `declaredDuration` 前面**：行头那个 `[start,duration]` 是行**槽**
+        // 的长度，可以把尾部留白也算进去；而这里要的是「这一句唱完没有」——它决定
+        // 上一句什么时候变暗、间奏行从哪一刻起算，还决定 `interludeMinGap` 那道
+        // 「空得够不够久」的检测。拿行槽去量，带留白的行会把真·间奏吃掉一截。
         var ends: [TimeInterval] = []
         for (offset, line) in raw.enumerated() {
             let nextStart = offset + 1 < raw.count ? raw[offset + 1].time : .greatestFiniteMagnitude
             let estimated: TimeInterval
-            if let declared = line.declaredDuration, declared > 0 {
-                estimated = declared
-            } else if let last = line.syllables.last {
+            if let last = line.syllables.last {
                 estimated = max(last.end - line.time, minLineDuration)
+            } else if let declared = line.declaredDuration, declared > 0 {
+                estimated = declared
             } else {
                 estimated = max(minLineDuration, Double(line.text.count) * secondsPerCharacter)
             }

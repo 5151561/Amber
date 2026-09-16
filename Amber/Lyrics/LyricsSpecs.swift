@@ -199,6 +199,16 @@ struct LyricsSpecs {
     var hideTranslationTransliterationSpringParameters =
         SpringAnimationParameters(mass: 1, stiffness: 130, damping: 30)  //[实测]
 
+    /// 一次翻行滚动跑完要多久。`[补]`
+    ///
+    /// 全模块只有这一个「一次翻行的量」：焦点位提前它这么久让位、句间空档比它窄时
+    /// 把弹簧压进空档、间奏行两头各留它这么宽的进出场余量（`LyricsAdapter`）。
+    /// 三处必须是同一个数，所以收到这里算一次，别各自去读弹簧。
+    ///
+    /// **不要放进每帧路径**：`settlingDuration` 每次都现造一个`CASpringAnimation`。
+    /// 按帧读的那一份存在 `SyncedLyricsManager.Configuration.scrollLead`。
+    var scrollLead: TimeInterval { lineChangeSpringTimingParameters.settlingDuration }
+
     init() {}
 
     /// 叠 bold trait（原版的 `fontDescriptorWithSymbolicTraits: 2`）。取不到粗体时退回原字体。

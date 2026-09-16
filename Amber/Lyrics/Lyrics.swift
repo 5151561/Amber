@@ -156,8 +156,30 @@ struct TextLine: LyricsLine, Sendable {
 /// `lyricsDirection: Lyrics.Direction`（§15.2）。这里的`index` 就是原版的`lineIndex`。
 struct InstrumentalLine: LyricsLine, Sendable {
     var index: Int = 0
+    /// **展开动画跑完、行完全张开那一刻。**
+    ///
+    /// 选行状态机（准入 / 淘汰 / 焦点位）读的是它：准入在`startTime − scrollLead`
+    /// 触发，而展开就是在准入那一刻起跑的，跑完正好落在这里（见 `LyricsAdapter`）。
     var startTime: TimeInterval = 0
+    /// **收起动画起跑那一刻**（行高 40 → 0，同一次重排把视口滚向下一句）。
     var endTime: TimeInterval = 0
+    /// **行开始张开那一刻** —— 三个点的时间窗以它为原点。`[补]`
+    ///
+    /// 与 `startTime` 差一个展开动画：行高是**瞬时**落到 40 的（重排只动`position`），
+    /// 所以点从这一刻起就在屏幕上，`startTime` 才是它们停稳的时刻。
+    ///
+    /// 两个数必须分开，不能让点阵拿 `startTime` 顶替：`[PX] 2026-09-04` 逐帧量 Music
+    /// 那一段间奏 —— 行在 t=3.13 **开始**、撑开 3.67 落定、点 t≈4.05 才往上走 ——
+    /// `firstDotDelay`（1.0）量的是 **3.13 那个起点**，不是 3.67。合成一个字段的话
+    /// 点会白等一个 `scrollLead`：5 秒的间奏里真正在动的窗口只剩 0.4 秒，
+    /// 而一个点淡入就要 0.8 秒。
+    ///
+    /// 前奏行没有「上一句」要等，展开不占前面的时间，所以它 `== startTime`。
+    ///
+    /// 可选是因为 0 是**合法值**（前奏行就从 0 开始），拿 0 当「没填」会把前奏之外
+    /// 的行全部把原点拉到歌曲开头。没填就退回 `startTime`（等于「不留展开余量」，
+    /// 也就是这个字段出现之前的行为）。
+    var openTime: TimeInterval?
     /// 这一行的书写方向。三点整排靠哪一边就看它（§13.6）。
     var lyricsDirection: Lyrics.Direction = .leftToRight
     init() {}

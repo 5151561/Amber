@@ -119,6 +119,17 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
     private var activeAnimators: [LayerPropertyAnimator] = []
     private var animationGeneration = 0
 
+    /// 时间窗的原点：**行张开那一刻**（`InstrumentalLine.openTime`）。
+    ///
+    /// 不是 `startTime`——那是撑开**落定**的时刻，两者差一个展开动画。行高是瞬时
+    /// 落到 40 的，点从张开那一刻起就在屏幕上，`firstDotDelay` 的 1.0 秒也是从这里量的
+    /// （`[PX]`：行 3.13 开始 / 3.67 落定 / 点 4.05 才亮，1.0 对的是 3.13）。
+    ///
+    /// 没填（手搭的行、非间奏行）就退回 `startTime`。
+    var openStartTime: TimeInterval {
+        (line as? InstrumentalLine)?.openTime ?? line?.startTime ?? 0
+    }
+
     // MARK: 常量
 
     /// 尾部留给淡出的时间。行内所有推导都用 `endTime - fadeOutLeadTime` 当「有效终点」。
@@ -228,10 +239,11 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
     /// 是按这一行自己的时长现算的：
     ///
     /// ```
+    /// start'            = openTime                      // 行张开那一刻，见 `openStartTime`
     /// end'              = endTime − 1.8
-    /// span              = end' − startTime
+    /// span              = end' − start'
     /// breathDuration    = span / floor(span / 4) / 2
-    /// dotFadeInDuration = (end' − startTime − 1.0) / dotCount
+    /// dotFadeInDuration = (end' − start' − 1.0) / dotCount
     /// ```
     ///
     /// `floor(span / 4)` 是整个间奏塞得下几次完整呼吸（每次约 4 秒），
@@ -246,14 +258,15 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
         animationGeneration &+= 1
         activeAnimators.removeAll()
 
+        let start = openStartTime
         let effectiveEnd = line.endTime - Self.fadeOutLeadTime
-        let span = effectiveEnd - line.startTime
+        let span = effectiveEnd - start
 
         let breaths = (span / Self.breathCycleTarget).rounded(.down)
         breathDuration = span / breaths / 2
 
         let count = specs.instrumentalBreakCountdownDotCount
-        dotFadeInDuration = (effectiveEnd - (line.startTime + Self.firstDotDelay)) / Double(count)
+        dotFadeInDuration = (effectiveEnd - (start + Self.firstDotDelay)) / Double(count)
 
         totalDotsCompleted = 0
         totalBreathsCompleted = 0
@@ -300,7 +313,7 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
 
         totalDotsFadedIn = 0
         let count = specs.instrumentalBreakCountdownDotCount
-        let firstDotTime = line.startTime + Self.firstDotDelay
+        let firstDotTime = openStartTime + Self.firstDotDelay
         let activeCount: Int
         if elapsed < firstDotTime || !dotFadeInDuration.isFinite || dotFadeInDuration <= 0 {
             activeCount = 0
@@ -333,7 +346,7 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
                 delay: Self.breathAnimationDelay,
                 scale: Self.breathScaleRange.upperBound))
             lastBreathScale = Self.breathScaleRange.upperBound
-            totalBreathsCompleted = max(Int((elapsed - line.startTime) / breathDuration) + 1, 1)
+            totalBreathsCompleted = max(Int((elapsed - openStartTime) / breathDuration) + 1, 1)
         } else {
             // 间奏短于 5.8 秒时呼吸这一档整个失效（§3.2 的 `+inf`）。点仍然要停在
             // 大的那一档——早先是靠那条无限时长动画的副作用（`finishDispatch` 立刻
@@ -356,7 +369,7 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
 
         let count = specs.instrumentalBreakCountdownDotCount
         let effectiveEnd = line.endTime - Self.fadeOutLeadTime
-        let firstDotTime = line.startTime + Self.firstDotDelay
+        let firstDotTime = openStartTime + Self.firstDotDelay
 
         // 正常选中路径会先调 prepare；保留这条自愈，避免调用方漏掉交接时
         // 状态机永远卡在 `totalDotsFadedIn == nil`。
@@ -402,7 +415,7 @@ final class InstrumentalContentLayer: CALayer, SyncedLyricsContentLayer {
         // 漏掉的话会下发一条 `duration = inf` 的缩放动画，点从此冻在当前那一帧的
         // 大小上不再动，间奏长短不同就冻在不同尺寸——看着就是「大小随机」。
         let canBreathe = breathDuration.isFinite && breathDuration > Self.breathAnimationTrim
-        let breaths = canBreathe ? Int((elapsed - line.startTime) / breathDuration) + 1 : 0
+        let breaths = canBreathe ? Int((elapsed - openStartTime) / breathDuration) + 1 : 0
         if canBreathe, !fadeOutCued, totalBreathsCompleted < breaths {
             // [实测] 按应完成半周期数的奇偶在 1.2 / 0.9 之间选。
             // 这里改成从上一拍翻面：等价于奇偶，但中途 seek 进来也不会撞上

@@ -224,6 +224,10 @@ extension SyncedLyricsVisualExperienceManager {
     ///
     /// 比的是 `endTime` 而不是最后一个音节：行盒的结束就是这一行占住时间轴的范围，
     /// 让位要让的也是这个范围。
+    ///
+    /// **间奏行不用特判**：它两侧的空档由 `LyricsAdapter` 保证各有一整条`scrollLead`
+    /// （解析器给的间奏占满整段空档、两头贴死，那样这里两边都会算出 0——
+    /// 进间奏变成提前一整条起跑、出间奏变成瞬时跳格，正好是反的）。
     func handoverDuration(from current: any LyricsLine,
                           to next: any LyricsLine) -> TimeInterval {
         let gap = next.startTime - current.endTime
@@ -260,13 +264,26 @@ extension SyncedLyricsVisualExperienceManager {
                                            useSpecsSpring: lyrics?.type != .timedWords,
                                            settlingIn: plan.duration)
         viewController.scrollFocus(to: plan.view, animation: anim)
-        if plan.view.lineLayer?.isSelected != true {
-            if plan.view.isHighlighted { plan.view.isHighlighted = false }
-            plan.view.setAccessibilitySelected(true)
-            plan.view.lineLayer?.apply(selected: true, animation: anim)
-            startWordProgress(on: plan.view, animated: anim != nil)
-            setBlurRadius(0, on: plan.view, animated: true)
-        }
+        adoptScrollTarget(plan.view, animation: anim)
+    }
+
+    /// 焦点位落到某一行时的外观补偿：滚动**起跑**那一刻这一行就该清晰、亮起。
+    ///
+    /// 两个调用方共用：每帧的 `followScrollTarget`，以及 `deselectLine`——
+    /// 收起间奏行那一路自己带着一次滚动（`relayout` 的`defer`），
+    /// 焦点位要在那里当场登记，否则下一帧 `followScrollTarget` 会认为目标换了、
+    /// 对同一个目标**再滚一次**（第二条弹簧还会把速度清零，把动势抹平）。
+    ///
+    /// 已经亮着的行只登记焦点位、不重复下发外观——普通行淘汰时走的就是这一支。
+    func adoptScrollTarget(_ view: SyncedLyricsLineView,
+                           animation: SyncedLyricsLineLayer.SelectionAnimation?) {
+        scrollTargetView = view
+        guard view.lineLayer?.isSelected != true else { return }
+        if view.isHighlighted { view.isHighlighted = false }
+        view.setAccessibilitySelected(true)
+        view.lineLayer?.apply(selected: true, animation: animation)
+        startWordProgress(on: view, animated: animation != nil)
+        setBlurRadius(0, on: view, animated: true)
     }
 
     /// 把翻行弹簧压成「跑完只要 `duration`」的那一条。
@@ -321,6 +338,8 @@ extension SyncedLyricsVisualExperienceManager {
                 FileHandle.standardError.write(Data(msg.utf8))   // stdout 是块缓冲的，走 stderr
             }
             #endif
+            lyricsDebugLog("展开间奏 \(line.index) [\(line.startTime)…\(line.endTime)]"
+                + " t=\(currentElapsedTime()) 提前=\(line.startTime - currentElapsedTime())")
             let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
@@ -344,7 +363,9 @@ extension SyncedLyricsVisualExperienceManager {
         // 焦点位轮不轮得到这一句，由 `scrollFocusPlan` 说了算（新行还没入列，一起传进去）。
         // 轮不到——正在唱的那句还没让位——就只换外观入列，滚动交给每帧的 `followScrollTarget`。
         let plan = scrollFocusPlan(in: selectedLineViews + [view], at: currentElapsedTime())
-        lyricsDebugLog("select line \(line.index), plan=\(plan?.view.lineLayer?.line?.index ?? -1), isSame=\(plan?.view === view)")
+        lyricsDebugLog("select line \(line.index) [\(line.startTime)…\(line.endTime)]"
+            + " t=\(currentElapsedTime()) 提前=\(line.startTime - currentElapsedTime())"
+            + " plan=\(plan?.view.lineLayer?.line?.index ?? -1), isSame=\(plan?.view === view)")
         scrollTargetView = plan?.view
         guard plan?.view === view else {
             let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: line) : 0
@@ -623,6 +644,9 @@ extension SyncedLyricsVisualExperienceManager {
         guard let anchor = scrollTargetLineView(at: currentElapsedTime()) ?? selectedLineViews.first,
               let viewController, let scrollView = viewController.scrollView
         else { return }
+        // 下面那次 `relayout` 的 `defer { scrollToSelectedLine }` 就是冲着 `anchor`
+        // 去的——焦点位当场登记，顺带补上「起跑即亮起」。
+        adoptScrollTarget(anchor, animation: animation)
         let target = viewController.targetOrigin(for: anchor)       //，§2.5
         let span = CGRect(origin: target, size: .zero)
             .union(scrollView.documentVisibleRect)
