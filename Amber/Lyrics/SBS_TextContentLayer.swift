@@ -385,7 +385,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         if fraction >= 1.0 {
             frame.size.width = padding + feather + transliterationWidth
         } else {
-            frame.size.width = transliterationWidth * CGFloat(fraction) + feather * 0.25
+            frame.size.width = transliterationWidth * CGFloat(fraction) + feather
         }
         transliterationGradient.frame = frame
     }

@@ -1767,7 +1767,7 @@ final class LyricsKitTests: XCTestCase {
         let width = LineProgressGradientGeometry.finishedWidth(
             lastWordMinX: 120, lastSyllableMaxX: 40,
             verticalPadding: 6, specs: specs())
-        XCTAssertEqual(width, 6 + 30 + 160)
+        XCTAssertEqual(width, 6 + 16 + 160)
     }
 
     /// 纵向余量要罩住强调峰值（1.14 倍）与半径 5 的辉光。
@@ -1788,7 +1788,7 @@ final class LyricsKitTests: XCTestCase {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: .notStarted, progress: 0, verticalPadding: 6, specs: specs())
         XCTAssertEqual(geom.width, 0)
-        XCTAssertEqual(geom.feather, 30)
+        XCTAssertEqual(geom.feather, 16)
     }
 
     /// 音节间停顿阶段：遮罩前沿不得越过下一个未唱音节的起始坐标，
@@ -1825,11 +1825,11 @@ final class LyricsKitTests: XCTestCase {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state, progress: 13, verticalPadding: 6, specs: specs())
 
-        // 羽化恒为 30pt
-        XCTAssertEqual(geom.feather, 30)
-        // 遮罩右端 207.5 严格不越过“你”的起始位置 208，alpha 在 >= 207.5 为 0，“你”零高亮泄漏
+        // 羽化恒为 16pt
+        XCTAssertEqual(geom.feather, 16)
+        // 遮罩右端 208 严格不越过“你”的起始位置 208，alpha 在 >= 208 为 0，“你”零高亮泄漏
         XCTAssertLessThanOrEqual(geom.width, secondWord.frame.minX)
-        XCTAssertEqual(geom.width, 200 + 7.5, accuracy: 1e-6)
+        XCTAssertEqual(geom.width, 208, accuracy: 1e-6)
     }
 
     /// 连贯歌唱中：前后音节的交界严格连续（startWidth(N+1) == targetWidth(N)），匀速平滑推进，绝不锁死或跳跃。
@@ -1865,7 +1865,7 @@ final class LyricsKitTests: XCTestCase {
         let state1 = layoutLine.progressState(at: 11.5)
         let geom1 = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state1, progress: 11.5, verticalPadding: pad, specs: s)
-        XCTAssertEqual(geom1.feather, 30)
+        XCTAssertEqual(geom1.feather, 16)
         // start(100) + (140 - 100) * 0.75 = 130
         XCTAssertEqual(geom1.width, 130, accuracy: 1e-6)
 
@@ -1901,7 +1901,7 @@ final class LyricsKitTests: XCTestCase {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state, progress: 12.0, verticalPadding: pad, specs: s)
 
-        XCTAssertEqual(geom.feather, 30)
+        XCTAssertEqual(geom.feather, 16)
         XCTAssertEqual(geom.width, expectedTarget)
     }
 
@@ -1927,7 +1927,7 @@ final class LyricsKitTests: XCTestCase {
         let expectedWidth = LineProgressGradientGeometry.finishedWidth(
             lastWordMinX: 50, lastSyllableMaxX: 50, verticalPadding: 6, specs: specs())
         XCTAssertEqual(geom.width, expectedWidth)
-        XCTAssertEqual(geom.feather, 30)
+        XCTAssertEqual(geom.feather, 16)
     }
 
     // MARK: - §7.2 逐字走查

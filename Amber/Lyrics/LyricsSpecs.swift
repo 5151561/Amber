@@ -126,7 +126,7 @@ struct LyricsSpecs {
     var glowColor: NSColor = .white                               //[实测]
     var glowRadius: CGFloat = 5                                   //[实测]
     var glowRange: ClosedRange<Double> = 0...0.4                  //[实测] 逐词强度
-    var lineProgressionGradientFeather: CGFloat = 30              //[实测] 软边宽度
+    var lineProgressionGradientFeather: CGFloat = 16              // 软边宽度（从 30 收窄到 16，保留流光感同时减轻音节滞后）
     var touchDownTransform = CGAffineTransform(scaleX: 0.95, y: 0.95) //[实测]
 
     // MARK: 悬停 / 点击

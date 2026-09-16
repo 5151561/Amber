@@ -294,7 +294,7 @@ enum LineProgressGradientGeometry {
         }
 
         let physicalGap = max(0, nextMinX - sylMaxX)
-        let lead = min(specs.lineProgressionGradientFeather * 0.25, physicalGap)
+        let lead = min(specs.lineProgressionGradientFeather, physicalGap)
         return sylMaxX + lead
     }
 
