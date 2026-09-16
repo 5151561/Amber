@@ -299,6 +299,11 @@ enum LineProgressGradientGeometry {
     }
 
     /// 音节开唱时的遮罩右端起始坐标。
+    ///
+    /// - Note: 首音节起点**严格等于 `sylMinX`，绝不叠加 `feather`**。
+    ///   渐变软边 [w - feather, w] 只有在 w > sylMinX 时才开始扫入字形；
+    ///   若在此叠加 feather，在 ratio == 0（未开唱或暂停跳转到行起点）时
+    ///   前沿将深入音节内部 16pt，首字母最左侧直接暴露在 alpha = 1.0 实心区中造成提前亮起。
     static func startWidth(for layoutLine: SyncedLyricsLineLayer.LayoutLine,
                            wordIndex: Int,
                            syllableIndex: Int,
