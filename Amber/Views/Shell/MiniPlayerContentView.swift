@@ -1920,9 +1920,11 @@ private final class MPProgressBar: NSView {
 
     override func mouseUp(with event: NSEvent) {
         let target = value(at: event)
+        // 先 seek 再松开 `dragValue`：`seek` 会同步把进度推到目标点，
+        // 反过来就是先把条摆回旧 `progress`、再跳过去。
+        onScrub?(target)
         dragValue = nil
         layoutBars()
-        onScrub?(target)
     }
 
     private func value(at event: NSEvent) -> Double {

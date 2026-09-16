@@ -858,9 +858,9 @@ final class PlayerController: ObservableObject {
         let tolerance = precise ? CMTime.zero : CMTime(seconds: 0.3, preferredTimescale: 600)
         // 交叠期间 `current` 就是用户正在听的那一首（退场那一路）：拖进度条动的是它，
         // 已经在响的新歌由 `suppressFadeIfSeekedIntoTail` 决定撤不撤。
-        current.player.seek(
-            to: CMTime(seconds: target, preferredTimescale: 600),
-            toleranceBefore: tolerance, toleranceAfter: tolerance)
+        // 走 deck 的 seek 而不是 `player.seek`：deck 会记下「这一次还没落点」，
+        // 落点之前时间观察器报的旧位置一律不认（见 `PlaybackDeck.isSeekPending`）。
+        current.seek(to: CMTime(seconds: target, preferredTimescale: 600), tolerance: tolerance)
         currentTime = target
         // 往回拖到「停止时间」之前，这一首就该能再放到那儿一次（单曲循环也走这条：
         // `handleTrackEnded` 的`.one` 分支就是`seek(to: 0)`）。
@@ -880,6 +880,10 @@ final class PlayerController: ObservableObject {
     /// `clock.time` 是 10 Hz 采样，够界面用，但同步歌词按显示刷新率走查
     /// （逐字渐变、行末补完都吃这个精度），所以直接问播放器。
     var elapsedTime: TimeInterval {
+        // seek 未落点时播放器报的还可能是旧位置，歌词会「先弹回旧位置再跳过去」
+        // （`SyncedLyricsLineView+Interaction.swift` 的 §7.6 冻结正是为了盖住这一下）。
+        // 这里直接认目标点，逐字高亮就与进度条走同一条时间轴。
+        if let target = current.pendingSeekTarget { return target }
         let seconds = current.player.currentTime().seconds
         return seconds.isFinite ? seconds : clock.time
     }
@@ -1094,7 +1098,10 @@ final class PlayerController: ObservableObject {
         // 另一路的 tick 直接丢：界面上的进度、播放态只跟着 current，
         // 而交叠期间的 current 仍然是用户正在听的那一首（退场那首）。
         guard deck === current else { return }
-        if seconds.isFinite { currentTime = seconds }
+        // seek 还没落点：这一跳采的是 seek 之前的位置，认它就是用户看到的
+        // 「先跳到目标点、往回闪一下、再跳回来」。
+        let stale = deck.isSeekPending
+        if !stale, seconds.isFinite { currentTime = seconds }
         let playing = deck.player.timeControlStatus == .playing
         let stateChanged = playing != isPlaying
         // 只在真的变了才写：@Published 不比较新旧值，每跳赋一次
@@ -1106,8 +1113,11 @@ final class PlayerController: ObservableObject {
             lastNowPlayingPush = now
             updateNowPlaying()
         }
-        applyTickOverrides(deck, seconds)
-        updateHandoff(at: seconds)
+        // 门控期间喂目标点而不是旧采样：`applyTickOverrides` 会写「记住播放位置」，
+        // 喂旧值等于把断点记到 seek 之前那儿去。
+        let t = stale ? currentTime : seconds
+        applyTickOverrides(deck, t)
+        updateHandoff(at: t)
     }
 
     private func updateHandoff(at t: TimeInterval) {
@@ -1625,14 +1635,12 @@ final class PlayerController: ObservableObject {
             // 没有 override 的那条分支一行没动。
             if let offset = startOffset(for: track, duration: deck.duration) {
                 currentTime = offset
-                deck.player.seek(to: CMTime(seconds: offset, preferredTimescale: 600),
-                                 toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                    // `finished` 不看：被后来的 seek 打断时也照放，否则用户一拖进度条
-                    // 这一首就永远起不来了。认的是「这一路还是当前这一路」。
-                    Task { @MainActor [weak self] in
-                        guard let self, self.wantsPlayback, self.current === deck else { return }
-                        deck.player.play()
-                    }
+                deck.seek(to: CMTime(seconds: offset, preferredTimescale: 600),
+                          tolerance: .zero) { [weak self] in
+                    // 被后来的 seek 打断时也照放，否则用户一拖进度条这一首就永远
+                    // 起不来了。认的是「这一路还是当前这一路」。
+                    guard let self, self.wantsPlayback, self.current === deck else { return }
+                    deck.player.play()
                 }
             } else if wantsPlayback {
                 deck.player.play()
