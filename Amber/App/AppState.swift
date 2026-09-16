@@ -113,6 +113,20 @@ final class AppState: ObservableObject {
         NowPlayingCenter.shared.configure(player: player)
         // 遥控器（iOS「遥控」App，DACP）：与 NowPlayingCenter 同一形制的单例 + configure。
         RemoteControlServer.shared.configure(target: player)
+
+        // 音量跨启动保留：上次退出时那一格，下次打开还是那一格（Music 同）。
+        // 落盘挂在 AppState 而不是播放器里，理由同 `loudness`——播放器不持有要落盘的东西。
+        // 改音量的入口有四个（播放页、迷你播放器、⌘↑／⌘↓、遥控器），它们最终都写
+        // `player.volume`，所以只在这一条 `$volume` 上记就够，不用每个入口各记一遍。
+        // `dropFirst` 跳过订阅时那一次当前值：启动本身不该写盘。
+        if let stored = defaults.object(forKey: Self.volumeKey) as? Double {
+            player.volume = min(max(stored, 0), 1)
+        }
+        player.$volume
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [defaults] volume in defaults.set(volume, forKey: Self.volumeKey) }
+            .store(in: &cancellables)
         // 听歌记账全部由播放器发起：从前只在视图层的点击入口记，播放器自动连播那几首
         // 一次都不算，一张专辑放完只有双击的那首 +1。
         player.onSkip = { [weak self] track in self?.library.recordSkip(track) }
@@ -516,6 +530,9 @@ final class AppState: ObservableObject {
     }
 
     static let suppressedWarningPrefix = "suppressedWarning."
+
+    /// 音量的落盘键（0…1 的 Double，见 init 里的接线）。
+    private static let volumeKey = "playerVolume"
 
     func syncAccountPlaylists(manual: Bool = false) async {
         // 设置 › 通用 ›「同步资料库」。关掉后不再把账号里的歌单往资料库里搬；
