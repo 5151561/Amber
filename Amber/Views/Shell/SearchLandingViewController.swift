@@ -33,8 +33,8 @@ final class SearchLandingViewController: ContentPageController {
     private static let bottomPadding: CGFloat = 24
     /// 两段之间（旧版 `VStack(spacing: 28)`）。
     private static let sectionSpacing: CGFloat = 28
-    /// 段标题底 → 内容顶（旧版每段 `VStack(spacing: 14)`）。
-    private static let headingToContent: CGFloat = 14
+    /// 段标题底 → 内容顶（旧版每段 `VStack(spacing: 14)`）。段头视图也按这条贴底排。
+    fileprivate static let headingToContent: CGFloat = 14
     /// 段标题 17pt bold（实测 Music 落地页段标题比目录页的 15 大一档）。
     private static let headingSize: CGFloat = 17
     /// 最近搜索卡 [实测] 214×64、圆角 10，货架间距 20（旧版 `HStack(spacing: 20)`）。
@@ -133,6 +133,15 @@ final class SearchLandingViewController: ContentPageController {
         }
     }
 
+    /// 页面复显（搜索页 `showLanding(_:)` 切回来、或从侧栏切回搜索页）。
+    /// 被 `isHidden` 关着的那段时间里挡下的快照在这里补灌——藏着的时候灌，
+    /// `invalidateLayout()` 标的脏等不到布局 pass（AppKit 跳过隐藏子树），
+    /// 复显时就会拿旧几何摆新内容。
+    override func pageDidAppear() {
+        super.pageDidAppear()
+        if pendingApply { apply() }
+    }
+
     /// 最近搜索变了（新搜了一次、或点了「清除」）。
     func setRecents(_ terms: [String]) {
         guard terms != recents else { return }
@@ -169,21 +178,27 @@ final class SearchLandingViewController: ContentPageController {
                 for: indexPath) as? SearchLandingHeaderView
             switch self.layoutSection(at: indexPath.section) {
             case .recents:
-                view?.configure(title: "最近搜索", topGap: Self.topPadding,
+                view?.configure(title: "最近搜索",
                                 clear: { [weak self] in self?.onClearRecents?() })
             case .browse, .none:
-                view?.configure(title: "浏览类别",
-                                topGap: self.recents.isEmpty ? Self.topPadding : Self.sectionSpacing,
-                                clear: nil)
+                view?.configure(title: "浏览类别", clear: nil)
             }
             return view
         }
     }
 
     private func apply() {
-        // 硬闸：已经在窗口里、宽度却还是 0 时不许灌快照（组合布局会在 0 宽容器里
+        // 硬闸一：已经在窗口里、宽度却还是 0 时不许灌快照（组合布局会在 0 宽容器里
         // 无限生成 item，实测几秒吃掉几十 GB）。挡下的这一份等 `viewDidLayout` 补灌。
-        if view.window != nil, collectionView.bounds.width <= 0 {
+        //
+        // 硬闸二：自己或祖先正被 `isHidden` 关着时也不许灌。搜索页提交词条那一刻，
+        // 同一轮 runloop 里先来 `setRecents`（最近搜索段整段插回）、紧接着
+        // `showLanding(false)` 把落地页关掉；`invalidateLayout()` 只标脏、重算要等下一次
+        // 布局 pass，而 AppKit 的布局 pass 跳过隐藏子树，那次重算就被吞了——回到落地页
+        // 时 collection view 还拿着「只有浏览类别一段」的缓存几何摆两段内容，卡片纵向错位。
+        // 挡下的这一份等 `pageDidAppear()` 补灌。
+        if (view.window != nil && collectionView.bounds.width <= 0)
+            || view.isHiddenOrHasHiddenAncestor {
             pendingApply = true
             return
         }
@@ -331,7 +346,6 @@ private final class SearchLandingHeaderView: NSView, NSCollectionViewElement {
 
     private let title = NSTextField(labelWithString: "")
     private let clearButton = NSButton()
-    private var topConstraint: NSLayoutConstraint!
     private var clear: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
@@ -354,9 +368,14 @@ private final class SearchLandingHeaderView: NSView, NSCollectionViewElement {
         clearButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(clearButton)
 
-        topConstraint = title.topAnchor.constraint(equalTo: topAnchor)
+        // 「上一段底 → 标题顶」那段空白由布局独家决定（段头高 = topGap + 标题行高 +
+        // headingToContent），所以标题钉**自己的底**往上量 headingToContent，标题顶自然落在
+        // topGap 上。钉顶再配一份 topGap 就成了两个真值源：`.recents` 段整段插入/删除时，
+        // diffable 眼里 `.browse` 段没变、段头视图不保证重配，两个值会差 14pt。
         NSLayoutConstraint.activate([
-            topConstraint,
+            title.bottomAnchor.constraint(
+                equalTo: bottomAnchor,
+                constant: -SearchLandingViewController.headingToContent),
             title.leadingAnchor.constraint(equalTo: leadingAnchor),
             clearButton.trailingAnchor.constraint(equalTo: trailingAnchor),
             clearButton.firstBaselineAnchor.constraint(equalTo: title.firstBaselineAnchor),
@@ -366,9 +385,8 @@ private final class SearchLandingHeaderView: NSView, NSCollectionViewElement {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(title text: String, topGap: CGFloat, clear: (() -> Void)?) {
+    func configure(title text: String, clear: (() -> Void)?) {
         title.stringValue = text
-        topConstraint.constant = topGap
         self.clear = clear
         clearButton.isHidden = clear == nil
     }
