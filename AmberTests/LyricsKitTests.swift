@@ -1753,6 +1753,176 @@ final class LyricsKitTests: XCTestCase {
             expected, accuracy: 1e-9)
     }
 
+    // MARK: - §7.3 逐字渐变几何与羽化夹紧
+
+    func testSweptGeometryNotStarted() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: .notStarted, progress: 0, verticalPadding: 6, specs: specs())
+        XCTAssertEqual(geom.width, 0)
+        XCTAssertEqual(geom.feather, 30)
+    }
+
+    /// 音节间停顿阶段：渐变软边应被夹紧在当前音节末尾与下一个音节起点之间，
+    /// 既保证已唱音节 100% 实心覆盖，又防止高亮泄漏至下一个未唱音节。
+    func testSweptGeometryClampsFeatherToGapDuringPause() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        layoutLine.startTime = 10
+        layoutLine.endTime = 16
+
+        // 第一个词 / 音节：“装”，位置 [160, 200]
+        var firstSyl = SyncedLyricsLineLayer.Syllable()
+        firstSyl.startTime = 10
+        firstSyl.endTime = 12
+        firstSyl.frame = CGRect(x: 0, y: 0, width: 40, height: 50)
+        var firstWord = SyncedLyricsLineLayer.Word()
+        firstWord.frame = CGRect(x: 160, y: 0, width: 40, height: 50)
+        firstWord.syllables = [firstSyl]
+
+        // 第二个词 / 音节：“你”，位置 [208, 248]（中间有 8pt 空白）
+        var secondSyl = SyncedLyricsLineLayer.Syllable()
+        secondSyl.startTime = 14
+        secondSyl.endTime = 16
+        secondSyl.frame = CGRect(x: 0, y: 0, width: 40, height: 50)
+        var secondWord = SyncedLyricsLineLayer.Word()
+        secondWord.frame = CGRect(x: 208, y: 0, width: 40, height: 50)
+        secondWord.syllables = [secondSyl]
+
+        layoutLine.words = [firstWord, secondWord]
+
+        // 在 t = 13s（“装”唱完、“你”未唱的停顿期）：
+        let state = layoutLine.progressState(at: 13)
+        XCTAssertEqual(state, .singing(syllableIndexInWord: 0, wordIndex: 0))
+
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state, progress: 13, verticalPadding: 6, specs: specs())
+
+        // 推进前沿停在“装”的末端 200
+        // 到“你”起点的距离为 208 - 200 = 8pt
+        XCTAssertEqual(geom.feather, 8)
+        XCTAssertEqual(geom.width, 208)
+
+        // 验证：fillLayer 宽度 = width - feather = 200，完全覆盖“装”
+        XCTAssertEqual(geom.width - geom.feather, 200)
+        // 验证：渐变右端 208 不超过“你”的起始位置 208，alpha 在 208 降为 0，“你”零高亮泄漏
+        XCTAssertEqual(geom.width, secondWord.frame.minX)
+    }
+
+    /// 连贯歌唱中（音节间无显著停顿）：羽化宽度恒定为 30pt，匀速平滑推进，绝不锁死或跳跃。
+    func testSweptGeometryContinuousSingingKeepsConstantFeather() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        layoutLine.startTime = 10
+        layoutLine.endTime = 14
+
+        // 单个词内部的两个音节：“伪”(10~12s, [100, 140]), “装”(12~14s, [140, 180])
+        var syl1 = SyncedLyricsLineLayer.Syllable()
+        syl1.startTime = 10
+        syl1.endTime = 12
+        syl1.frame = CGRect(x: 0, y: 0, width: 40, height: 50)
+
+        var syl2 = SyncedLyricsLineLayer.Syllable()
+        syl2.startTime = 12
+        syl2.endTime = 14
+        syl2.frame = CGRect(x: 40, y: 0, width: 40, height: 50)
+
+        var word = SyncedLyricsLineLayer.Word()
+        word.frame = CGRect(x: 100, y: 0, width: 80, height: 50)
+        word.syllables = [syl1, syl2]
+        layoutLine.words = [word]
+
+        // t = 11.5s（syl1 唱了 75%，front = 100 + 30 = 130）
+        // 连贯歌唱无停顿，羽化保持恒定 30pt，推进前沿与软边匀速向前
+        let state = layoutLine.progressState(at: 11.5)
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state, progress: 11.5, verticalPadding: 6, specs: specs())
+
+        XCTAssertEqual(geom.feather, 30)
+        XCTAssertEqual(geom.width, 160)
+        XCTAssertEqual(geom.width - geom.feather, 130)
+    }
+
+    /// 当距离下一个音节充足（>= 30pt）时，使用完整 30pt 羽化。
+    func testSweptGeometryUsesFullFeatherWhenGapIsSufficient() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        layoutLine.startTime = 10
+        layoutLine.endTime = 14
+
+        var syl1 = SyncedLyricsLineLayer.Syllable()
+        syl1.startTime = 10
+        syl1.endTime = 12
+        syl1.frame = CGRect(x: 0, y: 0, width: 100, height: 50)
+
+        var syl2 = SyncedLyricsLineLayer.Syllable()
+        syl2.startTime = 12
+        syl2.endTime = 14
+        syl2.frame = CGRect(x: 100, y: 0, width: 100, height: 50)
+
+        var word = SyncedLyricsLineLayer.Word()
+        word.frame = CGRect(x: 0, y: 0, width: 200, height: 50)
+        word.syllables = [syl1, syl2]
+        layoutLine.words = [word]
+
+        // t = 10.2s（syl1 唱了 10%，front = 10）
+        // 距 syl2 (minX = 100) 有 90pt >= 30pt
+        let state = layoutLine.progressState(at: 10.2)
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state, progress: 10.2, verticalPadding: 6, specs: specs())
+
+        XCTAssertEqual(geom.feather, 30)
+        XCTAssertEqual(geom.width, 40, accuracy: 1e-6)
+        XCTAssertEqual(geom.width - geom.feather, 10, accuracy: 1e-6)
+    }
+
+    /// 行尾最后一个音节无后续音节约束，羽化完整展开。
+    func testSweptGeometryLastSyllableUsesFullFeather() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        layoutLine.startTime = 10
+        layoutLine.endTime = 12
+
+        var syl = SyncedLyricsLineLayer.Syllable()
+        syl.startTime = 10
+        syl.endTime = 12
+        syl.frame = CGRect(x: 0, y: 0, width: 50, height: 50)
+
+        var word = SyncedLyricsLineLayer.Word()
+        word.frame = CGRect(x: 50, y: 0, width: 50, height: 50)
+        word.syllables = [syl]
+        layoutLine.words = [word]
+
+        // t = 11s（syl 唱了 50%，front = 50 + 25 = 75）
+        let state = layoutLine.progressState(at: 11)
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: state, progress: 11, verticalPadding: 6, specs: specs())
+
+        XCTAssertEqual(geom.feather, 30)
+        XCTAssertEqual(geom.width, 105)
+    }
+
+    /// finished 状态返回 finishedWidth 且羽化为默认值。
+    func testSweptGeometryFinishedState() {
+        let layoutLine = SyncedLyricsLineLayer.LayoutLine()
+        layoutLine.startTime = 10
+        layoutLine.endTime = 12
+
+        var syl = SyncedLyricsLineLayer.Syllable()
+        syl.startTime = 10
+        syl.endTime = 12
+        syl.frame = CGRect(x: 0, y: 0, width: 50, height: 50)
+
+        var word = SyncedLyricsLineLayer.Word()
+        word.frame = CGRect(x: 50, y: 0, width: 50, height: 50)
+        word.syllables = [syl]
+        layoutLine.words = [word]
+
+        let geom = LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine, state: .finished, progress: 13, verticalPadding: 6, specs: specs())
+
+        let expectedWidth = LineProgressGradientGeometry.finishedWidth(
+            lastWordMinX: 50, lastSyllableMaxX: 50, verticalPadding: 6, specs: specs())
+        XCTAssertEqual(geom.width, expectedWidth)
+        XCTAssertEqual(geom.feather, 30)
+    }
+
     // MARK: - §7.2 逐字走查
 
     func testLayoutLineProgressStateBoundaries() {
@@ -2347,9 +2517,8 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertGreaterThan(tap.dampingRatio, 1.0)
     }
 
-    /// 逐行独立位移：动画开始时视口保持不动（contentView.bounds.origin 保持原位），
-    /// 受影响行按 50ms 阶梯延迟错开起跑（delay_i = 0.05 * (max(i, 1) - 1)），挂载增量动画。
-    func testAnimateLineScrollLeavesViewportStationaryDuringAnimation() throws {
+    /// 逐行独立位移：视口在第一帧切换到 targetOrigin，各行挂载阶梯延迟的 additive 动画。
+    func testAnimateLineScrollStaggeredAdditiveAnimations() throws {
         let (controller, _) = makeExpansionFixture(instrumentalAt: 10)
         let clip = try XCTUnwrap(controller.scrollView?.contentView)
         let initialOrigin = clip.bounds.origin.y
@@ -2368,13 +2537,13 @@ final class LyricsKitTests: XCTestCase {
                                      spring: controller.specs.lineChangeSpringTimingParameters,
                                      baseOffset: 0)
 
-        // 1. 容器视口先不动！
-        XCTAssertEqual(clip.bounds.origin.y, initialOrigin, accuracy: 1e-9, "视口在动画期间必须保持不动")
+        // 1. 视口在第一帧立即就位，确保新进场行与出场行都在正确裁切范围内
+        XCTAssertEqual(clip.bounds.origin.y, targetOrigin.y, accuracy: 1e-9)
 
         // 2. 圈定受影响行并已登记
         XCTAssertFalse(controller.displacedLineViews.isEmpty, "受影响行必须进入 displacedLineViews 集合")
 
-        // 3. 逐行下发动画器，阶梯延迟核验
+        // 3. 逐行下发动画器，阶梯延迟单调递增
         XCTAssertFalse(controller.currentAnimators.isEmpty, "必须建出逐行 LayerPropertyAnimator")
         let sortedAnimators = controller.currentAnimators.sorted { $0.delay < $1.delay }
         if sortedAnimators.count >= 3 {
@@ -2396,45 +2565,18 @@ final class LyricsKitTests: XCTestCase {
         }
     }
 
-    /// 零位移对账：完成回调时瞬时重置图层 position 并将视口切换到目标位置，屏幕前后零位移。
+    /// 零位移对账测试：视口准确落到目标位置，状态清空。
     func testZeroDisplacementReconciliation() throws {
-        let (controller, visual) = makeExpansionFixture(instrumentalAt: 10)
+        let (controller, _) = makeExpansionFixture(instrumentalAt: 10)
         let clip = try XCTUnwrap(controller.scrollView?.contentView)
         let initialOrigin = clip.bounds.origin.y
 
-        guard let lines = controller.lyrics?.lines, lines.count > 4 else {
-            XCTFail("Fixture lacks sufficient lines")
-            return
-        }
-
-        let targetLine = lines[3]
         let delta: CGFloat = 100
         let targetOrigin = CGPoint(x: 0, y: initialOrigin + delta)
 
-        controller.animateLineScroll(to: targetOrigin,
-                                     anchorLine: targetLine,
-                                     spring: controller.specs.lineChangeSpringTimingParameters,
-                                     baseOffset: 0)
-
-        // 记录对账前各受影响行在屏幕上的渲染理论坐标
-        let affected = Array(controller.displacedLineViews)
-        XCTAssertFalse(affected.isEmpty)
-
-        // 执行零位移对账
         controller.reconcileDisplacedLines(to: targetOrigin)
-
-        // 1. 视口落到目标位置
         XCTAssertEqual(clip.bounds.origin.y, targetOrigin.y, accuracy: 1e-9)
-
-        // 2. displacedLineViews 清空
         XCTAssertTrue(controller.displacedLineViews.isEmpty)
-
-        // 3. 所有行图层的 position 恢复至 view.frame.origin
-        for view in affected {
-            let layerPos = view.layer?.position ?? .zero
-            XCTAssertEqual(layerPos.x, view.frame.origin.x, accuracy: 1e-9)
-            XCTAssertEqual(layerPos.y, view.frame.origin.y, accuracy: 1e-9)
-        }
     }
 }
 

@@ -304,11 +304,14 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             // 抬升会整个停手。
             if !layoutLine.ignoreProgress {
                 let padding = verticalPadding(for: row)
+                let geometry = sweptGeometry(of: layoutLine,
+                                             state: state,
+                                             verticalPadding: padding)
+                row.gradient.featherWidth = geometry.feather
                 var frame = row.gradient.frame
-                frame.size.width = sweptWidth(of: layoutLine,
-                                              state: state,
-                                              verticalPadding: padding)
+                frame.size.width = geometry.width
                 row.gradient.frame = frame
+                row.gradient.layoutIfNeeded()
             }
 
             // 辉光：起 ramp 与逐 tick 直写都必须留在这个关掉隐式动画的事务里（§23.4）。
@@ -335,6 +338,12 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// 音译那条渐变。宽度 = 内外余量 + 扫过比例 × 音译墨宽。
     /// 调用方已经把它包在关掉隐式动画的事务里了。
     private func applyTransliterationProgress(fraction: Double) {
+        guard fraction > 0 else {
+            var frame = transliterationGradient.frame
+            frame.size.width = 0
+            transliterationGradient.frame = frame
+            return
+        }
         let padding = LineProgressGradientGeometry.verticalPadding(
             font: transliterationFontForMeasuring,
             lineHeight: transliterationSung.frame.height,
@@ -378,32 +387,16 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             specs: specs)
     }
 
-    /// 这一行扫到哪儿。唱完用 §7.3 的墨迹右端（**不是行宽**），
-    /// 正在唱的按当前音节内插。
-    private func sweptWidth(of layoutLine: SyncedLyricsLineLayer.LayoutLine,
-                            state: SyncedLyricsLineLayer.LayoutLine.ProgressState,
-                            verticalPadding padding: CGFloat) -> CGFloat {
-        let feather = specs.lineProgressionGradientFeather
-        switch state {
-        case .notStarted:
-            return 0
-        case .finished:
-            guard let word = layoutLine.words.last,
-                  let syllable = word.syllables.last else { return 0 }
-            return LineProgressGradientGeometry.finishedWidth(
-                lastWordMinX: word.frame.minX,
-                lastSyllableMaxX: syllable.frame.maxX,
-                verticalPadding: padding,
-                specs: specs)
-        case .singing(let syllableIndex, let wordIndex):
-            let word = layoutLine.words[wordIndex]
-            let syllable = word.syllables[syllableIndex]
-            let span = syllable.endTime - syllable.startTime
-            let ratio = span > 0 ? min(max((progress - syllable.startTime) / span, 0), 1) : 1
-            // Syllable.frame 是 word 内局部坐标；推进前沿要换回排版行坐标。
-            let front = word.frame.minX + syllable.frame.minX + syllable.frame.width * ratio
-            return padding + feather + front
-        }
+    /// 这一行扫到哪儿。几何计算与羽化夹紧委托给 `LineProgressGradientGeometry`。
+    func sweptGeometry(of layoutLine: SyncedLyricsLineLayer.LayoutLine,
+                       state: SyncedLyricsLineLayer.LayoutLine.ProgressState,
+                       verticalPadding padding: CGFloat) -> LineProgressGradientGeometry.SweptGeometry {
+        LineProgressGradientGeometry.sweptGeometry(
+            of: layoutLine,
+            state: state,
+            progress: progress,
+            verticalPadding: padding,
+            specs: specs)
     }
 
     /// `syllableLift = 2`：被唱到的音节整体上抬 2pt，由 (1, 14, 7) 那条弹簧走完。
@@ -519,7 +512,9 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             frame.size.width = 0
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            row.gradient.featherWidth = specs.lineProgressionGradientFeather
             row.gradient.frame = frame
+            row.gradient.layoutIfNeeded()
             // 去辉光：先落值、再清引用，最后熄灭（§8.1 / §23.5）。
             interruptGlow(in: row, fade: true)
             CATransaction.commit()
