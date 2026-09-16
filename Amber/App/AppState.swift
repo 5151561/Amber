@@ -247,7 +247,13 @@ final class AppState: ObservableObject {
         }
         // 歌从资料库删掉，本地那份下载也一起没（Music 同）。挂在 store 上而不是逐个删除
         // 入口里调：入口有单曲 / 整张碟 / 表格好几处，漏一处就留下一个没人认领的音频文件。
-        library.onTracksRemoved = { [weak self] ids in self?.downloads.remove(ids: ids) }
+        library.onTracksRemoved = { [weak self] ids in
+            self?.downloads.remove(ids: ids)
+            // 文件都要删了，还排在队里等着量响度的那几首就别量了——离线扫描是
+            // 一条串行流水线（`LoudnessStore`），不摘掉的话它会接着去读一个
+            // 马上不存在的文件，还占着队首让后面的歌干等。
+            self?.loudness.cancelMeasurements(for: Set(ids))
+        }
         // 设置 › 通用 ›「自动下载」：进资料库的歌自动落地。与上面那条对称——
         // 入库入口同样有单曲 / 整张碟 / 歌单同步好几处，只能挂在 store 上。
         library.onTracksAdded = { [weak self] tracks in
