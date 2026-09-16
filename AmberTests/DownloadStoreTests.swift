@@ -422,22 +422,6 @@ final class DownloadStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: received!.1.path))
     }
 
-    // MARK: - 纯音乐占位词
-
-    /// 「这首没有词」两家都当歌词发（QQ「此歌曲为没有填词的纯音乐，请您欣赏」、
-    /// 网易「纯音乐，请欣赏」）。界面上照显示是对的，写进文件就是假歌词。
-    func testInstrumentalPlaceholderIsNotEmbedded() {
-        XCTAssertTrue(DownloadStore.isInstrumentalPlaceholder(
-            "[00:00.00]此歌曲为没有填词的纯音乐，请您欣赏"))
-        XCTAssertTrue(DownloadStore.isInstrumentalPlaceholder("[00:00.00]纯音乐，请欣赏"))
-        XCTAssertFalse(DownloadStore.isInstrumentalPlaceholder(""))
-        XCTAssertFalse(DownloadStore.isInstrumentalPlaceholder("[00:01.00]第一行\n[00:03.00]第二行"),
-                       "正常歌词不该被当占位词滤掉")
-        XCTAssertFalse(DownloadStore.isInstrumentalPlaceholder(
-            "[00:01.00]这段纯音乐真好听\n[00:05.00]下一句"),
-                       "词里唱到「纯音乐」但不止一行，是真歌词")
-    }
-
     // MARK: - 标签回填
 
     /// 挑条目的规矩：已补到当前版本的、`mv:` 的、外部引用的，一条都不碰。

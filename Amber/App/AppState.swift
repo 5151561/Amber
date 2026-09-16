@@ -811,3 +811,40 @@ enum Route: Hashable {
                             trackCount: 0, description: nil))
     }
 }
+
+/// 「这一首该收进哪个格子」——最近播放台账的映射规则，见 `RecentContainer`。
+///
+/// 住在这里而不是 Models 层：它要认 `Route`，而`RecentContainer` 不该知道导航，
+/// `Services`（`LibraryStore` 所在的那层）全层也没有一个文件引用过`Route`，
+/// 别在这里破例。写成 static 纯函数、不碰 `AppState` 实例，才好单测。
+extension RecentContainer {
+    /// `source` 是起播那份列表的来源（队列面板「来自《…》」用的就是它）。
+    /// 自动连播续上的歌不属于起播那份列表，调用处传 nil，于是走回落。
+    static func resolve(track: Track, source: PlayerController.QueueSource?) -> RecentContainer {
+        guard let route = source?.route else { return fallback(track: track) }
+        switch route {
+        case .playlist(let playlist):
+            return .playlist(playlist)
+        case .libraryPlaylist(let id):
+            return .libraryPlaylist(id: id)
+        case .localTracks(let list) where list.id == "favorites":
+            return .favorites
+        // 资料库派生艺人（`library-artist:` 前缀）没有艺人页可去，收成艺人卡点了没处落，回落。
+        case .artist(let artist) where !artist.isLibraryDerived:
+            return .artist(id: artist.id, kind: artist.kind, name: artist.name,
+                           avatarURL: artist.avatarURL)
+        default:
+            return fallback(track: track)
+        }
+    }
+
+    /// 回落：按这首歌自己的归属收。**复用 `Route.album(of:)`**——「网易播客单集的
+    /// `albumId` 其实是电台节目、得落到歌单」那条特判就此只剩那一处，不再各抄一份。
+    private static func fallback(track: Track) -> RecentContainer {
+        switch Route.album(of: track) {
+        case .album(let album)?: return .album(album)
+        case .playlist(let playlist)?: return .playlist(playlist)
+        default: return .track(track)
+        }
+    }
+}
