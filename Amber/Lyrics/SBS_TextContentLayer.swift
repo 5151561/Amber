@@ -350,7 +350,11 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             specs: specs)
         let feather = specs.lineProgressionGradientFeather
         var frame = transliterationGradient.frame
-        frame.size.width = padding + feather + transliterationWidth * CGFloat(fraction)
+        if fraction >= 1.0 {
+            frame.size.width = padding + feather + transliterationWidth
+        } else {
+            frame.size.width = transliterationWidth * CGFloat(fraction) + feather * 0.25
+        }
         transliterationGradient.frame = frame
     }
 
