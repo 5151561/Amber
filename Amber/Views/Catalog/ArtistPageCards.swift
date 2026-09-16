@@ -13,7 +13,7 @@ import SwiftUI
 // 2. `ArtistHeroView`（`CatalogItem.Kind.artistHero`）——hero 那件 collection item：
 //    艺人名 40pt 白字居中 + 名字下面三枚圆键 ⓘ(45) / 白底 ▶(69) / ★(45)——
 //    **三枚恒在**。名字与按钮是内容、随文稿滚（与实机一致），不带图；
-//    ⓘ 点开的艺人介绍面板在 `ArtistBioPanel.swift`。
+//    ⓘ 点开的艺人介绍面板在 `AboutPanel.swift`。
 // 3. `ArtistReleaseCardView`（`.release`）——图下并排带左半的「最新發行」卡：
 //    162 方封面贴左 + 右侧三行（发行日期 / 专辑名 /「N 首歌曲」）+ 一枚 ＋ 圆键。
 //
@@ -32,7 +32,7 @@ import SwiftUI
 /// - `.subtle`：`secondaryLabelColor` 20% 的底 + 主色字形（「最新發行」的 ＋，
 ///   浓度照 `CatalogExplicitBadge` 那块脏标）。
 ///
-/// 艺人简介面板（`ArtistBioPanel.swift`）左上角那枚 ✕ 也是这一个的`.glass` 档，
+/// 艺人简介面板（`AboutPanel.swift`）左上角那枚 ✕ 也是这一个的`.glass` 档，
 /// 所以它是 internal 而不是 private。
 final class ArtistCircleButton: NSButton {
 
@@ -168,10 +168,10 @@ final class ArtistCircleButton: NSButton {
 
 /// 只做渐变的一层：`makeBackingLayer` 直接给`CAGradientLayer`，省一层 sublayer 的手工排布。
 ///
-/// 现在只有艺人简介面板（`ArtistBioPanel.swift`）的下半程在用这一套「模糊 + 压暗」；
+/// 现在只有艺人简介面板（`AboutPanel.swift`）的下半程在用这一套「模糊 + 压暗」；
 /// 艺人页本身的封面背景换了钉住的 `ArtistBackdropView`（见它的类注释）。
 /// 这一层与配套的遮罩图 `makeFadeMask()` 保持 internal，两处共用的实测结论
-/// 留在 `ArtistBioPanel` 侧。
+/// 留在 `AboutPanel` 侧。
 final class ArtistScrimGradientView: NSView {
 
     override func makeBackingLayer() -> CALayer { CAGradientLayer() }
@@ -538,8 +538,8 @@ final class ArtistHeroView: CatalogCardContentView {
 
     /// Music 点 ⓘ 弹的是**一整块艺人介绍面板**（满幅大图 + 「关于」正文），不是一小片
     /// 纯文字气泡，所以这里只负责把内容凑齐、沿响应链交给宿主
-    /// （`ArtistBioPresenting`，实现在`RootViewController`），面板本体在
-    /// `ArtistBioPanel.swift`。
+    /// （`AboutPanelPresenting`，实现在`RootViewController`），面板本体在
+    /// `AboutPanel.swift`。
     ///
     /// 事实行（「生日 / 1979年1月18日」「职业 / …」那几条）来自艺人本身：
     /// hero 这张卡的 `route` 就是`.artist(artist)`，`Artist.facts` 由音源填
@@ -547,15 +547,15 @@ final class ArtistHeroView: CatalogCardContentView {
     /// 「职业」「代表作品」这类是并列的短词，摆成胶囊；日期/国籍是单值，摆成普通行。
     private func presentBio() {
         guard let item else { return }
-        var facts: [ArtistBioFact] = []
+        var facts: [AboutFact] = []
         if case .artist(let artist) = item.route {
             facts = artist.facts.map {
-                ArtistBioFact(label: $0.label, value: $0.value,
+                AboutFact(label: $0.label, value: $0.value,
                               isChip: Self.chipFactLabels.contains($0.label))
             }
         }
-        findArtistBioPresenter()?.presentArtistBio(
-            ArtistBioContent(name: item.title,
+        findAboutPanelPresenter()?.presentAboutPanel(
+            AboutContent(name: item.title,
                              artworkURL: item.artworkURL,
                              facts: facts,
                              body: item.description))

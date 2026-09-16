@@ -1,22 +1,26 @@
 import AppKit
 
-// MARK: - 艺人介绍面板
+// MARK: - 介绍面板
 
 // 对应 Music 艺人页 hero 上那枚 ⓘ 键弹出的「艺人介绍」面板（用户实机截图为准，
-// 不是 `catalog-artist.png` 里的形态——那张图没展开这个面板）。结构自上而下：
+// 不是 `catalog-artist.png` 里的形态——那张图没展开这个面板）。
+//
+// **两处在用**：艺人页 hero 的 ⓘ（`ArtistHeroView.presentBio()`）与专辑页头简介末行的
+// 「更多」（`AlbumHeaderView.presentAbout()`）——所以类型名不带 artist，内容由调用点凑
+// （`AboutContent`：名字 + 一张图 + 若干事实行 + 正文）。结构自上而下：
 //
 //   ┌────────────────────────────┐  ← 圆角矩形卡，比窗口小一圈、居中
-//   │ ✕                          │     满幅铺艺人大图（与 hero 同一张 artworkURL）
+//   │ ✕                          │     满幅铺大图（艺人页头图 / 专辑封面）
 //   │                            │
 //   │ ─── 下半程模糊 + 压暗 ───    │
-//   │ 艺人名（32 semibold 白）     │
+//   │ 名字（32 semibold 白）       │
 //   │ 成立日期 / 2017年           │  ← 事实行：小号次要标签 + 下一行正文（正文可为胶囊）
 //   │ 關於                        │
 //   │ 简介正文（13pt，长文可滚）    │
 //   └────────────────────────────┘
 //
 // **这里的数一条实测基线都没有**（Music 这个面板没量过 AX/PX），所以全部标 `[推]`，
-// 集中放在 `BioMetrics` 里当本文件私有常量——按 `AGENTS.md`「界面层」第 5、6 条，
+// 集中放在 `AboutMetrics` 里当本文件私有常量——按 `AGENTS.md`「界面层」第 5、6 条，
 // 没有出处的数不许进 `MusicMetrics`。
 //
 // 下半程「既模糊又压暗」两层与 hero 是同一套手法（`NSVisualEffectView.maskImage`
@@ -24,7 +28,7 @@ import AppKit
 // 实测结论写在 `ArtistHeroView` 的类注释里，那两个零件（`ArtistScrimGradientView`
 // / `ArtistCircleButton`）就是为了这里复用才从 private 提成 internal 的。
 //
-// **呈现方式是窗口内的覆盖层，不是 `presentAsSheet(_:)`**，理由见 `ArtistBioOverlayView`。
+// **呈现方式是窗口内的覆盖层，不是 `presentAsSheet(_:)`**，理由见 `AboutPanelOverlayView`。
 //
 // 铁律：不新增 Representable（全 AppKit）；面板不进 `NSHostingView`；
 // 简介正文照 Music **不可选中**，所以是普通 `NSTextField` 标签而不是 `NSTextView`。
@@ -34,10 +38,10 @@ import AppKit
 /// 面板里「小号次要色标签 + 下一行正文」的一条事实行。
 ///
 /// Music 那张截图上是「成立日期 / 2017年」「類型 / 國語流行樂（圆角胶囊）」。
+/// 专辑那边填的是「艺人 / 发行日期 / 曲风」。
 /// 我们的音源大多给不出这些字段，所以这一段是**有才摆**：给空数组就整段不占位
-/// （连 `nameToFacts` 那段间距也不留）。等取数接上之后往 `ArtistHeroView.presentBio()`
-/// 里填即可，面板这边不用改。
-struct ArtistBioFact {
+/// （连 `nameToFacts` 那段间距也不留）。等取数接上之后往调用点里填即可，面板这边不用改。
+struct AboutFact {
     /// 上一行的小号次要色标签，例如「成立日期」
     let label: String
     /// 下一行的正文，例如「2017年」
@@ -54,14 +58,14 @@ struct ArtistBioFact {
 
 /// 面板要的全部内容。字段全部来自 `CatalogItem` 现有的三项：
 /// `title` / `artworkURL` / `description`。
-struct ArtistBioContent {
+struct AboutContent {
     let name: String
     let artworkURL: String?
-    let facts: [ArtistBioFact]
-    /// 简介正文；nil 或空串时面板照常出来，正文位置摆 `ArtistBioPanelView.emptyBody`。
+    let facts: [AboutFact]
+    /// 简介正文；nil 或空串时面板照常出来，正文位置摆 `AboutPanelView.emptyBody`。
     let body: String?
 
-    init(name: String, artworkURL: String?, facts: [ArtistBioFact] = [], body: String?) {
+    init(name: String, artworkURL: String?, facts: [AboutFact] = [], body: String?) {
         self.name = name
         self.artworkURL = artworkURL
         self.facts = facts
@@ -70,18 +74,18 @@ struct ArtistBioContent {
 }
 
 /// 面板的宿主。由 `RootViewController` 实现（它本来就是迷你播放器/整窗播放器/toast
-/// 这些覆盖层的宿主）；hero 沿响应链往上找它，不持有引用（铁律 4：意图冒泡）。
+/// 这些覆盖层的宿主）；hero 与专辑页头沿响应链往上找它，不持有引用（铁律 4：意图冒泡）。
 @MainActor
-protocol ArtistBioPresenting: AnyObject {
-    func presentArtistBio(_ content: ArtistBioContent)
+protocol AboutPanelPresenting: AnyObject {
+    func presentAboutPanel(_ content: AboutContent)
 }
 
 extension NSView {
     /// 沿响应链（自己 → 各级父视图 → 各级视图控制器 → 窗口）找简介面板的宿主。
-    func findArtistBioPresenter() -> ArtistBioPresenting? {
+    func findAboutPanelPresenter() -> AboutPanelPresenting? {
         var responder: NSResponder? = self
         while let current = responder {
-            if let host = current as? ArtistBioPresenting { return host }
+            if let host = current as? AboutPanelPresenting { return host }
             responder = current.nextResponder
         }
         return nil
@@ -90,7 +94,7 @@ extension NSView {
 
 // MARK: - 度量（全部 [推]）
 
-private enum BioMetrics {
+private enum AboutMetrics {
     /// [推] 卡的圆角。用户读图约 20，与 macOS 26 的 sheet 观感同一档。
     static let cornerRadius: CGFloat = 20
     /// [推] 卡宽取窗口宽的 0.7，并夹在 480…900：窄了中文正文一行放不下几个字，
@@ -149,14 +153,14 @@ private enum BioMetrics {
 
 /// 事实行里 `isChip` 的那种正文：白 15% 的圆角胶囊 + 白字。
 /// 宽高按字撑（`intrinsicContentSize`），圆角取高的一半。
-private final class ArtistBioChip: NSView {
+private final class AboutChip: NSView {
 
-    private let field = CatalogCardKit.label(size: BioMetrics.factValueSize, color: .white)
+    private let field = CatalogCardKit.label(size: AboutMetrics.factValueSize, color: .white)
 
     init(text: String) {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = BioMetrics.chipBackground.cgColor
+        layer?.backgroundColor = AboutMetrics.chipBackground.cgColor
         field.stringValue = text
         addSubview(field)
     }
@@ -165,8 +169,8 @@ private final class ArtistBioChip: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: CatalogCardKit.textWidth(field).rounded(.up) + BioMetrics.chipPaddingH * 2,
-               height: CatalogCardKit.lineHeight(field) + BioMetrics.chipPaddingV * 2)
+        NSSize(width: CatalogCardKit.textWidth(field).rounded(.up) + AboutMetrics.chipPaddingH * 2,
+               height: CatalogCardKit.lineHeight(field) + AboutMetrics.chipPaddingV * 2)
     }
 
     override func layout() {
@@ -174,9 +178,9 @@ private final class ArtistBioChip: NSView {
         layer?.cornerRadius = bounds.height / 2
         // label 自带 2pt 内缩，手排 frame 时补回来（`CatalogCardKit.labelInset`）
         let inset = CatalogCardKit.labelInset
-        field.frame = NSRect(x: BioMetrics.chipPaddingH - inset,
-                             y: BioMetrics.chipPaddingV,
-                             width: bounds.width - BioMetrics.chipPaddingH * 2 + inset * 2,
+        field.frame = NSRect(x: AboutMetrics.chipPaddingH - inset,
+                             y: AboutMetrics.chipPaddingV,
+                             width: bounds.width - AboutMetrics.chipPaddingH * 2 + inset * 2,
                              height: CatalogCardKit.lineHeight(field))
     }
 }
@@ -188,7 +192,7 @@ private final class ArtistBioChip: NSView {
 /// 尺寸由 `fittingSize(in:)` 给（宿主的覆盖层照它摆），内部一律手排 frame：
 /// 文字块整体**贴底**排（自下而上：正文 → 关于 → 事实行 → 艺人名），
 /// 内容不多时富余的高度留在艺人名上方，那截仍是图，与 Music 一致。
-final class ArtistBioPanelView: NSView {
+final class AboutPanelView: NSView {
 
     /// 没有简介时正文位置的那句话。口气与 `ArtistPageModel.emptyMessage`
     /// （「这位艺人暂时没有可显示的内容。」）一致。
@@ -201,20 +205,20 @@ final class ArtistBioPanelView: NSView {
     private let artworkView = CatalogArtworkView()
     private let blurBand = NSVisualEffectView()
     private let scrimView = ArtistScrimGradientView()
-    private let nameField = CatalogCardKit.label(size: BioMetrics.nameSize, weight: .semibold,
+    private let nameField = CatalogCardKit.label(size: AboutMetrics.nameSize, weight: .semibold,
                                                  color: .white, lines: 2)
-    private let aboutTitle = CatalogCardKit.label(size: BioMetrics.aboutTitleSize,
+    private let aboutTitle = CatalogCardKit.label(size: AboutMetrics.aboutTitleSize,
                                                   weight: .semibold, color: .white)
     /// 正文照 Music **不可选中**：普通标签（`CatalogLabel` 连点击都不接），
     /// 长文的滚动交给外面这层 `NSScrollView`。
-    private let bodyField = CatalogCardKit.label(size: BioMetrics.bodySize,
-                                                 color: BioMetrics.bodyColor, lines: 0)
+    private let bodyField = CatalogCardKit.label(size: AboutMetrics.bodySize,
+                                                 color: AboutMetrics.bodyColor, lines: 0)
     private let bodyScroll = NSScrollView()
     private let bodyDocument = NSView()
     private let closeButton = ArtistCircleButton(style: .glass,
-                                                 diameter: BioMetrics.closeDiameter,
+                                                 diameter: AboutMetrics.closeDiameter,
                                                  symbol: "xmark",
-                                                 glyphSize: BioMetrics.closeDiameter * 0.4)
+                                                 glyphSize: AboutMetrics.closeDiameter * 0.4)
 
     private var factRows: [(label: CatalogLabel, value: NSView)] = []
 
@@ -226,12 +230,12 @@ final class ArtistBioPanelView: NSView {
 
         let shadow = NSShadow()
         shadow.shadowColor = NSColor(white: 0, alpha: 0.35)
-        shadow.shadowBlurRadius = BioMetrics.shadowBlur
-        shadow.shadowOffset = NSSize(width: 0, height: -BioMetrics.shadowOffsetY)
+        shadow.shadowBlurRadius = AboutMetrics.shadowBlur
+        shadow.shadowOffset = NSSize(width: 0, height: -AboutMetrics.shadowOffsetY)
         self.shadow = shadow
 
         clip.wantsLayer = true
-        clip.layer?.cornerRadius = BioMetrics.cornerRadius
+        clip.layer?.cornerRadius = AboutMetrics.cornerRadius
         clip.layer?.masksToBounds = true
         addSubview(clip)
 
@@ -271,7 +275,7 @@ final class ArtistBioPanelView: NSView {
 
     // MARK: 内容
 
-    func apply(_ content: ArtistBioContent) {
+    func apply(_ content: AboutContent) {
         nameField.stringValue = content.name
         setAccessibilityLabel(content.name)
         // 与 hero 要同一张图、同一档尺寸：命中同一份缓存，点开就有，不会白一帧。
@@ -285,15 +289,15 @@ final class ArtistBioPanelView: NSView {
             row.value.removeFromSuperview()
         }
         factRows = content.facts.map { fact in
-            let label = CatalogCardKit.label(size: BioMetrics.factLabelSize,
-                                             color: BioMetrics.factLabelColor)
+            let label = CatalogCardKit.label(size: AboutMetrics.factLabelSize,
+                                             color: AboutMetrics.factLabelColor)
             label.stringValue = fact.label
             clip.addSubview(label)
             let value: NSView
             if fact.isChip {
-                value = ArtistBioChip(text: fact.value)
+                value = AboutChip(text: fact.value)
             } else {
-                let field = CatalogCardKit.label(size: BioMetrics.factValueSize, color: .white)
+                let field = CatalogCardKit.label(size: AboutMetrics.factValueSize, color: .white)
                 field.stringValue = fact.value
                 value = field
             }
@@ -314,15 +318,15 @@ final class ArtistBioPanelView: NSView {
     /// 宽：`widthRatio` 夹进 `minWidth…maxWidth`，再被窗口宽减两边留白兜底。
     /// 高：文字块量出的高度按 `bandRatio` 反推，夹进 `minHeight…窗口高 × maxHeightRatio`。
     func fittingSize(in container: NSSize) -> NSSize {
-        let roomWidth = max(0, container.width - BioMetrics.windowMargin * 2)
-        let wanted = min(max(container.width * BioMetrics.widthRatio, BioMetrics.minWidth),
-                         BioMetrics.maxWidth)
+        let roomWidth = max(0, container.width - AboutMetrics.windowMargin * 2)
+        let wanted = min(max(container.width * AboutMetrics.widthRatio, AboutMetrics.minWidth),
+                         AboutMetrics.maxWidth)
         let width = min(wanted, roomWidth)
         let text = textMetrics(width: width)
-        let natural = (text.fixed + text.body) / BioMetrics.bandRatio
-        let roomHeight = min(container.height * BioMetrics.maxHeightRatio,
-                             max(0, container.height - BioMetrics.windowMargin * 2))
-        let height = min(max(natural, BioMetrics.minHeight), roomHeight)
+        let natural = (text.fixed + text.body) / AboutMetrics.bandRatio
+        let roomHeight = min(container.height * AboutMetrics.maxHeightRatio,
+                             max(0, container.height - AboutMetrics.windowMargin * 2))
+        let height = min(max(natural, AboutMetrics.minHeight), roomHeight)
         return NSSize(width: width.rounded(), height: height.rounded())
     }
 
@@ -330,16 +334,16 @@ final class ArtistBioPanelView: NSView {
     /// 艺人名 / 事实行 / 「关于」始终整条摆得下。
     private func textMetrics(width: CGFloat) -> (fixed: CGFloat, body: CGFloat) {
         let fieldWidth = self.fieldWidth(for: width)
-        var fixed = BioMetrics.bottomPadding
-        fixed += height(of: aboutTitle, width: fieldWidth) + BioMetrics.aboutToBody
-        fixed += BioMetrics.factsToAbout
+        var fixed = AboutMetrics.bottomPadding
+        fixed += height(of: aboutTitle, width: fieldWidth) + AboutMetrics.aboutToBody
+        fixed += AboutMetrics.factsToAbout
         if !factRows.isEmpty {
             for (index, row) in factRows.enumerated() {
-                fixed += CatalogCardKit.lineHeight(row.label) + BioMetrics.factLabelToValue
+                fixed += CatalogCardKit.lineHeight(row.label) + AboutMetrics.factLabelToValue
                 fixed += valueHeight(row.value)
-                if index < factRows.count - 1 { fixed += BioMetrics.factSpacing }
+                if index < factRows.count - 1 { fixed += AboutMetrics.factSpacing }
             }
-            fixed += BioMetrics.nameToFacts
+            fixed += AboutMetrics.nameToFacts
         }
         fixed += height(of: nameField, width: fieldWidth)
         return (fixed, height(of: bodyField, width: fieldWidth))
@@ -347,7 +351,7 @@ final class ArtistBioPanelView: NSView {
 
     /// 手排 frame 的标签一律把自带的 2pt 内缩补回来，字的左沿才真在 `textInset` 上。
     private func fieldWidth(for width: CGFloat) -> CGFloat {
-        max(0, width - BioMetrics.textInset * 2) + CatalogCardKit.labelInset * 2
+        max(0, width - AboutMetrics.textInset * 2) + CatalogCardKit.labelInset * 2
     }
 
     private func height(of field: NSTextField, width: CGFloat) -> CGFloat {
@@ -366,54 +370,54 @@ final class ArtistBioPanelView: NSView {
         artworkView.frame = clip.bounds
 
         // 下半程那条带：模糊 + 压暗同高同位，压暗在上（与 hero 同一条）。
-        let band = (bounds.height * BioMetrics.bandRatio).rounded()
+        let band = (bounds.height * AboutMetrics.bandRatio).rounded()
         let bandRect = NSRect(x: 0, y: 0, width: bounds.width, height: band)
         blurBand.frame = bandRect
         scrimView.frame = bandRect
 
-        closeButton.frame = NSRect(x: BioMetrics.closeInset,
-                                   y: bounds.height - BioMetrics.closeInset
-                                      - BioMetrics.closeDiameter,
-                                   width: BioMetrics.closeDiameter,
-                                   height: BioMetrics.closeDiameter)
+        closeButton.frame = NSRect(x: AboutMetrics.closeInset,
+                                   y: bounds.height - AboutMetrics.closeInset
+                                      - AboutMetrics.closeDiameter,
+                                   width: AboutMetrics.closeDiameter,
+                                   height: AboutMetrics.closeDiameter)
 
-        let fieldX = BioMetrics.textInset - CatalogCardKit.labelInset
+        let fieldX = AboutMetrics.textInset - CatalogCardKit.labelInset
         let fieldWidth = self.fieldWidth(for: bounds.width)
         let text = textMetrics(width: bounds.width)
         // 正文可见高度：带里除去固定几条剩下多少就给多少，且不超过正文自己的高度
         // （否则非翻转坐标系里比可视区矮的文档会沉到底，「关于」与正文之间空一大截）。
         let bodyVisible = max(0, min(text.body, band - text.fixed))
 
-        var cursor = BioMetrics.bottomPadding
+        var cursor = AboutMetrics.bottomPadding
         bodyScroll.frame = NSRect(x: fieldX, y: cursor, width: fieldWidth, height: bodyVisible)
         bodyDocument.frame = NSRect(x: 0, y: 0, width: fieldWidth, height: text.body)
         bodyField.frame = bodyDocument.bounds
         // 文档比可视区高时 `NSScrollView` 初始停在**底部**（非翻转坐标系），先拉回顶端。
         bodyScroll.contentView.scroll(to: NSPoint(x: 0, y: text.body - bodyVisible))
         bodyScroll.hasVerticalScroller = text.body > bodyVisible
-        cursor += bodyVisible + BioMetrics.aboutToBody
+        cursor += bodyVisible + AboutMetrics.aboutToBody
 
         let aboutHeight = height(of: aboutTitle, width: fieldWidth)
         aboutTitle.frame = NSRect(x: fieldX, y: cursor, width: fieldWidth, height: aboutHeight)
-        cursor += aboutHeight + BioMetrics.factsToAbout
+        cursor += aboutHeight + AboutMetrics.factsToAbout
 
         // 事实行自下而上摆：每条先正文（或胶囊）后标签，条与条之间 factSpacing。
         for (index, row) in factRows.enumerated().reversed() {
             let valueHeight = self.valueHeight(row.value)
-            if let chip = row.value as? ArtistBioChip {
-                chip.frame = NSRect(x: BioMetrics.textInset, y: cursor,
+            if let chip = row.value as? AboutChip {
+                chip.frame = NSRect(x: AboutMetrics.textInset, y: cursor,
                                     width: chip.intrinsicContentSize.width, height: valueHeight)
             } else {
                 row.value.frame = NSRect(x: fieldX, y: cursor,
                                          width: fieldWidth, height: valueHeight)
             }
-            cursor += valueHeight + BioMetrics.factLabelToValue
+            cursor += valueHeight + AboutMetrics.factLabelToValue
             let labelHeight = CatalogCardKit.lineHeight(row.label)
             row.label.frame = NSRect(x: fieldX, y: cursor, width: fieldWidth, height: labelHeight)
             cursor += labelHeight
-            if index > 0 { cursor += BioMetrics.factSpacing }
+            if index > 0 { cursor += AboutMetrics.factSpacing }
         }
-        if !factRows.isEmpty { cursor += BioMetrics.nameToFacts }
+        if !factRows.isEmpty { cursor += AboutMetrics.nameToFacts }
 
         let nameHeight = height(of: nameField, width: fieldWidth)
         nameField.frame = NSRect(x: fieldX, y: cursor, width: fieldWidth, height: nameHeight)
@@ -438,9 +442,9 @@ final class ArtistBioPanelView: NSView {
 /// toast 这些覆盖层的宿主，照它现有的做法再加一层，Esc 也顺着它已有的
 /// `cancelOperation(_:)` 走。sheet 白给的那三样（动画 / 焦点 / Esc）这边分别是：
 /// 淡入淡出（带「减弱动态效果」降级）、面板自己吞点击、宿主的 `cancelOperation`。
-final class ArtistBioOverlayView: NSView {
+final class AboutPanelOverlayView: NSView {
 
-    let panel = ArtistBioPanelView()
+    let panel = AboutPanelView()
     /// 点面板外面 / 点 ✕ 都走这条。
     var onDismiss: (() -> Void)?
 
@@ -464,7 +468,7 @@ final class ArtistBioOverlayView: NSView {
                              width: size.width, height: size.height)
     }
 
-    /// 落在面板上的点击由面板自己吞（`ArtistBioPanelView.mouseDown`），
+    /// 落在面板上的点击由面板自己吞（`AboutPanelView.mouseDown`），
     /// 冒到这里的就只剩「面板外面」。
     override func mouseDown(with event: NSEvent) { onDismiss?() }
 

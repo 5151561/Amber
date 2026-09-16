@@ -18,7 +18,7 @@ import SwiftUI
 /// `NSThemeFrame` 下照样有那一层 `NSVisualEffectView material=18 blend=1`。
 /// 系统给的那层别动；我们这层留着是因为它同时给子视图提供 vibrancy 落点。
 @MainActor
-final class RootViewController: NSViewController, ArtistBioPresenting {
+final class RootViewController: NSViewController, AboutPanelPresenting {
 
     private let appState: AppState
     let splitViewController: MainSplitViewController
@@ -135,27 +135,27 @@ final class RootViewController: NSViewController, ArtistBioPresenting {
         ])
     }
 
-    // MARK: - 艺人简介面板
+    // MARK: - 介绍面板
 
-    /// 艺人页 hero 上那枚 ⓘ 点开的面板（`ArtistBioPanel.swift`）。
+    /// 艺人页 hero 上那枚 ⓘ、专辑页头简介末行的「更多」点开的那张卡（`AboutPanel.swift`）。
     /// 挂在窗口根上、盖在所有东西之上，与迷你播放器/整窗播放器/toast 同一套做法。
-    /// 面板本身是 AppKit 覆盖层而不是 sheet，理由写在 `ArtistBioOverlayView` 的注释里。
-    private var bioOverlay: ArtistBioOverlayView?
+    /// 面板本身是 AppKit 覆盖层而不是 sheet，理由写在 `AboutPanelOverlayView` 的注释里。
+    private var aboutOverlay: AboutPanelOverlayView?
 
-    func presentArtistBio(_ content: ArtistBioContent) {
-        dismissArtistBio(animated: false)
-        let overlay = ArtistBioOverlayView(frame: view.bounds)
+    func presentAboutPanel(_ content: AboutContent) {
+        dismissAboutPanel(animated: false)
+        let overlay = AboutPanelOverlayView(frame: view.bounds)
         overlay.autoresizingMask = [.width, .height]
         overlay.panel.apply(content)
-        overlay.onDismiss = { [weak self] in self?.dismissArtistBio(animated: true) }
+        overlay.onDismiss = { [weak self] in self?.dismissAboutPanel(animated: true) }
         view.addSubview(overlay)   // 最后加 = 盖在最上面
-        bioOverlay = overlay
+        aboutOverlay = overlay
         fade(overlay, to: 1, from: 0, animated: true, completion: nil)
     }
 
-    private func dismissArtistBio(animated: Bool) {
-        guard let overlay = bioOverlay else { return }
-        bioOverlay = nil
+    private func dismissAboutPanel(animated: Bool) {
+        guard let overlay = aboutOverlay else { return }
+        aboutOverlay = nil
         fade(overlay, to: 0, from: nil, animated: animated) { overlay.removeFromSuperview() }
     }
 
@@ -182,9 +182,9 @@ final class RootViewController: NSViewController, ArtistBioPresenting {
     /// 「播放中」用 Esc 收起。响应链原生就有这条（`cancelOperation(_:)`），
     /// 旧版要在 NowPlayingView 里挂一颗零尺寸隐形按钮才收得到 Esc。
     override func cancelOperation(_ sender: Any?) {
-        // 简介面板压在最上面，Esc 先关它。
-        if bioOverlay != nil {
-            dismissArtistBio(animated: true)
+        // 介绍面板压在最上面，Esc 先关它。
+        if aboutOverlay != nil {
+            dismissAboutPanel(animated: true)
             return
         }
         if appState.showingNowPlaying {
