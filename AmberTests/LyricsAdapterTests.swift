@@ -221,6 +221,87 @@ final class LyricsAdapterTests: XCTestCase {
         XCTAssertEqual(lyrics.vocalistsType, .single)
         XCTAssertTrue(lyrics.lines.allSatisfy { ($0 as? TextLine)?.agentAlignment == .normal })
     }
+
+    // MARK: - 无时间戳的纯文本
+
+    private func plain(_ index: Int, _ text: String,
+                       translation: String? = nil,
+                       startsParagraph: Bool = false) -> LyricLine {
+        LyricLine(index: index, time: 0, end: 0, text: text, translation: translation,
+                  kind: .plain, startsParagraph: startsParagraph)
+    }
+
+    /// 整份无戳 ⇒ 静态档：每行都是 `TextLine`，时间非有限（永不选中、点击跳转天然被挡），
+    /// 没有逐字也没有能力位。
+    func testUntimedBecomesStaticTextLines() throws {
+        let lyrics = LyricsAdapter.makeLyrics(from: [plain(0, "一", startsParagraph: true),
+                                                    plain(1, "二")])
+        XCTAssertEqual(lyrics.type, .static)
+        XCTAssertEqual(lyrics.lines.count, 2)
+        for mapped in lyrics.lines {
+            let text = try XCTUnwrap(mapped as? TextLine)
+            XCTAssertFalse(text.startTime.isFinite)
+            XCTAssertFalse(text.endTime.isFinite)
+            XCTAssertTrue(text.syllables.isEmpty)
+            XCTAssertEqual(text.capabilities, [])
+        }
+    }
+
+    /// 本模块的头号不变量在新分支上重测一遍
+    func testUntimedIndicesMatchArrayPositions() {
+        let source = (0..<5).map { plain($0, "第\($0)句") }
+            + [line(5, 0, 0, text: "创作者：甲", kind: .credits)]
+        let lyrics = LyricsAdapter.makeLyrics(from: source)
+        XCTAssertEqual(lyrics.lines.count, 6)
+        for (position, mapped) in lyrics.lines.enumerated() {
+            XCTAssertEqual(mapped.index, position)
+        }
+    }
+
+    /// 尾行仍是 `SongwritersLine`，`songwriters` 非空
+    func testUntimedKeepsSongwritersLine() {
+        let lyrics = LyricsAdapter.makeLyrics(from: [plain(0, "一"),
+                                                     line(1, 0, 0, text: "创作者：甲", kind: .credits)])
+        XCTAssertEqual(lyrics.type, .static, "尾部那条 credits 不把整份赶出静态档")
+        XCTAssertTrue(lyrics.lines[1] is SongwritersLine)
+        XCTAssertEqual(lyrics.songwriters, ["创作者：甲"])
+    }
+
+    /// 段落位是**解析层给的结构信息**（纯文本里的空行），原样透传，不在这里猜
+    func testParagraphFlagPassesThrough() {
+        let source = [plain(0, "一", startsParagraph: true),
+                      plain(1, "二"),
+                      plain(2, "三", startsParagraph: true)]
+        let flags = LyricsAdapter.makeLyrics(from: source).lines
+            .map { ($0 as? TextLine)?.isFirstLineOfParagraph }
+        XCTAssertEqual(flags, [true, false, true])
+    }
+
+    /// 无戳的译文照旧落到副行上
+    func testUntimedTranslationIsCarriedOver() {
+        let lyrics = LyricsAdapter.makeLyrics(from: [plain(0, "一", translation: "one")])
+        XCTAssertEqual((lyrics.lines[0] as? TextLine)?.translation, "one")
+    }
+
+    /// 新分支没有劫持老路：带戳输入仍是 `.timedLines` / `.timedWords`
+    func testTimedInputIsNotHijacked() {
+        XCTAssertEqual(LyricsAdapter.makeLyrics(from: [line(0, 0, 3, text: "整行")]).type, .timedLines)
+        let syllables = [LyricSyllable(text: "逐", time: 0, duration: 0.5),
+                         LyricSyllable(text: "字", time: 0.5, duration: 0.5)]
+        XCTAssertEqual(LyricsAdapter.makeLyrics(
+            from: [line(0, 0, 3, text: "逐字", syllables: syllables)]).type, .timedWords)
+        // 带戳正文 + 尾部 credits：仍是同步档
+        let mixed = [line(0, 0, 3, text: "整行"),
+                     line(1, 3, 23, text: "创作者：甲", kind: .credits)]
+        XCTAssertEqual(LyricsAdapter.makeLyrics(from: mixed).type, .timedLines)
+    }
+
+    /// 空歌词是「确认没词」，不能翻进静态档
+    func testEmptyLyricsAreNotUntimed() {
+        XCTAssertFalse([LyricLine]().isUntimed)
+        XCTAssertTrue([LyricLine(index: 0, time: 0, end: 0, text: "一", kind: .plain)].isUntimed)
+        XCTAssertFalse([LyricLine(index: 0, time: 0, end: 3, text: "一")].isUntimed)
+    }
 }
 
 // MARK: - LyricsStore

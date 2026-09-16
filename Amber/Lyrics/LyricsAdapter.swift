@@ -14,8 +14,14 @@ enum LyricsAdapter {
 
         // 任一行带逐字时间轴就整首按逐字走——`lyrics.type == .timedWords` 是
         // §9.1 描述符工厂那条推导支的准入条件。
+        //
+        // `.static` 是第三档：整份词一个时间戳都没有（`LyricParser` 的无戳路径）。
+        // 它决定的是渲染契约（`LyricsSpecs.renderingMode`），不是某一行的形态，
+        // 所以在这里判一次、往下只读这个结论。
         let hasSyllables = lines.contains { !$0.syllables.isEmpty }
-        lyrics.type = hasSyllables ? .timedWords : .timedLines
+        lyrics.type = lines.isUntimed
+            ? .static
+            : (hasSyllables ? .timedWords : .timedLines)
         // 源数据直接给的前奏长度：第一条内容的起点。
         lyrics.leadingSilence = lines.first?.time ?? 0
 
@@ -43,6 +49,25 @@ enum LyricsAdapter {
                 // 原版这一行的时间是 ±∞（永不选中、永不淘汰）。Amber 的解析器给了
                 // 一段真实时长，但选中它没有意义——照原版留 ∞。
                 return songwriters
+
+            case .plain:
+                // 纯文本行：没有任何时间可言。时间给 ±∞ 而不是 0——与 `SongwritersLine`
+                // 同解（永不选中、永不淘汰），也让 `SyncedLyricsView.Coordinator` 里
+                // 那道 `startTime.isFinite` 天然把点击跳转挡掉，不依赖单独某一道闸。
+                var plain = TextLine()
+                plain.index = index
+                plain.startTime = .infinity
+                plain.endTime = .infinity
+                plain.primaryVocalsStartTime = .infinity
+                plain.primaryVocalsEndTime = .infinity
+                plain.text = line.text
+                plain.translation = line.translation.flatMap { $0.isEmpty ? nil : $0 }
+                plain.transliteration = line.transliteration.flatMap { $0.isEmpty ? nil : $0 }
+                // 段首是**解析层给的结构信息**（纯文本里的空行），不是从时间轴上猜的，
+                // 与下面 `.lyric` 那一大段「不要再猜段落」并不矛盾。
+                plain.isFirstLineOfParagraph = line.startsParagraph
+                plain.agentAlignment = alignments[index]
+                return plain
 
             case .lyric:
                 var text = TextLine()

@@ -99,7 +99,16 @@ final class SyncedLyricsViewController: NSViewController {
     }
 
     func updateDisplayLink() {
-        if isVisible && isActive { startDisplayLink() } else { stopDisplayLink() }
+        // 静态档（整份无戳纯文本）没有时间轴可走查，每帧驱动整个不启动。
+        // 闸放在控制器这一层而不是宿主侧：一处改动同时覆盖整窗与侧栏两个宿主。
+        // 停掉之后没有旁路依赖——`viewDidLayout` 的`layoutLines(anchor: nil, …)`
+        // 因 `before == after == .zero` 返回 nil，`scrollTargetLineView(at:)` 读空的
+        // `selectedLineViews` 得 nil，`SyncedLyricsManager.setLyrics` 不发 delegate 回调。
+        if isVisible && isActive && specs.renderingMode != .static {
+            startDisplayLink()
+        } else {
+            stopDisplayLink()
+        }
         // 停链之后补同步一次模糊。[PX] §22.3 的「暂停后全表清晰」平时靠
         // `displayLinkFired` 每帧看一眼，但整窗那端的`isActive` 本身就带着
         // `isPlaying`（`NowPlayingLyrics.syncOptions`：`isVisible && !isEmpty && isPlaying`）

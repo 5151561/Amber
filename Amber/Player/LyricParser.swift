@@ -15,6 +15,10 @@ import Foundation
 ///
 /// 一行多个时间戳会展开成多行；元信息行（`[ti:]` 等）忽略。
 /// 翻译按时间就近匹配（容差 0.6 秒）。
+///
+/// 还有第三档：**整份词一条时间戳都没有**（纯文本歌词）。那时全部时间派生物
+/// （间奏、行结束、按时间认领副行）都无从谈起，走 `parseUntimed` 出一份
+/// `.plain` 行，界面静态整页显示。
 enum LyricParser {
 
     // MARK: - 时长推断参数
@@ -36,6 +40,18 @@ enum LyricParser {
     static func parse(_ text: String, translation: String? = nil,
                       transliteration: String? = nil) -> [LyricLine] {
         var raw = parseTimedLines(text)
+        // **一条真正带时间戳的行都没有** ⇒ 纯文本歌词，走无戳那条路。
+        //
+        // 判据不能写成「`raw` 为空」：网易的 `lrc` 可以是「JSON 制作人信息头 + 无戳正文」，
+        // 那些头行被 `parseNeteaseMetaLine` 以 `time = 0` 收下，`raw` 非空，
+        // 而正文一行都没进来——那样照旧返回 `[]`，界面显示「暂时没有歌词」。
+        //
+        // 这一句必须排在下面 `removeAll` **之前**：占位行（`[00:10.00]//`）被滤空之后
+        // `raw` 也会变空，但那是「有时间戳、只是没文字」，它该留在带戳这条路上返回 `[]`。
+        guard raw.contains(where: { !$0.isMetadata }) else {
+            return parseUntimed(text, translation: translation,
+                                transliteration: transliteration)
+        }
         // 正文不要空文字行（占位行是给副行对齐用的，正文里没有意义）。
         raw.removeAll { $0.text.isEmpty }
         guard !raw.isEmpty else { return [] }
@@ -70,6 +86,9 @@ enum LyricParser {
         var isAgentCue = false
         /// 这一行归谁唱。由上方最近一条提示行给出。
         var vocalist: LyricLine.Vocalist?
+        /// 上面隔着一个空行 ⇒ 这一行是段首。**只有无戳那条路会置真**：
+        /// 带戳的歌词里空行是副行的占位，不是段落（见 `untimedRawLines`）。
+        var startsParagraph = false
     }
 
     private static let lrcTimestamp = try! NSRegularExpression(
@@ -834,6 +853,159 @@ enum LyricParser {
             }
         }
 
+        return result
+    }
+
+    // MARK: - 无时间戳的纯文本
+
+    /// 整份词一条时间戳都没有时走这条路：静态整页，不高亮不滚。
+    ///
+    /// 清洗环节**全部复用**带戳那条路的（`stripLeadingCredits` / `stripTrailingCredits` /
+    /// `classify` / `isNoticeLine` / `markAgentCues` / `Credits.fillGaps`）——它们只读
+    /// `RawLine.text` / `.isMetadata` / `.isAgentCue`，一个都不看时间。这正是这里仍然
+    /// 走 `RawLine` 而不另造一套平行结构的理由：头尾制作表、`【…】` 声明行、歌手提示行
+    /// 这三件事在无戳歌词里一样会出现，「整首都像键：值时尾块不摘」那条保护也跟着继承。
+    ///
+    /// 与 `parse` 的差别只有两处：分词器换成 `untimedRawLines`（**不排序**），
+    /// 组装换成 `assembleUntimed`（没有间奏、没有行结束、没有按时间认领的副行）。
+    private static func parseUntimed(_ text: String, translation: String?,
+                                     transliteration: String?) -> [LyricLine] {
+        var raw = untimedRawLines(text)
+        guard !raw.isEmpty else { return [] }
+
+        var credits = stripLeadingCredits(&raw)
+        credits.fillGaps(from: stripTrailingCredits(&raw))
+        guard !raw.isEmpty else { return [] }
+        markAgentCues(&raw)
+
+        let trans = translation.map { untimedSecondaryLines($0) } ?? []
+        let roma = transliteration.map { untimedSecondaryLines($0) } ?? []
+        return assembleUntimed(raw, translation: trans, transliteration: roma, credits: credits)
+    }
+
+    /// 无戳文本自己的分词器。
+    ///
+    /// **不排序**，这是它不复用 `parseTimedLines` 的全部原因：后者末尾那句
+    /// `sorted { $0.time < $1.time }` 在全 0 的时间上不稳定（Swift 的 introsort 不保序），
+    /// 二十来行就会被打乱——而**文件顺序是纯文本歌词仅有的顺序信息**。
+    ///
+    /// 空行**不是简单丢掉**：纯文本里空行是仅有的段落信息（[实测 2026-09-16] 网易
+    /// 《国王的新衣》正文里多处空行分段）。吃掉空行，把「下一条非空行是段首」记在
+    /// `RawLine.startsParagraph` 上，最终落到 `LyricLine.startsParagraph`。
+    ///
+    /// 行首 BOM（`U+FEFF`）要去：[实测 2026-09-16] 网易《国王的新衣》正文首行带着它，
+    /// 留着就是行首一个宽度不定的空格。整行都去而不只去开头——`U+FEFF` 是零宽字符，
+    /// 歌词里出现在哪儿都不是内容。
+    private static func untimedRawLines(_ text: String) -> [RawLine] {
+        var items: [RawLine] = []
+        var startsParagraph = false
+        for rawLine in text.components(separatedBy: .newlines) {
+            let trimmed = rawLine
+                .replacingOccurrences(of: "\u{feff}", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            // 网易的 JSON 制作人信息头在无戳的 `lrc` 里照样有，仍旧交给它。
+            // 它不上屏，所以不动段首位——空行后面紧跟一条 JSON 头时，段首归再下一行。
+            if let meta = parseNeteaseMetaLine(trimmed) {
+                items.append(meta)
+                continue
+            }
+            guard !trimmed.isEmpty else {
+                startsParagraph = true
+                continue
+            }
+            // QQ 的 `//` 占位行在无戳这条路上没有占位的必要（副行按下标配对，不按时间）。
+            guard !isPlaceholder(trimmed) else { continue }
+            // LRC 的元信息标签（`[ti:]` / `[ar:]` / `[offset:]` …）。带戳那条路上
+            // `parseLRCLine` 认不出时间戳、直接丢，等于「忽略」；无戳这条路没有那道
+            // 天然的滤网，不显式滤掉的话它们会原样上屏成歌词。
+            guard !isLRCTagLine(trimmed) else { continue }
+            items.append(RawLine(time: 0, declaredDuration: nil, text: trimmed,
+                                 syllables: [], startsParagraph: startsParagraph))
+            startsParagraph = false
+        }
+        return items
+    }
+
+    /// 整行就是一个 LRC 元信息标签：`[键:值]`，键是拉丁字母（`ti` / `ar` / `al` /
+    /// `by` / `offset` / `re` / `ve` …，不穷举）。
+    ///
+    /// 键限定为拉丁字母有两个作用：`[00:05.00]` 这种时间戳不会命中（键是数字，
+    /// 而且它本来也走不到这儿），中文的方括号旁白（`[旁白：他说]`）也不会被误滤。
+    private static let lrcTagLine = try! NSRegularExpression(
+        pattern: "^\\[[A-Za-z#]+:[^\\]]*\\]$")
+
+    private static func isLRCTagLine(_ text: String) -> Bool {
+        let ns = text as NSString
+        return lrcTagLine.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) != nil
+    }
+
+    /// 无戳正文的副行（网易的 `tlyric` / `romalrc` 常常同样无戳）。
+    ///
+    /// 用**同一个**分词器，再跑一遍头尾 credits 摘除——返回的 `Credits` 丢弃，
+    /// 摘只为把两边归一化：`tlyric` 确实会把「作词 : …」原样回显一遍，不摘就整体错位。
+    ///
+    /// 配对判据在 `assembleUntimed`：**只在行数完全相等时**按下标配上，否则整份丢弃。
+    /// 不加任何时间容差与比例系数——这是结构判据，错位的译文严格比没有译文更糟。
+    private static func untimedSecondaryLines(_ text: String) -> [RawLine] {
+        // 副行自己带时间戳（正文无戳、译文有戳）：两边没有可对齐的结构，直接丢弃，别猜。
+        // 判据与 `parse` 的分支判据是同一句。
+        guard !parseTimedLines(text).contains(where: { !$0.isMetadata }) else { return [] }
+        var lines = untimedRawLines(text)
+        _ = stripLeadingCredits(&lines)
+        _ = stripTrailingCredits(&lines)
+        return lines
+    }
+
+    /// 照 `assemble` 去掉一切时间派生物：没有 `ends[]`、没有前奏/中段的间奏行、
+    /// 没有按时间认领的 `claim`、没有按音节归位的 `attachTransliteration`。
+    ///
+    /// 剩下的只有两件事：行本身，与「谁是段首」。
+    private static func assembleUntimed(_ raw: [RawLine], translation: [RawLine],
+                                        transliteration: [RawLine],
+                                        credits: Credits) -> [LyricLine] {
+        // 歌手提示行同样不上屏（标记由 `markAgentCues` 打，与带戳那路共用）。
+        let emitted = raw.indices.filter { !raw[$0].isAgentCue }
+        guard !emitted.isEmpty else { return [] }
+
+        /// 副行按**下标**认领。两种行数都接受：与 `raw` 等长（副行文件把歌手提示行也写了），
+        /// 或与上屏行数等长（副行文件省掉了提示行）。其余一律 `nil`——fail-closed。
+        func secondary(_ lines: [RawLine], offset: Int, rank: Int) -> String? {
+            let text: String
+            if lines.count == raw.count {
+                text = lines[offset].text
+            } else if lines.count == emitted.count {
+                text = lines[rank].text
+            } else {
+                return nil
+            }
+            return text.isEmpty ? nil : text
+        }
+
+        var result: [LyricLine] = []
+        // 首行算段首——与带戳那路的 `isFirstLineOfParagraph = previousEnd == nil` 同解。
+        var startsParagraph = true
+        for offset in raw.indices {
+            if raw[offset].startsParagraph { startsParagraph = true }
+            // 提示行不上屏；它要是段首，段首位顺延给下一条上屏的行。
+            guard !raw[offset].isAgentCue else { continue }
+            let line = raw[offset]
+            // `index` 必须等于它在返回数组里的下标（`LyricsAdapter` 的头号不变量）。
+            let rank = result.count
+            result.append(LyricLine(index: rank, time: 0, end: 0, text: line.text,
+                                    translation: secondary(translation, offset: offset, rank: rank),
+                                    transliteration: secondary(transliteration, offset: offset, rank: rank),
+                                    kind: .plain,
+                                    vocalist: line.vocalist,
+                                    startsParagraph: startsParagraph))
+            startsParagraph = false
+        }
+
+        if !credits.isEmpty {
+            // 时间在这条路上没有意义：适配层给 `SongwritersLine` 的本来就是 ±∞。
+            result.append(LyricLine(index: result.count, time: 0, end: 0,
+                                    text: "创作者：" + credits.names.joined(separator: "、"),
+                                    kind: .credits))
+        }
         return result
     }
 }

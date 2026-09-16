@@ -165,9 +165,28 @@ extension SyncedLyricsViewController {
         // 行是**带着模糊出生**的：`selecting line` 第五步显式去模糊
         // （§9.2 的 `(target, true, 0.0)`），`deselecting line`
         // 又把 3.0 填回去（§9.8）——这套只有在「非选中行默认糊着」时才自洽。
-        for view in manager.lineViews {
-            manager.setBlurRadius(SyncedLyricsVisualExperienceManager.deselectedBlurRadius,
-                                  on: view, animated: false)
+        //
+        // 静态档（整份无戳纯文本）反过来：**诞生即选中**。那一档的去模糊本来由
+        // 时间驱动的选行负责，而这份词没有时间轴，模糊永远散不掉；叠上
+        // `deselectedTextColor`（白 α0.175）就是一面看不见的墙。
+        //
+        // 一句就够，不需要 `setProgress`：无戳行没有音节，内容层恒是
+        // `TextContentLayer`（见 `+Content.swift` 的分支），逐字渐变那条链
+        // 结构上够不着；`animation: nil` 即瞬时落值 + 单位变换（不缩 0.98），
+        // 内容层的主色于是取 `selectedTextColor`（100%）。
+        //
+        // **走图层直连、不进 `selectLine`**：`selectedLineViews` 是淘汰、滚动焦点
+        // 与 `unblurredLineViewIDs` 三件事的依据，这面墙不参与那套状态机。
+        // 不进 `blurredLineViews`，下游每一处「把模糊填回去」的循环也就无事可做。
+        if specs.renderingMode == .static {
+            for view in manager.lineViews {
+                view.lineLayer?.apply(selected: true, animation: nil)
+            }
+        } else {
+            for view in manager.lineViews {
+                manager.setBlurRadius(SyncedLyricsVisualExperienceManager.deselectedBlurRadius,
+                                      on: view, animated: false)
+            }
         }
     }
 
@@ -385,8 +404,9 @@ extension SyncedLyricsViewController {
 
     @objc func displayLinkFired() {
         guard let visual = manager, let timeline = visual.manager else { return }
-        // [PX] §22.3：暂停后全表清晰，恢复播放再糊回去。放在静态档那道闸**之前**——
-        // `setLyrics` 里「带着模糊出生」那一手不看`renderingMode`，清除也不该看。
+        // [PX] §22.3：暂停后全表清晰，恢复播放再糊回去。静态档的早退落在
+        // `syncBlurToPlaybackState()` 自己开头（那一档压根不产生模糊，没有要清的、
+        // 更不该回填），所以摆在下面那道闸前后都一样。
         visual.syncBlurToPlaybackState()
         guard specs.renderingMode != .static else { return }
 

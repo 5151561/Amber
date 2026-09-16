@@ -137,6 +137,89 @@ final class LyricsLRCTests: XCTestCase {
             """)
     }
 
+    // MARK: - 无时间戳那一档
+
+    private func plain(_ index: Int, _ text: String, translation: String? = nil,
+                       transliteration: String? = nil) -> LyricLine {
+        LyricLine(index: index, time: 0, end: 0, text: text,
+                  translation: translation, transliteration: transliteration, kind: .plain)
+    }
+
+    /// 纯文本歌词写成纯文本：一个 `[` 都不该出现，行序与入参一致。
+    /// 给每行补 `[00:00.00]` 会让规矩的播放器把整首当成第 0 秒的一行。
+    func testUntimedLyricsAreWrittenWithoutTimestamps() {
+        let out = LyricsLRC.text(from: [
+            plain(0, "第一行"),
+            plain(1, "第二行"),
+            plain(2, "第三行"),
+        ])
+        XCTAssertEqual(out, """
+            第一行
+            第二行
+            第三行
+            """)
+        XCTAssertEqual(out?.contains("["), false)
+    }
+
+    /// 无戳那一档**不排序**：文件顺序是纯文本仅有的顺序信息，index 乱序也照原样写。
+    /// （带戳那支的排序由 `testUnorderedInputIsSorted` 守着，两条互不影响。）
+    func testUntimedLyricsKeepInputOrder() {
+        XCTAssertEqual(LyricsLRC.text(from: [
+            plain(7, "先出现的"),
+            plain(2, "后出现的"),
+        ]), """
+            先出现的
+            后出现的
+            """)
+    }
+
+    /// 双语纯文本：译文紧跟它那一行，而不是攒到末尾。
+    func testUntimedTranslationFollowsItsLine() {
+        XCTAssertEqual(LyricsLRC.text(from: [
+            plain(0, "Hello", translation: "你好"),
+            plain(1, "World", translation: "世界"),
+        ]), """
+            Hello
+            你好
+            World
+            世界
+            """)
+    }
+
+    /// 发音副行在这一档同样不写（沿用带戳那支的取舍）。
+    func testUntimedTransliterationIsDropped() {
+        XCTAssertEqual(LyricsLRC.text(from: [plain(0, "甘い", transliteration: "amai")]), "甘い")
+    }
+
+    /// 尾部创作者不写。只剩创作者时整份就没有正文了 ⇒ nil。
+    func testUntimedCreditsAreDroppedAndCreditsOnlyReturnsNil() {
+        XCTAssertEqual(LyricsLRC.text(from: [
+            plain(0, "正文"),
+            line(1, 0, "词：某某", kind: .credits),
+        ]), "正文")
+        XCTAssertNil(LyricsLRC.text(from: [line(0, 0, "词：某某", kind: .credits)]))
+    }
+
+    /// 无戳但正文全是空白 ⇒ nil，别给文件塞一串空行。
+    func testUntimedAllBlankReturnsNil() {
+        XCTAssertNil(LyricsLRC.text(from: [
+            plain(0, "   "),
+            plain(1, ""),
+            plain(2, "\n"),
+        ]))
+    }
+
+    /// `.plain` 混进带戳的一份里时（真实解析不会产出这种，防的是以后改坏）：
+    /// 整份不算无戳，`.plain` 就被带戳那支的 `.lyric` 过滤挡在外面，一个字都不写。
+    func testPlainLinesNeverLeakIntoTimedOutput() {
+        XCTAssertEqual(LyricsLRC.text(from: [
+            line(0, 1, "带戳的"),
+            plain(1, "无戳的"),
+        ]), "[00:01.00]带戳的")
+    }
+
+    // MARK: - 排序（续）
+
     /// 歌手提示行与间奏、创作者同档：它标的是结构，不是歌词原文，不写进标签
     func testAgentCueLinesAreNotWritten() {
         let lrc = """
