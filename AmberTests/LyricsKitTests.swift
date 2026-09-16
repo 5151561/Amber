@@ -1749,7 +1749,8 @@ final class LyricsKitTests: XCTestCase {
             isRightToLeft: false,
             outerPadding: CGSize(width: 30, height: 6))
         XCTAssertEqual(frames.gradient, CGRect(x: 170, y: -6, width: 30, height: 62))
-        XCTAssertEqual(frames.fill, CGRect(x: 0, y: 0, width: 170, height: 50))
+        // 实心区与软边条同样纵向外扩 pad：抬升会把已唱字顶出 bounds，贴合会切墨。
+        XCTAssertEqual(frames.fill, CGRect(x: 0, y: -6, width: 170, height: 62))
         // 横向余量层的高度是 2·outer.height，**不含** bounds.height
         XCTAssertEqual(frames.horizontalPadding, CGRect(x: -30, y: -6, width: 30, height: 12))
     }
@@ -2058,7 +2059,69 @@ final class LyricsKitTests: XCTestCase {
         XCTAssertTrue(SBS_TextContentLayer.shouldForward(newProgress: 9.5, current: 10))
     }
 
+    /// 放行之后还要分清「逐帧步进」与「seek」：抬升只在前者走弹簧。
+    /// 倒退一律算跳——放回原位本来就是 seek 的收尾。
+    func testContinuousAdvanceGatesLiftAnimation() {
+        XCTAssertTrue(SBS_TextContentLayer.isContinuousAdvance(newProgress: 10.016, current: 10))
+        XCTAssertTrue(SBS_TextContentLayer.isContinuousAdvance(newProgress: 10.25, current: 10))
+        XCTAssertFalse(SBS_TextContentLayer.isContinuousAdvance(newProgress: 10.9, current: 10))
+        XCTAssertFalse(SBS_TextContentLayer.isContinuousAdvance(newProgress: 10, current: 10))
+        XCTAssertFalse(SBS_TextContentLayer.isContinuousAdvance(newProgress: 9.4, current: 10))
+    }
+
     // MARK: - §8.1 抬升 / 强调
+
+    /// 抬升那条弹簧要的是**慢**：ω₀ = 3.742、ζ = 0.935，九成落位约 0.66 s——
+    /// Apple Music 的观感是「慢慢漂浮」，调硬就变成逐字弹跳。
+    func testSyllableLiftUsesMeasuredSpring() {
+        let spring = SpringTimingParameters.syllableEmphasis
+        XCTAssertEqual(spring.mass, 1)
+        XCTAssertEqual(spring.stiffness, 14)
+        XCTAssertEqual(spring.damping, 7)
+        let omega = (spring.stiffness / spring.mass).squareRoot()
+        XCTAssertEqual(omega, 3.742, accuracy: 1e-3)
+        XCTAssertLessThan(spring.damping / (2 * (spring.stiffness * spring.mass).squareRoot()), 1)
+    }
+
+    /// 播放中一个音节轮到了，那 2pt 必须挂动画慢慢飘；seek 落点则当场落位。
+    /// 漏了这条，`animated: false` 会把弹簧整条短路成瞬移，观感就是逐字弹跳。
+    func testLiftAnimatesOnlyOnContinuousAdvance() throws {
+        func makeLayer() -> SBS_TextContentLayer {
+            var line = TextLine()
+            line.text = "歌词"
+            line.startTime = 0
+            line.endTime = 2
+            line.capabilities = [.gradient, .lift]
+            line.syllables = [
+                .init(text: "歌", startTime: 0, endTime: 1),
+                .init(text: "词", startTime: 1, endTime: 2),
+            ]
+            let layer = SBS_TextContentLayer()
+            layer.specs = specs()
+            layer.setLine(line)
+            layer.setSelected(true, animated: false)
+            layer.bounds = CGRect(x: 0, y: 0, width: 300, height: 80)
+            layer.layoutSublayers()
+            return layer
+        }
+
+        // 逐帧步进越过第二个音节的起唱点：挂着 position 动画，模型值已是抬升位。
+        let playing = makeLayer()
+        let base = try XCTUnwrap(playing.rows.first?.syllables[safe: 1]?.base)
+        let restingY = base.position.y
+        playing.setProgress(0.99, animated: true)
+        playing.setProgress(1.01, animated: true)
+        XCTAssertNotNil(base.animation(forKey: "position"))
+        XCTAssertEqual(base.position.y, restingY - specs().syllableLift, accuracy: 1e-6)
+
+        // 同一个起唱点，这次是 seek 过去的：一步到位，不起飞。
+        let seeked = makeLayer()
+        let seekedBase = try XCTUnwrap(seeked.rows.first?.syllables[safe: 1]?.base)
+        let seekedRestingY = seekedBase.position.y
+        seeked.setProgress(1.01, animated: true)
+        XCTAssertNil(seekedBase.animation(forKey: "position"))
+        XCTAssertEqual(seekedBase.position.y, seekedRestingY - specs().syllableLift, accuracy: 1e-6)
+    }
 
     func testEmphasisScaleIsLinear() {
         let s = specs()
@@ -2069,14 +2132,14 @@ final class LyricsKitTests: XCTestCase {
                        accuracy: 1e-9)
     }
 
-    /// `syllableLift = 2` 是直接从纵向落点里减掉的常量位移，不是动画幅度。
+    /// `syllableLift` 是直接从纵向落点里减掉的常量位移，不是动画幅度。
     func testGlyphPositionSubtractsLift() {
         let s = specs()
         let withLift = SyncedLyricsLineLayer.SyllableEmphasis.glyphPosition(
             origin: CGPoint(x: 10, y: 20), scaledSize: CGSize(width: 30, height: 40),
             scale: 1, specs: s)
         XCTAssertEqual(withLift.x, (30 + 10 + 10) * 0.5, accuracy: 1e-9)
-        XCTAssertEqual(withLift.y, (40 + 20 + 20) * 0.25 - 2, accuracy: 1e-9)
+        XCTAssertEqual(withLift.y, (40 + 20 + 20) * 0.25 - s.syllableLift, accuracy: 1e-9)
     }
 
     // MARK: - 滚动弹簧

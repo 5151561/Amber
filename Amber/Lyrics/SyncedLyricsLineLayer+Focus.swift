@@ -235,4 +235,20 @@ extension SBS_TextContentLayerProgress {
         if newProgress < current { return current - newProgress >= 0.5 }
         return true
     }
+
+    /// 「这次推进是不是一次正常的帧步进」——`shouldForward` 放行之后再问一句。
+    ///
+    /// 逐帧推进与 seek 走的是同一个入口（`setProgress`），但抬升的观感要求两者分开：
+    /// 正常播放里一个音节轮到了，那 2pt 该由弹簧慢慢飘上去；seek 落点那一行的
+    /// 已唱字本来就该**已经在抬升位**，一整批同时起飞是错的。
+    ///
+    /// 判据是时间尺度而不是某首歌的容差（对着一首歌调系数的坑另见笔记）：
+    /// 0.25 s 在 60Hz 下是 15 帧，正常播放永远进不到，任何 seek 都远远超出。
+    /// 倒退一律算「跳」——放回原位本来就是 seek 的收尾。
+    static var maxContinuousAdvance: TimeInterval { 0.25 }
+
+    static func isContinuousAdvance(newProgress: Double, current: Double) -> Bool {
+        let advanced = newProgress - current
+        return advanced > 0 && advanced <= maxContinuousAdvance
+    }
 }

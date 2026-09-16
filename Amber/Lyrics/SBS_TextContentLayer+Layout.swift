@@ -188,7 +188,7 @@ extension SBS_TextContentLayer {
         guard let line, !line.text.isEmpty else { return }
         guard rubyBlocks.isEmpty else {
             rebuildRuby(width: width)
-            applyProgress(animated: false)
+            applyProgress(liftAnimated: false)
             return
         }
         let metrics = Self.measureRows(text: line.text, font: specs.font, width: width)
@@ -317,7 +317,7 @@ extension SBS_TextContentLayer {
             y += metric.height
         }
 
-        applyProgress(animated: false)
+        applyProgress(liftAnimated: false)
     }
 
     /// 建一个音节的那一对层，顺手把辉光装到基础层上（§23.2）。
