@@ -246,7 +246,12 @@ struct FullWindowHostedContentView: View {
                 if lyrics.isLoading {
                     placeholder("正在获取歌词…")
                 } else if lyrics.isEmpty {
-                    placeholder("播放歌曲并在此处查看歌词。")
+                    // 两句空态不是一回事：没歌在播是「去播一首」，在播却没有词是
+                    // 「这首就是没有词」。纯音乐归成空态之后后一句才常见起来
+                    // （见 `LyricsStore.isInstrumentalPlaceholder`），拿前一句糊过去
+                    // 会变成「明明在播还叫我去播」。
+                    placeholder(lyrics.loadedTrackID == nil
+                                ? "播放歌曲并在此处查看歌词。" : "这首歌曲暂时没有歌词")
                 } else {
                     SyncedLyricsView(
                         lyrics: lyrics.lines,

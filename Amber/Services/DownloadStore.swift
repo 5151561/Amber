@@ -610,22 +610,12 @@ final class DownloadStore: ObservableObject {
     ///
     /// 没接 resolver、这首确认没有词、或者滤完只剩空壳，一律返回 nil ＝ 这一格不写。
     /// 跟封面同一条线：取不到就少写一格，不该让整首歌的标签跟着一起没有。
+    ///
+    /// 「纯音乐占位词」不在这里滤：两家音源各自的类别位（QQ `lyric_style`、
+    /// 网易 `pureMusic`）在取词那一步就把这种歌归成了「没有词」，到这里就是空数组。
     private func lyricsText(for track: Track) async -> String? {
         guard let resolveLyrics else { return nil }
-        guard let text = LyricsLRC.text(from: await resolveLyrics(track)) else { return nil }
-        return Self.isInstrumentalPlaceholder(text) ? nil : text
-    }
-
-    /// 「这首没有词」两家都是**当歌词发**的，不是空响应：QQ 回「此歌曲为没有填词的纯音乐，
-    /// 请您欣赏」，网易回「纯音乐，请欣赏」。[实测 2026-09-09：QQ 的《Emily》原声带 24 首
-    /// 全是这一句] 界面上照原样显示是对的（Music 也显示这句），但把它写进文件就成了假歌词。
-    ///
-    /// 判据是「**只有一行**且这行提到纯音乐」两条同时成立，不是见到「纯音乐」就滤：
-    /// 真有一首歌的词里唱到这三个字时，它不会是全曲唯一的一行。
-    nonisolated static func isInstrumentalPlaceholder(_ lrc: String) -> Bool {
-        let lines = lrc.split(separator: "\n", omittingEmptySubsequences: true)
-        guard lines.count == 1 else { return false }
-        return lines[0].contains("纯音乐")
+        return LyricsLRC.text(from: await resolveLyrics(track))
     }
 
     /// 拉封面的**原始字节**。

@@ -1116,6 +1116,14 @@ final class NeteaseAPI: MusicProvider {
             ("id", .int(id)), ("cp", false), ("tv", 0), ("lv", 0), ("rv", 0),
             ("kv", 0), ("yv", 0), ("ytv", 0), ("yrv", 0),
         ])
+        // **`pureMusic = true` 就是「这首是纯音乐」这个类别位。** 与 QQ 的 `lyric_style` 同理：
+        // 这种歌的 `lrc` 不是空的，而是一句占位词「纯音乐，请欣赏」（或只挂一行「作曲 : …」），
+        // 照原样显示就是拿一句话占满整块歌词面板，这里直接归成「没有词」。
+        //
+        // [实测 2026-09-17 eapi 匿名] 三首纯音乐（`478507889` / `34532273` / `29414800`）
+        // 都带`pureMusic: true`，真歌词的 `347230` 连这个键都没有。
+        // 与它同一块的 `sgc`/`sfy`/`qfy` 说的是别的事（见 `NeteaseAPI+SongInfo`），别混。
+        if resp["pureMusic"] as? Bool == true { return [] }
         func lyric(_ key: String) -> String? {
             let text = (resp[key] as? [String: Any])?["lyric"] as? String
             return (text?.isEmpty == false) ? text : nil

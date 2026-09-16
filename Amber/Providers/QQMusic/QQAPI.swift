@@ -1575,23 +1575,37 @@ final class QQAPI: MusicProvider {
     /// `LyricParser` 两种格式都认，所以下游不用关心拿到的是哪一种。
     func lyrics(track: Track) async throws -> [LyricLine] {
         let mid = track.id.rawID
-        if let lines = try? await lyrics(mid: mid, wordByWord: true), !lines.isEmpty {
-            return lines
-        }
-        return (try? await lyrics(mid: mid, wordByWord: false)) ?? []
+        // 逐字这条先问。**非 nil ＝ 这一趟有结论**，空数组也是结论（音源明说这首没有词，
+        // 见下面的 `lyric_style`），到此为止；nil ＝ 没给出结论（没有逐字版、或请求失败），
+        // 退回行级再问一次。`(try? …) ?? nil` 是把`[LyricLine]??` 压平一层。
+        if let decided = (try? await lyrics(mid: mid, wordByWord: true)) ?? nil { return decided }
+        return ((try? await lyrics(mid: mid, wordByWord: false)) ?? nil) ?? []
     }
 
-    private func lyrics(mid: String, wordByWord: Bool) async throws -> [LyricLine] {
+    /// nil = 这条路没给出结论，可以再试另一条；`[]` = 音源明说这首没有词。
+    private func lyrics(mid: String, wordByWord: Bool) async throws -> [LyricLine]? {
         let data = try await musicu(
             module: "music.musichallSong.PlayLyricInfo",
             method: "GetPlayLyricInfo",
             param: ["songMid": mid, "qrc": wordByWord ? 1 : 0, "crypt": 0,
                     "lrc_t": 0, "qrc_t": 0, "roma": 1, "trans": 1,
                     "ct": 24, "cv": 4747474])
+        // **`lyric_style = 1` 就是「这首没有填词」这个类别位。** 这种歌的 `lyric` 不是空的，
+        // 而是一句占位词「此歌曲为没有填词的纯音乐／口白／DJ 节目，请您欣赏」——
+        // 照原样解析出来就是拿一句客服话术占满整块歌词面板，所以在这里就归成「没有词」，
+        // 让它跟真没词的歌走同一条空态。
+        //
+        // [实测 2026-09-17 curl 匿名] 占位词的两首（`0020o44K0KFFZ8` / `004gBEBP0YhVMe`）
+        // `lyric_style = 1`，真歌词的两首（`002s0gpg1JsKQl` / `003tOxVg13WbDh`）`= 0`；
+        // `qrc=1` 与 `qrc=0` 两种请求下这个字段都在，所以放在分叉之前判。
+        // 别改回「按 `纯音乐` 三个字匹配」：音源自己给了类别位，凭字面猜既会误伤真词
+        //（词里唱到这三个字的），也会漏——占位词不止一种形态，网易那边 `pureMusic` 的歌
+        // 有的 `lrc` 是三行「作曲 : …」，一个「纯音乐」都没有。
+        if data["lyric_style"] as? Int == 1 { return [] }
         // 服务端可能忽略请求、回退成行级；以返回的 qrc 标志为准，不以请求为准
-        if wordByWord, (data["qrc"] as? Int ?? 0) != 1 { return [] }
+        if wordByWord, (data["qrc"] as? Int ?? 0) != 1 { return nil }
         guard let raw = data["lyric"] as? String,
-              let lyric = QRCDecoder.decodePayload(raw), !lyric.isEmpty else { return [] }
+              let lyric = QRCDecoder.decodePayload(raw), !lyric.isEmpty else { return nil }
         let translation = (data["trans"] as? String).flatMap { QRCDecoder.decodePayload($0) }
         // `roma=1` 一直在请求里，只是以前没接：音译（Music 界面上叫「发音」）
         // 与 `trans` 同样走 `QRCDecoder`，qrc 模式下是逐字格式。
