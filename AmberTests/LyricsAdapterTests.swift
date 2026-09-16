@@ -127,6 +127,56 @@ final class LyricsAdapterTests: XCTestCase {
         XCTAssertEqual((lyrics.lines[2] as? TextLine)?.isFirstLineOfParagraph, false)
     }
 
+    // MARK: - 间奏行的进出场余量
+
+    /// 间奏行不是一句，是那段空档的可视化——两头各让出一个翻行的量，
+    /// 好让展开在上一句唱完那一刻起跑、收起在下一句开唱前一整条弹簧起跑。
+    ///
+    /// 解析器给的是空档本身（`time = 上一句唱完`、`end = 下一句开唱`），两头贴死；
+    /// 照那个区间走，`handoverDuration` 两侧都算出 0，进间奏提前 0.89 s、
+    /// 出间奏晚 0.79 s 落位——**方向正好相反**。这条用例钉的就是那两个 0 不许回来。
+    func testInstrumentalLeavesRoomToScrollInAndOut() {
+        let lead = LyricsSpecs().scrollLead
+        let source = [
+            line(0, 0, 8, text: "上一句"),
+            line(1, 8, 20, kind: .interlude),
+            line(2, 20, 25, text: "下一句"),
+        ]
+        let lines = LyricsAdapter.makeLyrics(from: source, handover: lead).lines
+        XCTAssertEqual(lines[1].startTime, 8 + lead, accuracy: 1e-9)
+        XCTAssertEqual(lines[1].endTime, 20 - lead, accuracy: 1e-9)
+        // 两侧的空档都正好是一整条翻行弹簧——`handoverDuration` 拿到的就是它。
+        XCTAssertEqual(lines[1].startTime - lines[0].endTime, lead, accuracy: 1e-9)
+        XCTAssertEqual(lines[2].startTime - lines[1].endTime, lead, accuracy: 1e-9)
+    }
+
+    /// 前奏行头上不让：它没有上一句要等，`startTime` 必须留在源数据给的那一刻。
+    /// 让了的话准入判据（`elapsed > startTime − scrollLead`）在第一帧就不成立，
+    /// 开头那三个点整段不出现。
+    func testPreludeKeepsItsHeadAtZero() {
+        let lead = LyricsSpecs().scrollLead
+        let source = [
+            line(0, 0, 12, kind: .interlude),
+            line(1, 12, 16, text: "第一句"),
+        ]
+        let lines = LyricsAdapter.makeLyrics(from: source, handover: lead).lines
+        XCTAssertEqual(lines[0].startTime, 0, accuracy: 1e-9)
+        XCTAssertEqual(lines[0].endTime, 12 - lead, accuracy: 1e-9)
+    }
+
+    /// 余量比空档还宽时退化成零长行，不许翻成负区间。
+    /// `interludeMinGap = 5` 下不会发生，门槛哪天调小才谈得上。
+    func testInstrumentalRoomNeverGoesNegative() {
+        let source = [
+            line(0, 0, 8, text: "上一句"),
+            line(1, 8, 9, kind: .interlude),
+            line(2, 9, 12, text: "下一句"),
+        ]
+        let lines = LyricsAdapter.makeLyrics(from: source, handover: 5).lines
+        XCTAssertEqual(lines[1].startTime, 13, accuracy: 1e-9)
+        XCTAssertEqual(lines[1].endTime, lines[1].startTime, accuracy: 1e-9)
+    }
+
     func testLeadingSilenceIsFirstLineStart() {
         let lyrics = LyricsAdapter.makeLyrics(from: [line(0, 7.5, 10, text: "词")])
         XCTAssertEqual(lyrics.leadingSilence, 7.5, accuracy: 1e-9)

@@ -42,7 +42,7 @@ final class SyncedLyricsManager {
             self.animationDuration = { _ in headstart }
             // 现算一次存下来：`settlingDuration` 要造一个 CASpringAnimation，
             // 而读它的地方（焦点位、准入）都在每帧路径上。
-            self.scrollLead = specs.lineChangeSpringTimingParameters.settlingDuration
+            self.scrollLead = specs.scrollLead
         }
     }
 

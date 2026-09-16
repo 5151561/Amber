@@ -200,7 +200,10 @@ struct SyncedLyricsView: NSViewControllerRepresentable {
         // 一首歌几十个 `NSView` 加一堆`CATextLayer` 会被反复拆建。
         if coordinator.lyricsIdentity != identity || fontsChanged || modeChanged {
             coordinator.lyricsIdentity = identity
-            controller.setLyrics(LyricsAdapter.makeLyrics(from: lyrics))
+            // `handover` 决定间奏行两头留多宽的进出场余量（见 `LyricsAdapter`），
+            // 取的就是这份 specs 的翻行弹簧——和滚动真正跑的那条同源。
+            controller.setLyrics(LyricsAdapter.makeLyrics(from: lyrics,
+                                                          handover: controller.specs.scrollLead))
         } else if rectChanged {
             // 只挪了基线：重算几何落位并把当前行滑到新位置——
             // 这就是 [实测] §8.1 那条 `offsetObservation → activeBaselineConstraint`。

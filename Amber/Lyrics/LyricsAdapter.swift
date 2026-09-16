@@ -8,7 +8,10 @@ import Foundation
 /// 都直接拿它去取 `lineViews[index]`，中间没有查找表）。
 enum LyricsAdapter {
 
-    static func makeLyrics(from lines: [LyricLine]) -> Lyrics {
+    /// - Parameter handover: 一次翻行滚动的时长（`LyricsSpecs.scrollLead`）。
+    ///   间奏行两头各让出这么宽的进出场余量，见下面 `.interlude` 那一支。
+    static func makeLyrics(from lines: [LyricLine],
+                           handover: TimeInterval = LyricsSpecs().scrollLead) -> Lyrics {
         var lyrics = Lyrics()
         guard !lines.isEmpty else { return lyrics }
 
@@ -38,8 +41,41 @@ enum LyricsAdapter {
             case .interlude:
                 var instrumental = InstrumentalLine()
                 instrumental.index = index
-                instrumental.startTime = line.time
-                instrumental.endTime = line.end
+                // **间奏行不是一句，是那段空档的可视化——它得给自己留出进场与退场。**
+                //
+                // 解析器给的是空档本身：`time = 上一句唱完`、`end = 下一句开唱`，
+                // 两头贴死（`LyricParser` 那两处 `.interlude`）。照这个区间走，通用
+                // 机制的两个时刻会落在错的地方——而且方向相反：
+                //
+                // - 准入是 `startTime − scrollLead`（`shouldAdmit` 的第 2 条路），
+                //   而展开 + 滚动就是在准入那一刻起跑的（`select(_:)` 的间奏支）。
+                //   于是**上一句还在唱，画面就开始往间奏走**。间奏至少 5 秒
+                //   （`LyricParser.interludeMinGap`），是全曲最不赶时间的地方。
+                // - 淘汰是 `endTime − animationHeadstart`（0.1 s），而收起 + 滚到
+                //   下一句跑的是一整条翻行弹簧（0.89 s）。于是**落位比下一句开唱
+                //   晚 0.79 秒**——恰恰是该提前的那一头没提前。
+                //
+                // 两头各让出一个翻行的量之后，那两个时刻自己就对了：
+                //
+                //     展开在上一句唱完那一刻起跑，跑完正好是 `startTime`；
+                //     收起在 `endTime` 起跑，跑完正好是下一句开唱。
+                //
+                // 于是这两个字段有了准确语义：**行完全展开着的那一段**。
+                // 选中 / 淘汰 / 焦点位 / 滚动一行都不用为间奏特判，
+                // `handoverDuration` 拿到的空档也从 0 变成一整条 `scrollLead`。
+                //
+                // 前奏行（下标 0）头上不让：它没有上一句要等，`startTime` 必须留在
+                // 源数据给的那一刻（通常是 0），否则第一帧准不进来。
+                let head = index == 0 ? 0 : handover
+                let room = max(line.end - line.time - head - handover, 0)
+                instrumental.startTime = line.time + head
+                // 余量比空档还宽时退化成零长行（`interludeMinGap = 5` 下不会发生，
+                // 门槛哪天调小才谈得上）：准入即淘汰，不会翻成负区间。
+                instrumental.endTime = instrumental.startTime + room
+                // 行**张开**那一刻就是空档的起点：展开在这里起跑，行高瞬时变 40，
+                // 三个点从这一刻起就在屏幕上。点阵的时间窗以它为原点，不是`startTime`
+                // （那是撑开落定的时刻）——两者差一个展开动画，见 `InstrumentalLine.openTime`。
+                instrumental.openTime = line.time
                 return instrumental
 
             case .credits:
