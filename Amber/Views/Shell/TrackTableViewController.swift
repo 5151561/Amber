@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 
 // MARK: - 详情页表格（歌单 / 专辑 / 本地列表）—— 计划阶段 4 批 B
 //
@@ -122,7 +121,7 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
     private var columnHeaderView: NSView?
     private var footerView: NSView?
     private var footerContainer: NSView?
-    private var emptyHost: NSView?
+    private var emptyView: TrackTableEmptyStateView?
     private var lastLaidOutWidth: CGFloat = 0
 
     // 三态覆盖层（照 `CatalogPageViewController`：spinner / 图标 + 文案 + 重试）
@@ -376,8 +375,10 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
 
     // MARK: - 行高
 
-    /// 空态那块的高（`MusicEmptyStateContent` 是 SwiftUI 叶子，装进定尺寸槽——铁律 2；
-    /// 高按它自己的排版算死，与 `CatalogPageViewController` 同一句）。
+    /// 空态那块的高。这个数照旧版 `MusicEmptyStateContent` 的排版算死
+    /// （顶留白 + 45pt 图标的字形高 ≈ 54 + 间距 + 两行 13pt ≈ 40），
+    /// 与 `CatalogPageViewController` / `LibraryAlbumsViewController` 同一句。
+    /// 内容比它矮时由 `TrackTableEmptyStateView` 自己在这个高里竖直居中。
     private static let emptyHeight = MusicMetrics.EmptyState.topPadding + 54
         + MusicMetrics.EmptyState.spacing + 40
 
@@ -474,15 +475,13 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
             // 曲目的一切都画在行视图里（契约：`TrackRowViewConfigurable`），格子不摆。
             return nil
         case .empty:
-            if emptyHost == nil {
-                let message = emptyMessage
-                let image = emptyImage
-                emptyHost = appState.hostingView {
-                    MusicEmptyStateContent(message: message, systemImage: image)
-                }
-                emptyHost?.translatesAutoresizingMaskIntoConstraints = true
+            if emptyView == nil {
+                let view = TrackTableEmptyStateView()
+                view.translatesAutoresizingMaskIntoConstraints = true
+                emptyView = view
             }
-            return emptyHost
+            emptyView?.configure(message: emptyMessage, systemImage: emptyImage)
+            return emptyView
         case .footer:
             if footerContainer == nil {
                 if footerView == nil { footerView = makeFooterView() }
@@ -701,6 +700,83 @@ private final class FooterContainerView: NSView {
         super.layout()
         let height = ceil(content.fittingSize.height)
         content.frame = NSRect(x: 0, y: topSpacing, width: bounds.width, height: height)
+    }
+}
+
+/// 空态那一块：旧版 SwiftUI `MusicEmptyStateContent` 的 AppKit 版。
+///
+/// 铁律 2 不许在滚动容器的格子里挂 `NSHostingView`，而这块只是一个图标 + 一行字，
+/// 占不上「里面真有 SwiftUI 才能做的控件」那条例外。
+///
+/// **位置一个像素不动**：它仍然是表格的一行，不是覆盖层——[实测] `playlists 规格`
+/// §2.1.1 记的就是 Music 把 `AMPEmptyStateLockup` 摆在`docStack` 里（见`rebuildRows`
+/// 的头注），页头在它上面，两件一起滚。行高仍是 `emptyHeight`。
+///
+/// 排版照 `MusicEmptyStateContent` 逐条搬：
+/// - 图标 `EmptyState.iconSize`（45）、`.light`、`tertiaryLabelColor`（＝ SwiftUI 的`.tertiary`）；
+/// - 文字 `NSFont.systemFontSize`（实测 13）、`secondaryLabelColor`、居中、
+///   最宽 `EmptyState.maxTextWidth`；
+/// - 两件之间 `EmptyState.spacing`，整组头上还有`EmptyState.topPadding`；
+/// - 整组在行高里**竖直居中**——原先那个宿主就是这么摆的（`NSHostingView` 文档原话：
+///   帧与内容不一样大时内容在帧里居中，`LibrarySongsViewController.topAligned`
+///   那段注释记的是同一件事）。单行文案时这一居中恰好把整组往下推 12。
+private final class TrackTableEmptyStateView: NSView {
+    private typealias M = MusicMetrics.EmptyState
+
+    private let icon = NSImageView()
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        icon.imageScaling = .scaleNone
+        icon.imageAlignment = .alignCenter
+        icon.contentTintColor = .tertiaryLabelColor
+        addSubview(icon)
+
+        // 铁律 6：字号用系统默认（`NSFont.systemFontSize`，实测 13），
+        // 旧版 `MusicEmptyStateContent` 写死的`.system(size: 13)` 正是这个数。
+        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+        label.maximumNumberOfLines = 0
+        label.cell?.wraps = true
+        label.cell?.usesSingleLineMode = false
+        addSubview(label)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 自上而下排，坐标系跟着翻。
+    override var isFlipped: Bool { true }
+
+    func configure(message: String, systemImage: String) {
+        icon.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: M.iconSize, weight: .light))
+        label.stringValue = message
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        // `NSTextField` 的 cell 左右各留 2pt，SwiftUI 的`Text` 没有：框要比 SwiftUI 那条
+        // `maxWidth` 宽出这 4pt，折行点才落在同一个字上（`CatalogCardKit.labelInset`）。
+        let inset = CatalogCardKit.labelInset
+        let textWidth = min(M.maxTextWidth, max(0, bounds.width - inset * 2))
+        let boxWidth = textWidth + inset * 2
+        let textHeight = ceil(label.sizeThatFits(
+            NSSize(width: boxWidth, height: .greatestFiniteMagnitude)).height)
+        let iconSize = icon.image?.size ?? .zero
+        let iconWidth = ceil(iconSize.width)
+        let iconHeight = ceil(iconSize.height)
+        let contentHeight = M.topPadding + iconHeight + M.spacing + textHeight
+        // 居中不取整：SwiftUI 那边是几何居中，取整会在高度差是奇数时推歪 1。
+        var y = (bounds.height - contentHeight) / 2 + M.topPadding
+        icon.frame = NSRect(x: (bounds.width - iconWidth) / 2, y: y,
+                            width: iconWidth, height: iconHeight)
+        y += iconHeight + M.spacing
+        label.frame = NSRect(x: (bounds.width - boxWidth) / 2, y: y,
+                             width: boxWidth, height: textHeight)
     }
 }
 
