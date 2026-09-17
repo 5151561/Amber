@@ -53,10 +53,15 @@ final class QQAPI: MusicProvider {
     }
 
     private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+        // 用 completionHandler 那一版而不是 async 版：Swift 6.4（swiftlang-6.4.0.30.4）
+        // 给 async 版的 @objc thunk 做 SILGen 时会段错误崩在
+        // `SILGenFunction::emitNativeToForeignThunk`，整个 emit-module 挂掉。
+        // 两版语义一样（都是「别跟随重定向」），这一版不经过那条会崩的代码路径。
         func urlSession(_ session: URLSession, task: URLSessionTask,
                         willPerformHTTPRedirection response: HTTPURLResponse,
-                        newRequest request: URLRequest) async -> URLRequest? {
-            nil // 不跟随重定向，保留 Set-Cookie / Location 供解析
+                        newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil) // 不跟随重定向，保留 Set-Cookie / Location 供解析
         }
     }
 

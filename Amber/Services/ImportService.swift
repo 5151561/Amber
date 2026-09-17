@@ -100,13 +100,16 @@ final class ImportService {
 
     /// 「自动更新已导入歌曲的插图」：按（艺人，标题）到音源要一张封面地址。
     /// 由 `AppState` 接到默认音源的搜索；尽力而为，取不到就算了，绝不挡着导入。
-    var artworkLookup: ((String, String) async -> String?)?
+    var artworkLookup: (@MainActor (String, String) async -> String?)?
     /// 本地曲目挂的音源（默认音源）。做成闭包是因为用户随时能在设置里换。
-    var defaultKind: () -> ProviderKind = { .qq }
+    var defaultKind: @MainActor () -> ProviderKind
 
     private(set) var isRunning = false
 
     init(library: LibraryStore, downloads: DownloadStore, settings: AppSettings = .shared) {
+        // 默认值写在 init 里而不是属性声明上：`@MainActor` 闭包当默认参数会被判成
+        // 「既是主 actor 隔离又是 @concurrent」。init 本身是主 actor 的，在这里赋值没问题。
+        self.defaultKind = { .qq }
         self.library = library
         self.downloads = downloads
         self.settings = settings
