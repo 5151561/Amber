@@ -157,7 +157,14 @@ final class CatalogRoomViewController: ContentPageController {
 
         collectionView.collectionViewLayout = makeLayout()
         collectionView.backgroundColors = [.clear]
-        collectionView.isSelectable = false
+        // 对键盘开放（审查单 §2.5-1，与目录页同一条）：方向键选、回车打开。
+        // 鼠标行为一个字不变——卡片根视图自己接了 `mouseDown`（空实现、不调 super，
+        // 见 `CatalogCardContentView`），事件到不了 `NSCollectionView.mouseDown`，
+        // 单击仍旧是「直接打开」。多选保持关着，免得空白处一拖就画出框选矩形。
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = false
+        collectionView.delegate = self
+        collectionView.onActivateSelection = { [weak self] in self?.activateSelection() }
         CatalogCardRegistry.register(in: collectionView)
         collectionView.register(CatalogRoomHeaderView.self,
                                 forSupplementaryViewOfKind: NSCollectionView.elementKindSectionHeader,
@@ -616,6 +623,31 @@ final class CatalogRoomViewController: ContentPageController {
         hoveredCard = card
         card?.setHovering(true)
     }
+
+    // MARK: - 键盘（审查单 §2.5-1）
+
+    /// 回车打开选中那一件。落点不在这里另写一份，一律调那一件视图自己的
+    /// `accessibilityPerformPress()`——理由与目录页那份逐字相同
+    /// （见 `CatalogPageViewController.activateSelection`）。
+    private func activateSelection() {
+        guard let indexPath = collectionView.selectionIndexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.accessibilityPerformPress()
+    }
+}
+
+// MARK: - 键盘选择
+
+extension CatalogRoomViewController: NSCollectionViewDelegate {
+
+    /// 选中挪到一件上就把它滚进可视区（这一页只有纵向网格一种段，
+    /// 但写法与目录页同一句，那边还要管横向货架）。
+    func collectionView(_ collectionView: NSCollectionView,
+                        didSelectItemsAt indexPaths: Set<IndexPath>) {
+        guard let indexPath = indexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.scrollToVisible(item.view.bounds)
+    }
 }
 
 // MARK: - 覆盖层
@@ -634,8 +666,30 @@ private final class RoomCollectionView: NSCollectionView {
 
     var onMouseMoved: ((NSPoint) -> Void)?
     var onMouseExited: (() -> Void)?
+    /// 回车 / Enter（以及没在播时的空格）落在选中那一件上：打开它。
+    var onActivateSelection: (() -> Void)?
 
     private var hoverArea: NSTrackingArea?
+
+    /// 与目录页 `CatalogShelfCollectionView.keyDown` 同一份（键码、空格那一档的
+    /// 判据与理由都在那边写全了）。
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76:                                    // Return / Enter
+            if activateSelection() { return }
+        case 49:                                        // Space
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.isDisjoint(with: [.command, .option, .control]), activateSelection() { return }
+        default: break
+        }
+        super.keyDown(with: event)
+    }
+
+    private func activateSelection() -> Bool {
+        guard !selectionIndexPaths.isEmpty, let onActivateSelection else { return false }
+        onActivateSelection()
+        return true
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

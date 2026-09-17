@@ -245,7 +245,16 @@ class CatalogPageViewController: ContentPageController {
 
         collectionView.collectionViewLayout = makeLayout()
         collectionView.backgroundColors = [.clear]
-        collectionView.isSelectable = false
+        // 对键盘开放（审查单 §2.5-1）：关着 `isSelectable` 等于把方向键选择整个关死，
+        // 这一页对只用键盘的人是不可达的（资料库三页一直是 `true`）。
+        // **鼠标行为一个字不变**：卡片根视图自己接了 `mouseDown`（空实现，不调 super，
+        // 见 `CatalogCardContentView`），事件到不了 `NSCollectionView.mouseDown`——
+        // 单击卡片仍旧是「直接打开」而不是「选中」。多选保持关着：开了它，
+        // 在空白处拖动会画出框选矩形，那是这一页从来没有过的像素。
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = false
+        collectionView.delegate = self
+        collectionView.onActivateSelection = { [weak self] in self?.activateSelection() }
         CatalogCardRegistry.register(in: collectionView)
         collectionView.register(CatalogPageTitleView.self,
                                 forSupplementaryViewOfKind: NSCollectionView.elementKindSectionHeader,
@@ -783,6 +792,25 @@ class CatalogPageViewController: ContentPageController {
                 + "\(renderItems(of: section).count)|\(renderTracks(of: section).count)")
         }
         return parts.joined(separator: "\n")
+    }
+
+    // MARK: - 键盘（审查单 §2.5-1）
+
+    /// 回车 / Enter 打开选中的那一件。
+    ///
+    /// **落点不在这里另写一份**：一律调那一件视图自己的 `accessibilityPerformPress()`。
+    /// 每种卡都已经实现了它，且各自的语义正是「主落点」——卡片是
+    /// `CatalogCardContentView.activatePrimary()`（route → `onOpen` →`onPlay`，
+    /// 与鼠标点在卡主体上走同一条），目录曲目行是「播这一首」
+    /// （`CatalogTrackRowView`，与它的双击一致）。照抄一份等于开第二个真值源，
+    /// 哪天卡片改了落点顺序，键盘这条就悄悄跟丢。
+    ///
+    /// 不可交互的卡（既没有落点也不能播）由 `activatePrimary` 自己的`isInteractive`
+    /// 闸门挡掉，这里不用再判一次。
+    private func activateSelection() {
+        guard let indexPath = collectionView.selectionIndexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.accessibilityPerformPress()
     }
 
     // MARK: - 就地重配（身份没变、内容变了）
@@ -1519,6 +1547,26 @@ class CatalogPageViewController: ContentPageController {
     }
 }
 
+// MARK: - 键盘选择（审查单 §2.5-1）
+
+extension CatalogPageViewController: NSCollectionViewDelegate {
+
+    /// 方向键把选中挪到了一件上：把它滚进可视区。
+    ///
+    /// 纵向那半 `NSCollectionView` 自己会做（滚外层 scroll view）；这里补的是**横向**
+    /// 那半——货架段（`orthogonalScrollingBehavior`）的卡片挂在组合布局内部那个
+    /// `_NSCollectionScrollView` 里（见文件头实测 1），外层一点都滚不动它，
+    /// 不补的话方向键往右走出屏幕之后，选中的那张卡是看不见的。
+    /// `NSView.scrollToVisible` 找的正是**最近的**那层 clip view：货架里的卡找到货架自己，
+    /// 满幅段的卡找到页面的 clip view，一句话两种段都覆盖，不必自己算列 pitch。
+    func collectionView(_ collectionView: NSCollectionView,
+                        didSelectItemsAt indexPaths: Set<IndexPath>) {
+        guard let indexPath = indexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.scrollToVisible(item.view.bounds)
+    }
+}
+
 // MARK: - 三态覆盖层
 
 /// 盖在 collection view 上的一层，但**不吃点击**：标题行（含音乐源切换器）在下面，
@@ -1537,11 +1585,40 @@ private final class CatalogShelfCollectionView: NSCollectionView {
 
     var onMouseMoved: ((NSPoint) -> Void)?
     var onMouseExited: (() -> Void)?
+    /// 回车 / Enter（以及没在播时的空格）落在选中那一件上：打开它。
+    var onActivateSelection: (() -> Void)?
 
     weak var leftArrow: NSView?
     weak var rightArrow: NSView?
 
     private var hoverArea: NSTrackingArea?
+
+    /// 方向键的选择移动照旧由 `NSCollectionView` 自己接（`super.keyDown`），
+    /// 这里只加「打开选中那一件」这一档（审查单 §2.5-1）。
+    ///
+    /// 键码与判据照两张曲目表那份（`TrackTableView.keyDown` /`SongsTableView.keyDown`）：
+    /// 无修饰空格归「控制 ▸ 播放/暂停」，`AmberApplication.sendEvent` 抢在响应链之前
+    /// 就把它送进主菜单了（实测见那份类型注释），落到这里的只剩**没有正在播的曲目**
+    /// 那一档——菜单项被 `validateMenuItem` 判成禁用，事件才回到响应链，
+    /// 这时按回车的语义办。带 ⌘/⌥/⌃ 的空格不接，那些是别人的等价键。
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76:                                    // Return / Enter
+            if activateSelection() { return }
+        case 49:                                        // Space
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.isDisjoint(with: [.command, .option, .control]), activateSelection() { return }
+        default: break
+        }
+        super.keyDown(with: event)
+    }
+
+    /// 没有选中任何一件时不吃这颗键，照常往下走。
+    private func activateSelection() -> Bool {
+        guard !selectionIndexPaths.isEmpty, let onActivateSelection else { return false }
+        onActivateSelection()
+        return true
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
