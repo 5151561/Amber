@@ -12,8 +12,19 @@ import QuartzCore
 /// `CIGaussianBlur.inputRadius = 3` 落到 2× 屏上视觉半径翻倍——非当前行糊得比
 /// Music 重一倍就是这么来的。倍率设对，字清晰和模糊量两件事一起归位。
 enum LyricsRenderingScale {
-    /// 还没上屏时的缺省值。取主屏倍率，Retina 上是 2、外接 1× 屏上是 1。
-    static var current: CGFloat { NSScreen.main?.backingScaleFactor ?? 2 }
+    /// 还没上屏时的缺省值。
+    ///
+    /// 真值由 `SyncedLyricsLineView.applyBackingScale` 按**所在窗口**灌下来
+    /// （`viewDidChangeBackingProperties` / `viewDidMoveToWindow` 两个口子），
+    /// 这里只管「还没有窗口可问」的那一小段。
+    ///
+    /// 取的是**全部屏幕里最大的那个倍率**，不是 `NSScreen.main`：主屏的定义是
+    /// 「菜单栏在哪块」，跟这棵层树要画在哪块屏上没有关系。两个方向的错法代价
+    /// 不对称——多取只是这一小段多画几个像素，少取是 2× 屏上首帧整行字发糊
+    /// （连带模糊量也按 §9.6 那段翻倍）。`[推]`
+    static var current: CGFloat {
+        NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
+    }
 }
 
 extension CALayer {

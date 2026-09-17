@@ -15,8 +15,9 @@ enum LyricsDebugFlags {
     /// `-nolyricsfilters`：不给行视图打开 `layerUsesCoreImageFilters`。
     ///
     /// 打开这一位是逐行模糊与悬停提亮**真正开始执行**的原因（AppKit 的背衬层默认
-    /// 走进程外渲染，那条路不执行 Core Image 滤镜）。代价是这棵子树改走进程内渲染。
-    /// 带上这个参数就退回本轮改动之前的渲染路径：滤镜装着但不跑。
+    /// 走进程外渲染，那条路不执行 Core Image 滤镜）。代价是这棵子树改走进程内渲染，
+    /// 所以平时是**逐行随糊不糊开合**的（`SyncedLyricsLineView.setCoreImageFiltersActive`）。
+    /// 带上这个参数就把它钉死在关：滤镜装着但不跑。
     static let disablesLayerFilters = flag("-nolyricsfilters")
 
     /// `-inklinewidth`：行框宽退回「墨迹宽」，不用测量宽。

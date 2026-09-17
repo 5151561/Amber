@@ -34,8 +34,21 @@ enum ArtworkSize {
     /// QQ 音乐 CDN 实际支持的封面边长（像素），2026-08-16 逐档探测所得。
     private static let qqSizes = [90, 150, 300, 500, 800, 1200]
 
-    /// 屏幕像素倍率——阶梯是按 point 记的，落到 URL 上要乘回像素。
-    private static var scale: CGFloat { NSScreen.main?.backingScaleFactor ?? 2 }
+    /// 本地封面的档位标记，写在 URL 片段里。只有 `ImageCache` 认它，见 `url(_:points:scale:)`。
+    static let localPixelMarker = "amber-px="
+
+    /// 没人给倍率时的兜底。阶梯是按 point 记的，落到 URL 上要乘回像素。
+    ///
+    /// 取的是**全部屏幕里最大的那个倍率**，不是 `NSScreen.main`：主屏的定义是
+    /// 「菜单栏在哪块」，跟这张封面要画在哪块屏上没有关系——1× 外接 + 2× 内置的
+    /// 机器上按主屏取，有一半时间取错档。两个方向的错法代价不对称：多取像素只是
+    /// 浪费带宽与内存，少取是 2× 屏上当场发虚，所以兜底往大的取。`[推]`
+    ///
+    /// 能问出所在窗口的调用点一律传 `scale:`（`view.amberWindow?.backingScaleFactor`），
+    /// 别让它落到这条兜底上。
+    static var defaultScale: CGFloat {
+        NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
+    }
 
     /// 把 provider 给的封面地址改写成指定档位。
     ///
@@ -43,12 +56,21 @@ enum ArtworkSize {
     /// - 网易云：`…/xxx.jpg?param=300y300`
     /// - QQ 音乐：`…/photo_new/T002R300x300M000{mid}.jpg`
     ///
-    /// 认不出来的地址原样返回（本地文件、已带其它查询参数的第三方地址等）。
-    static func url(_ urlString: String?, points: CGFloat) -> String? {
+    /// 本地文件（`file://`）地址里没有档位段可改，改成把「我只要这么大」写进
+    /// **URL 片段**：`ImageCache` 认这一句去降采样，顺带让缓存键自带档位——
+    /// 40pt 的行与 400pt 的头不再共用同一张 3000px 的位图。
+    /// 片段不参与文件定位（[实测 probe] `Data(contentsOf:)` 与
+    /// `URLSession.data(from:)` 拿到 `file://…/x.png#amber-px=80` 都照读原文件），
+    /// 所以路过别的消费方也不会坏。地址自己已经带片段的不动它。
+    ///
+    /// 其余认不出来的地址原样返回（已带其它查询参数的第三方地址等）。
+    ///
+    /// - Parameter scale: 这张图要画在哪块屏上的背衬倍率。给不出时退到 `defaultScale`。
+    static func url(_ urlString: String?, points: CGFloat, scale: CGFloat? = nil) -> String? {
         guard let rawURL = urlString, !rawURL.isEmpty else { return nil }
         // 规避 ATS 拦截
         let urlString = rawURL.httpsUpgraded
-        let pixels = Int((points * scale).rounded())
+        let pixels = Int((points * (scale ?? defaultScale)).rounded())
 
         // 网易云：param=WxH（分隔符是 y）
         if let range = urlString.range(of: #"[?&]param=\d+y\d+"#, options: .regularExpression) {
@@ -63,6 +85,10 @@ enum ArtworkSize {
             let availableSizes = isT003 ? [150, 300, 500] : qqSizes
             let snapped = availableSizes.first { $0 >= pixels } ?? availableSizes[availableSizes.count - 1]
             return urlString.replacingCharacters(in: range, with: "R\(snapped)x\(snapped)M")
+        }
+        // 本地文件：档位写进片段，交给 `ImageCache` 降采样。
+        if urlString.hasPrefix("file:"), !urlString.contains("#"), pixels > 0 {
+            return "\(urlString)#\(localPixelMarker)\(pixels)"
         }
         return urlString
     }
