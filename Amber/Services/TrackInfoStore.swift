@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - 面板字段
 
@@ -320,6 +321,9 @@ final class TrackInfoStore {
     /// 断点挪过这么多秒才值得再写一次库。[推]
     private static let resumeSaveStep: TimeInterval = 5
 
+    /// 读库失败与落库失败两条。与 `LibraryStore.log` 同解（都是降级路径，不弹界面）。
+    private static let log = AmberDiagnostics.logger("trackinfo")
+
     /// 主库连接。**nil ＝ 开库这一步就失败了**（磁盘满、目录没权限）：内存这一份照常能用，
     /// 只是这一程的改动落不了盘。与 `LibraryStore.database` 同解。
     private let database: AmberDatabase?
@@ -333,8 +337,8 @@ final class TrackInfoStore {
         // 幂等分支；留着这一行是为了**谁先开库谁负责迁移**——哪天有人又把某个 store
         // 排到了 `prepareDatabase()` 前面，代价也只是少一次警告，而不是用户的资料库
         // 被一个空库顶掉。`mediaFolder` 原样跟着 `directory` 走，理由见 `LibraryStore.init`。
-        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
-                                                renameLegacyOnSuccess: true)
+        _ = try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                    renameLegacyOnSuccess: true)
         database = try? AmberDatabase.shared(directory: directory)
         load()
         // **没有自己的 willTerminate 观察者了**（全 App 只剩 `AmberDatabase` 那一个）。
@@ -353,8 +357,10 @@ final class TrackInfoStore {
         do {
             try loadFromDatabase(db)
         } catch {
-            NSLog("[TrackInfoStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
-                  String(describing: error))
+            Self.log.error("""
+                读库失败，这一程只读不写（库里那份一个字没动）：\
+                \(String(describing: error), privacy: .public)
+                """)
         }
     }
 
@@ -550,7 +556,10 @@ final class TrackInfoStore {
         do {
             try db.transaction { try body(db) }
         } catch {
-            NSLog("[TrackInfoStore] %@ 落库失败：%@", label, String(describing: error))
+            Self.log.error("""
+                \(label, privacy: .public) 落库失败：\
+                \(String(describing: error), privacy: .public)
+                """)
         }
     }
 
