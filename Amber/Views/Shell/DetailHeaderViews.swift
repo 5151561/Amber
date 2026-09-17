@@ -19,8 +19,10 @@ import SwiftUI
 //    旧版歌单头是 `Spacer(minLength: 8)` 顶到底，专辑头是自然流动恰好落在那里；
 //    这里统一写成 `max(文字块底 + 间距, 封面高 − 38)`：文字短就贴封面底，
 //    简介展开撑高了就顺势下移，两种情形与旧版都一致。
-// 2. 星级与「无损」两枚是 SwiftUI 叶子（`RatingStars` / `LosslessBadge`），
-//    按铁律 2 装进**定尺寸**的 `NSHostingView` 槽（星级本身是可点的控件）。
+// 2. 星级那枚是 SwiftUI 叶子（`RatingStars`，本身是可点的控件），按铁律 2 装进
+//    **定尺寸**的 `NSHostingView` 槽。「无损」徽标从前也是（`LosslessBadge`），
+//    现在换成纯 AppKit 的一符号一标签：它是静态内容，占不上铁律 2 那条例外，
+//    而页头正是曲目表的第 0 行——滚动容器里的格子。
 
 // MARK: - 基类
 
@@ -59,7 +61,7 @@ class DetailHeaderView: NSView {
     ///
     /// `ExpandableTextView` 是有内部状态的（展开与否、按当前宽度量出来的行数），
     /// 整块换新等于全丢。而这条路走得很勤：往**别的**播放列表加一首歌，
-    /// `LibraryStore.$playlists` 一响，资料库歌单页就重走一次`apply(_:)`
+    /// `LibraryStore.playlists` 一响，资料库歌单页就重走一次`apply(_:)`
     /// （`PlaylistDetailViewController.libraryPlaylistsChanged()`），
     /// 正展开着的简介会当场收回去。
     func syncDescription(_ text: String?, make: (String) -> ExpandableTextView) {
@@ -268,7 +270,7 @@ final class ExpandableTextView: NSView {
                                   width: ceil(lessSize.width), height: ceil(lessSize.height))
     }
 
-    // MARK: 展开态（自己持有，不经 @Published —— 铁律 3）
+    // MARK: 展开态（自己持有，不上共享的可观察状态 —— 铁律 3）
 
     @objc private func expand() {
         if let onMore {
@@ -563,7 +565,7 @@ final class PlaylistHeaderView: DetailHeaderView {
     /// - `doDownloadAction`**先再读一次当前下载态、再切**——
     ///   是个「读态再切」的开关，不是单向下载。
     ///
-    /// Amber 这边是**事件驱动**：`DownloadStore` 的`@Published` 一变就重刷这里，
+    /// Amber 这边是**事件驱动**：`DownloadStore` 的可观察属性一变就重刷这里，
     /// 不需要那条 8Hz 轮询，也就没有对应的 NSTimer。`[Amber]`
     /// 进度环本批不做（Amber 现在只换图标，没有环）。
     override func refreshLibraryState() {
@@ -945,9 +947,15 @@ final class AlbumHeaderView: DetailHeaderView {
                                                      color: .secondaryLabelColor, lines: 1)
     private let losslessDot = CatalogCardKit.label(size: M.albumMetaSize,
                                                    color: .secondaryLabelColor, lines: 1)
-    /// 无损徽标与星级两枚 SwiftUI 叶子的宿主：**建一次就留着**，在场与否只切 `isHidden`，
+    /// 「无损」徽标：一枚 `waveform` 符号 + 一行「无损」，**纯 AppKit**。
+    /// 排版照旧版 SwiftUI 的 `LosslessBadge` 逐条搬（见`layoutLosslessBadge()`），
+    /// 容器在 `init` 里就建好，在场与否只切`isHidden`。
+    private let losslessBadge = NSView()
+    private let losslessIcon = NSImageView()
+    private let losslessLabel = CatalogCardKit.label(size: M.albumMetaSize,
+                                                     color: .secondaryLabelColor, lines: 1)
+    /// 星级那枚 SwiftUI 叶子的宿主：**建一次就留着**，在场与否只切 `isHidden`，
     /// 星级变化只换 `rootView`（理由见`refreshLibraryState()`）。
-    private var losslessHost: NSView?
     private var ratingHost: NSHostingView<AnyView>?
     /// 这两件在不在场（在场＝进信息行的行高与排布）。宿主视图本身一直在。
     private var showsLossless = false
@@ -962,8 +970,13 @@ final class AlbumHeaderView: DetailHeaderView {
     /// 旧版 `Spacer(minLength: 0)` + `.padding(.top, albumActionsTop)`：操作键行贴封面底边，
     /// 简介展开时才由 `albumActionsTop` 顶下去。
     private static let actionsMinTop = M.albumActionsTop
-    /// [AX] 「无损」徽标 50×15、星级 74.5×17。SwiftUI 叶子装进定尺寸槽（铁律 2）。
+    /// [AX] 「无损」徽标 50×15、星级 74.5×17。徽标与星级都摆进这两个定尺寸槽。
     private static let losslessSlot = NSSize(width: 52, height: 17)
+    /// 徽标里符号与文字的间距、符号的字号。两个数都是旧版 `LosslessBadge` 的字面值
+    /// （`HStack(spacing: 3)` 与`.font(.system(size: 11, weight: .medium))`），
+    /// 本轮只搬不改，不是新量的。`[推]`
+    private static let losslessBadgeSpacing: CGFloat = 3
+    private static let losslessIconSize: CGFloat = 11
     private static let ratingSlot = NSSize(
         width: MusicMetrics.Rating.headerStarSize * 5
             + MusicMetrics.Rating.headerStarSpacing * 4 + 17.5,
@@ -991,6 +1004,7 @@ final class AlbumHeaderView: DetailHeaderView {
 
         addSubview(artworkView)
         for label in [titleLabel, artistLabel, metadataLabel, losslessDot] { addSubview(label) }
+        buildLosslessBadge()
         artistButton.isBordered = false
         artistButton.isTransparent = true   // 文档原话：仍然跟踪鼠标、发 action，但不画
         artistButton.title = ""
@@ -1026,10 +1040,63 @@ final class AlbumHeaderView: DetailHeaderView {
         apply(content)
     }
 
+    /// 「无损」徽标的装配。旧版是 SwiftUI 的 `LosslessBadge`：
+    /// `HStack(spacing: 3) { Image("waveform").font(.system(size: 11, weight: .medium)); Text("无损") }`
+    /// `.foregroundStyle(.secondary).help(…)`。这里一件一件搬过来，颜色走同一支语义色
+    /// （SwiftUI 的 `.secondary` ＝`secondaryLabelColor`），`.help` ＝`toolTip`。
+    ///
+    /// `toolTip` 三处都挂：`CatalogLabel` 的`hitTest` 返回 nil（标签不吃点击），
+    /// 只挂在它身上就永远弹不出来。容器照常参与命中测试——与原先那个宿主一样，
+    /// 而信息行这一片本来就没有可点的东西。
+    private func buildLosslessBadge() {
+        let help = "音源提供无损档；Amber 目前播放最高 320k"
+        losslessBadge.isHidden = true
+        losslessBadge.toolTip = help
+        losslessIcon.imageScaling = .scaleNone
+        losslessIcon.imageAlignment = .alignCenter
+        losslessIcon.contentTintColor = .secondaryLabelColor
+        losslessIcon.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: Self.losslessIconSize, weight: .medium))
+        losslessIcon.toolTip = help
+        losslessLabel.stringValue = "无损"
+        losslessLabel.toolTip = help
+        losslessBadge.addSubview(losslessIcon)
+        losslessBadge.addSubview(losslessLabel)
+        addSubview(losslessBadge)
+    }
+
+    /// 徽标内部的排布。SwiftUI 的 `HStack` 默认竖直居中，整组再由宿主在 52×17 的槽里居中
+    /// （`NSHostingView` 文档原话：帧与内容不一样大时内容**在帧里居中**）。
+    /// 换成 AppKit 之后这两层居中都得自己摆，像素才对得上。
+    ///
+    /// 文字这边要把 `NSTextField` cell 左右各 2pt 的墨迹内缩补回来
+    /// （`CatalogCardKit.labelInset`，SwiftUI 的`Text` 没有那 2pt），
+    /// 不补的话符号与字之间就成了 3 + 2 ＝ 5。
+    private func layoutLosslessBadge() {
+        let slot = losslessBadge.bounds
+        let iconSize = losslessIcon.image?.size ?? .zero
+        let iconWidth = ceil(iconSize.width)
+        let iconHeight = ceil(iconSize.height)
+        let textWidth = ceil(CatalogCardKit.textWidth(losslessLabel))
+        let textHeight = ceil(losslessLabel.fittingSize.height)
+        let inkWidth = iconWidth + Self.losslessBadgeSpacing + textWidth
+        // 居中一律不取整：SwiftUI 那边就是几何居中，取整会在槽高与内容高差奇数时
+        // 把整件推歪 1（而且本容器未翻转、外面的页头翻转，取整之后两套坐标还不对称）。
+        // 同一行里的 `losslessDot` / `metadataLabel` 也都是裸`/ 2`。
+        let inkX = (slot.width - inkWidth) / 2
+        losslessIcon.frame = NSRect(x: inkX, y: (slot.height - iconHeight) / 2,
+                                    width: iconWidth, height: iconHeight)
+        losslessLabel.frame = NSRect(
+            x: inkX + iconWidth + Self.losslessBadgeSpacing - CatalogCardKit.labelInset,
+            y: (slot.height - textHeight) / 2,
+            width: textWidth + CatalogCardKit.labelInset * 2,
+            height: textHeight)
+    }
+
     /// 页头的右键菜单：**每次弹之前现造**。
     ///
     /// 从前它是 `refreshLibraryState()` 里`menu = collectionActions(…).makeMenu()` 造好存着的，
-    /// 而那个方法由 `player.$isPlaying` / `$currentIndex` / `$queue` 那组订阅驱动
+    /// 而那个方法由 `player.isPlaying` / `currentIndex` / `queue` 那组订阅驱动
     /// （`TrackTableViewController.subscribeRowState`）——每按一次播放/暂停、每跳一首歌
     /// 就重造一整棵 `NSMenu`（里头「添加到播放列表 ▸」还要枚举所有播放列表）。
     /// 与歌单页头 `PlaylistHeaderView.menu(for:)` 同一条：[实测] §6.0 无 sender 的
@@ -1069,16 +1136,10 @@ final class AlbumHeaderView: DetailHeaderView {
             return view
         }
 
-        // 无损徽标建一次就留着，不在场只是收起来——它是叶子里最便宜的一件，但整块换新
-        // 同样要重建一棵 SwiftUI 树，而 `apply(_:)` 这条路每次加歌/改名都会走。
+        // 徽标那几件在 `init` 里就建好了，不在场只是收起来——`apply(_:)` 这条路
+        // 每次加歌/改名都会走，不能在这里造视图。
         showsLossless = content.hasLossless
-        if showsLossless, losslessHost == nil {
-            let host = appState.hostingView { LosslessBadge() }
-            host.translatesAutoresizingMaskIntoConstraints = true
-            addSubview(host)
-            losslessHost = host
-        }
-        losslessHost?.isHidden = !showsLossless
+        losslessBadge.isHidden = !showsLossless
         losslessDot.isHidden = !showsLossless
 
         for button in [shuffleButton, playButton, trailingButton] {
@@ -1088,13 +1149,13 @@ final class AlbumHeaderView: DetailHeaderView {
         needsLayout = true
     }
 
-    /// 这个方法由 `player.$isPlaying` / `$currentIndex` / `$queue` 那组订阅驱动
+    /// 这个方法由 `player.isPlaying` / `currentIndex` / `queue` 那组订阅驱动
     /// （`TrackTableViewController.subscribeRowState`）：**每按一次播放/暂停、
     /// 每跳一首歌都要跑一遍**。所以它只准改属性，一件视图都不许拆。
     ///
     /// 从前这里每次都 `ratingHost?.removeFromSuperview()` + 新建一个`NSHostingView`，
     /// 还顺手重造一整棵 `NSMenu`。点星评分那一下正好触发同一条链
-    /// （`setRating` → `library.$ratings` → 重刷），鼠标抬起时落在已被销毁的视图上——
+    /// （`setRating` → `library.ratings` → 重刷），鼠标抬起时落在已被销毁的视图上——
     /// 连着改两次评分、或按住拖过五颗星，第二下经常没反应。
     override func refreshLibraryState() {
         let library = appState.library
@@ -1420,15 +1481,16 @@ final class AlbumHeaderView: DetailHeaderView {
         metadataLabel.frame = NSRect(x: metaX, y: metaY + (metaHeight - ceil(metadataLabel.fittingSize.height)) / 2,
                                      width: min(metadataWidth, column.width), height: ceil(metadataLabel.fittingSize.height))
         metaX += min(metadataWidth, column.width)
-        if showsLossless, let losslessHost {
+        if showsLossless {
             metaX += M.albumMetaSpacing
             let dotWidth = ceil(losslessDot.fittingSize.width)
             losslessDot.frame = NSRect(x: metaX,
                                        y: metaY + (metaHeight - ceil(losslessDot.fittingSize.height)) / 2,
                                        width: dotWidth, height: ceil(losslessDot.fittingSize.height))
             metaX += dotWidth + M.albumMetaSpacing
-            losslessHost.frame = NSRect(x: metaX, y: metaY + (metaHeight - Self.losslessSlot.height) / 2,
-                                        width: Self.losslessSlot.width, height: Self.losslessSlot.height)
+            losslessBadge.frame = NSRect(x: metaX, y: metaY + (metaHeight - Self.losslessSlot.height) / 2,
+                                         width: Self.losslessSlot.width, height: Self.losslessSlot.height)
+            layoutLosslessBadge()
             metaX += Self.losslessSlot.width
         }
         if showsRating, let ratingHost {
