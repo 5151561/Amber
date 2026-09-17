@@ -6,6 +6,10 @@ import UserNotifications
 ///
 /// 顺带管「通知 › 歌曲更改时」（设置 › 通用）：这里本来就盯着当前曲目，
 /// 换歌的判定和元数据都是现成的，不必再找一处监听。
+///
+/// 整个类只在主线程活（`configure` 来自 `AppState`，`update` 来自 `PlayerController`），
+/// 所以标在类型上。**注意 `configure` 里那几个回调块不在此列**，见那里的注释。
+@MainActor
 final class NowPlayingCenter {
 
     static let shared = NowPlayingCenter()
@@ -100,7 +104,6 @@ extension NowPlayingCenter {
     ///
     /// 只在系统还没问过（`notDetermined`）时才 request：用户拒绝过之后再 request
     /// 也弹不出面板，只会在每次勾选时白跑一趟。要改主意得去系统设置里改，这点和 Music.app 一致。
-    @MainActor
     func requestNotificationAuthorizationIfNeeded() async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()

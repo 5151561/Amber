@@ -234,7 +234,9 @@ final class DownloadStore: ObservableObject {
     /// - 2：现在这一版。这个号原本代表「带封面的 FLAC 前面多一块 ID3v2.4，Finder 才
     ///      看得见封面」，那一手已经撤掉——Finder 那头改走以后的 QuickLook 缩略图扩展，
     ///      写出去的那几个文件用户自己删了，所以号不再往上抬。
-    static let tagWriterVersion = 2
+    ///
+    /// `nonisolated`：`needsTagBackfill` 是纯判定、不进主 actor，得能在非隔离处读到它。
+    nonisolated static let tagWriterVersion = 2
 
     /// `directory` 供测试注入临时目录；默认落设置 › 文件 ›「媒体」文件夹
     /// （出厂 `~/Music/Amber/媒体`，见 `SettingsValues.defaultMediaFolder`）。
@@ -862,7 +864,8 @@ final class DownloadStore: ObservableObject {
 
     /// 有写入器的四种容器。落地时的扩展名是按**头字节**判的（见 `fileExtension(ofHeader:)`），
     /// 所以拿索引里的路径就能知道这份文件能不能带标签，不必先把它整个复制一份再去试。
-    private static let taggableExtensions: Set<String> = ["flac", "ogg", "mp3", "m4a"]
+    /// `nonisolated` 的理由同 `tagWriterVersion`。
+    private nonisolated static let taggableExtensions: Set<String> = ["flac", "ogg", "mp3", "m4a"]
 
     /// 这条索引要不要补标签。四种一律不碰：
     ///

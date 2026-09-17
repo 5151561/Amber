@@ -787,18 +787,27 @@ enum RemoteHTTPClient {
     static func get(_ endpoint: NWEndpoint, path: String,
                     timeout: TimeInterval = 10) async throws -> RemoteHTTPClientResponse {
         let connection = NWConnection(to: endpoint, using: .tcp)
-        var buffer = Data()
-        var finished = false
+        // 这一发请求的全部保证都在末尾那句 `connection.start(queue: .main)` 上：
+        // NWConnection 的 handler 一律投递到主队列，所以这两个可变量和下面两个局部函数
+        // 自始至终只在主线程上被碰。但 Network 那几个 handler 的类型是 `@Sendable`，
+        // 编译器只能按「可能并发」算，于是这里手工担保一次——与本文件那 8 处
+        // `MainActor.assumeIsolated` 靠的是同一条事实。
+        nonisolated(unsafe) var buffer = Data()
+        nonisolated(unsafe) var finished = false
 
         return try await withCheckedThrowingContinuation { continuation in
-            @MainActor func finish(_ result: Result<RemoteHTTPClientResponse, Error>) {
+            // 标 `@Sendable` 而不是 `@MainActor`：两者不能并存（主 actor 上的同步局部函数
+            // 不许是 `@Sendable`），而这两个函数要被上面说的那些 handler 捕获。
+            // 它们实际仍然只在主线程上跑：每个调用点不是裹在 `assumeIsolated` 里，
+            // 就是在继承了主 actor 的 `Task` 里。
+            @Sendable func finish(_ result: Result<RemoteHTTPClientResponse, Error>) {
                 guard !finished else { return }
                 finished = true
                 connection.cancel()
                 continuation.resume(with: result)
             }
 
-            @MainActor func read() {
+            @Sendable func read() {
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
                     data, _, isComplete, error in
                     MainActor.assumeIsolated {
