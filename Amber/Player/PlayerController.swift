@@ -338,7 +338,10 @@ final class PlayerController: ObservableObject {
             }
     }
 
-    deinit {
+    /// `isolated deinit`：观察者令牌是 `any NSObjectProtocol`，非隔离的 deinit 摸不了。
+    /// 注销时机不变——播放器由主 actor 上的 `AppState` 持有，最后一次释放本来就在主 actor 上，
+    /// 隔离的 deinit 在那里是就地同步跑的。
+    isolated deinit {
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
     }
 

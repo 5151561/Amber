@@ -56,7 +56,10 @@ final class PlaybackDeck {
         }
     }
 
-    deinit {
+    /// `isolated deinit`：两个观察器令牌是 `Any?`，非隔离的 deinit 摸不了。
+    /// 注销时机不变——这一路只由主 actor 上的 `PlayerController` 持有，
+    /// 最后一次释放本来就发生在主 actor 上，隔离的 deinit 在那里是就地同步跑的。
+    isolated deinit {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver) }
     }

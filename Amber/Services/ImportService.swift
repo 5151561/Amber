@@ -290,8 +290,10 @@ final class ImportService {
     }
 
     /// 标签与文件名都认不出来时的占位（与 `ImportWorker.readMetadataOnce` 里那两句同源）
-    static let unknownArtist = "未知艺人"
-    static let unknownAlbum = "未知专辑"
+    ///
+    /// `nonisolated`：解析元数据那条路在主 actor 之外，得能在非隔离处读到这两个占位。
+    nonisolated static let unknownArtist = "未知艺人"
+    nonisolated static let unknownAlbum = "未知专辑"
 
     /// 归组键：专辑名 + 艺人（大小写与前后空白无关）。同名不同艺人的专辑不该并到一起。
     nonisolated static func albumKey(album: String, artist: String) -> String {
