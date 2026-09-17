@@ -125,9 +125,9 @@ final class LibraryStore {
     /// 记正集的话每加一首歌都得同步补一条，漏一处就是「新歌默认不放」。
     /// 未勾选的歌自动顺播/随机时跳过，双击照放（见 `PlayerController.nextStep`）。
     ///
-    /// 不是 `@Published`：它逐行被`isChecked` 查（与`favoriteTrackIDs` 同性质），
-    /// 而改动是用户级动作，改完由 `setChecked` 手动发一次`objectWillChange`——
-    /// 每行一个 `@Published` 字典只会让整页在滚动时白重画。
+    /// 不进可观察出口：它逐行被 `isChecked` 查（与`favoriteTrackIDs` 同性质），
+    /// 而改动是用户级动作，改完由 `setChecked` 走细出口发一声 `.checkmarks`——
+    /// 让每行都观察一个字典只会使整页在滚动时白重画。
     private var uncheckedTrackIDs: Set<String> = []
     /// 已经对音源说过「减少推荐」的曲目 id 与艺人 id。
     ///
@@ -138,7 +138,7 @@ final class LibraryStore {
     /// 已知的三处不准，都是明知的取舍：换账号后仍留着上一位的记号；在音源自家 App
     /// 里点的不喜欢这边不知道；网易云连读名单的接口都没有，对不回来。
     /// 代价很小——写请求本身幂等，多说一遍也只是再说一遍。
-    /// 与 `uncheckedTrackIDs` 同样不是`@Published`：改动是用户级动作，改完手动发一声。
+    /// 与 `uncheckedTrackIDs` 同样不进可观察出口：改动是用户级动作，改完走细出口发一声。
     private var suggestLessTrackIDs: Set<String> = []
     private var suggestLessArtistIDs: Set<String> = []
     /// 本地文件已经不在下载索引记着的位置上的曲目 id（照 Music.app：条目留着，只打标记）。
@@ -155,8 +155,8 @@ final class LibraryStore {
     /// **故意不落盘**，主库里连表都不建：文件在不在是磁盘此刻的事实，不是资料库属性。
     /// 存下来只会带出「上次退出时盘没插、这次启动盘插着却还标着感叹号」这种陈旧假象。
     ///
-    /// 与 `uncheckedTrackIDs` 同性质地**不是**`@Published`：歌曲表每一行都要查一次
-    /// `isFileMissing`，做成`@Published` 只会让整页在滚动时白重画；改动自己手动发一声。
+    /// 与 `uncheckedTrackIDs` 同性质地**不进可观察出口**：歌曲表每一行都要查一次
+    /// `isFileMissing`，让它可观察只会使整页在滚动时白重画；改动自己走细出口发一声。
     private var missingFileTrackIDs: Set<String> = []
     /// libraryAlbums 的两张查表：按 id、按「归位键」。`album(for:)` 被
     /// 「类型/专辑艺人/年份…」那几列的比较器逐行调用，线性扫描会把排序拖成 O(n²)。
@@ -190,6 +190,58 @@ final class LibraryStore {
     private func notify(_ change: LibraryChange) {
         guard !change.isEmpty else { return }
         changeChannel.send(change)
+    }
+
+    // MARK: 撤销
+
+    /// 窗口那一份 `UndoManager`（由 `MainWindowController.windowWillReturnUndoManager(_:)`
+    /// 交出去的就是它，见那边的注释）。
+    ///
+    /// **撤销注册写在这一层、不写在调用点**：光「删除播放列表」就有三个入口
+    ///（侧栏行右键、网格卡 •••、页头 •••），逐处补一遍必漏一处；而这个类本来就是
+    /// 所有资料库写入的唯一漏斗，挂在漏斗上就漏不掉。
+    ///
+    /// 弱引用，而且默认是 nil：这一份由主窗持有，`LibraryStore` 比窗口长命；
+    /// 测试里根本没有窗口，于是一条撤销都不注册，写入路径与从前逐字相同。
+    @ObservationIgnored weak var undoManager: UndoManager?  // 注入依赖，跟着公开那份一起变，观察它只会重复发一轮
+
+    /// 注册一条反向操作 + 给这一步起个名字。
+    ///
+    /// 名字进的是 `setActionName`，菜单项由 AppKit 自己拼成「撤销<名字>」
+    ///（`-[NSWindow validateMenuItem:]` 会改标题，[实测 probe 2026-09-17]，
+    /// 中文那条格式串是 Foundation 的 `Undo.loctable` 里的`撤销%@`）。
+    ///
+    /// **重做不用另写**：`body` 自己也是一次写入，它执行的时候会再注册一条反向的，
+    /// 一来一回就是撤销/重做两个方向。
+    private func registerUndo(_ actionName: String, _ body: @escaping (LibraryStore) -> Void) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self, handler: body)
+        undoManager.setActionName(actionName)
+    }
+
+    /// 把一串写入合成**一次**撤销。
+    ///
+    /// 批量心水、批量评分、多选删除一次能改几十首，逐首注册的话用户要按几十次 ⌘Z
+    /// 才回得去。调用点包一层就够，写入口那边一个字都不用改。
+    func withUndoGrouping(_ actionName: String, _ body: () -> Void) {
+        guard let undoManager else { return body() }
+        undoManager.beginUndoGrouping()
+        body()
+        // 组里每一笔都调过 `setActionName`，收口前再覆一次，名字才是「这一组」的。
+        undoManager.setActionName(actionName)
+        undoManager.endUndoGrouping()
+    }
+
+    /// 撤销用的动作名。`setActionName` 收的是动词短语，菜单拼出来就是「撤销 + 它」。
+    private enum UndoName {
+        static let deleteFromLibrary = "从资料库中删除"
+        static let deletePlaylist = "删除播放列表"
+        static let renamePlaylist = "重命名播放列表"
+        static let removeFromPlaylist = "从播放列表中删除"
+        static let reorderPlaylist = "重新排序"
+        static let favorite = "心水"
+        static let undoFavorite = "取消心水"
+        static let rating = "评分"
     }
 
     /// 主库连接。
@@ -251,13 +303,19 @@ final class LibraryStore {
 
     func removeFromLibrary(_ track: Track) {
         guard libraryTrackIDs.remove(track.id) != nil else { return }
+        // 撤销要的那一份：动之前把这一下会动到的内存状态原样记下来（见 `LibraryRemoval`）。
+        var removal = snapshotBeforeRemoval([track.id],
+                                            redo: { $0.removeFromLibrary(track) })
         libraryTracks.removeAll { $0.id == track.id }
         // 退库会顺带动到播放列表 / 心水 / 勾选 / 空碟，各自动没动由两个 prune 自己报，
         // 别在这里一律按最坏情况发一整套（那就又退回「一个出口」了）。
         var change: LibraryChange = .tracks
         let pruned = pruneAfterLibraryRemoval([track.id])
         change.formUnion(pruned)
-        change.formUnion(pruneEmptyAlbums())
+        let emptied = pruneEmptyAlbums()
+        removal.albums = emptied.albums
+        removal.albumAddedAt = emptied.addedAt
+        if !emptied.albums.isEmpty { change.insert(.albums) }
         onTracksRemoved?([track.id])
         persist("退库") { db in
             try self.remove([track.id], from: .library, in: db)
@@ -265,6 +323,7 @@ final class LibraryStore {
             // 空碟清理：`pruneEmptyAlbums` 已经把内存那份摘干净了，表跟着对齐。
             if change.contains(.albums) { try self.pruneAlbumRows(in: db) }
         }
+        registerUndo(UndoName.deleteFromLibrary) { $0.restore(removal) }
         notify(change)
     }
 
@@ -345,11 +404,19 @@ final class LibraryStore {
 
     /// 移出专辑时连带移出这张碟里的歌，避免资料库留下无主曲目。
     func removeAlbumFromLibrary(_ album: Album, tracks: [Track]) {
+        let ids = Set(tracks.map(\.id))
+        var removal = snapshotBeforeRemoval(ids,
+                                            redo: { $0.removeAlbumFromLibrary(album, tracks: tracks) })
+        if libraryAlbumIDs.contains(album.id) {
+            // 记库里那一份而不是传进来的那份：已经在库里的碟只补过封面、没被整条覆盖
+            //（见 `addAlbumToLibrary`），撤销要放回去的是库里那一份。
+            removal.albums = [albumsByID[album.id] ?? album]
+            removal.albumAddedAt[album.id] = albumAddedAt[album.id]
+        }
         libraryAlbumIDs.remove(album.id)
         libraryAlbums.removeAll { $0.id == album.id }
         rebuildAlbumIndex()
         albumAddedAt.removeValue(forKey: album.id)
-        let ids = Set(tracks.map(\.id))
         libraryTrackIDs.subtract(ids)
         libraryTracks.removeAll { ids.contains($0.id) }
         var change: LibraryChange = [.albums, .tracks]
@@ -361,6 +428,124 @@ final class LibraryStore {
             try self.remove(ids, from: .library, in: db)
             try self.persistLibraryRemoval(ids, pruned, in: db)
         }
+        registerUndo(UndoName.deleteFromLibrary) { $0.restore(removal) }
+        notify(change)
+    }
+
+    // MARK: 退库的撤销
+
+    /// 一次退库动到的内存状态，原样记一份——撤销就是把这一份放回去。
+    ///
+    /// **不含磁盘上的文件。** 退库会连带清掉下载（`onTracksRemoved`），本地曲目还可能
+    /// 被 `LibraryDeleteAlert` 移进废纸篓。撤销把**条目**放回来，放不回文件，
+    /// 于是那条目会以「失联」的形态回来——而失联本来就是资料库已有的一档
+    ///（`missingFileTrackIDs`，spec §10.1），用户可以从废纸篓里捞回来再「指路」。
+    /// 这比「删错了就彻底没救」好，但也仅此而已，报告里按这个口径交代。
+    private struct LibraryRemoval {
+        /// 重做：原样再删一次。撤销执行时把它当反向操作再注册回去。
+        let redo: (LibraryStore) -> Void
+        var tracks: [Track] = []
+        /// 这几首原来的添加日期（退库不清 `track_stat`，但撤销要按原值写回内存那份）。
+        var addedAt: [String: Date] = [:]
+        var albums: [Album] = []
+        var albumAddedAt: [String: Date] = [:]
+        /// 被那条「添加与删除喜爱歌曲」开关连带摘掉的心水。
+        var favorites: [Track] = []
+        /// 被那条「添加与删除播放列表歌曲」开关动过的本地列表，**整份**原样。
+        var playlistTracks: [String: [Track]] = [:]
+        var unchecked: Set<String> = []
+    }
+
+    /// 退库动手**之前**照一张相。专辑那两格由调用方补（空碟清理要等曲目摘完才算得出来）。
+    private func snapshotBeforeRemoval(_ ids: Set<String>,
+                                       redo: @escaping (LibraryStore) -> Void) -> LibraryRemoval {
+        var removal = LibraryRemoval(redo: redo)
+        removal.tracks = libraryTracks.filter { ids.contains($0.id) }
+        for id in ids { removal.addedAt[id] = addedAt[id] }
+        removal.favorites = favoriteTracks.filter { ids.contains($0.id) }
+        for playlist in playlists
+        where playlist.origin == .local && playlist.tracks.contains(where: { ids.contains($0.id) }) {
+            removal.playlistTracks[playlist.id] = playlist.tracks
+        }
+        removal.unchecked = uncheckedTrackIDs.intersection(ids)
+        return removal
+    }
+
+    /// 把一次退库放回去。
+    ///
+    /// **位置是数组最前面，不是原位。** 三张有序关系表只有「挪到最前」这一个写入口
+    ///（`moveToFront`，正向入库走的也是它），按原位插回去要另开一条写盘路径——
+    /// 而「恢复路径与正向路径走同一个落库口」是这一批的硬约束。添加日期原样还回去，
+    /// 所以按日期排的那几页看到的仍是原来的位置，只有「没排序时的数组原序」会变。
+    ///
+    /// 每一格都先问一句「此刻是不是真的不在」：撤销的是一条可能已经被后续操作改过的
+    /// 记录（用户删完又手动加回来了、又心水了一次），对不上的那几格原样跳过，
+    /// 绝不硬塞出一份重复条目。
+    private func restore(_ removal: LibraryRemoval) {
+        var change: LibraryChange = []
+
+        var albums: [Album] = []
+        for album in removal.albums.reversed() where !libraryAlbumIDs.contains(album.id) {
+            libraryAlbumIDs.insert(album.id)
+            libraryAlbums.insert(album, at: 0)
+            albumAddedAt[album.id] = removal.albumAddedAt[album.id]
+            albums.append(album)
+        }
+        if !albums.isEmpty {
+            rebuildAlbumIndex()
+            change.insert(.albums)
+        }
+
+        // 倒着逐条插到最前，于是数组最前那一段保持它们原来的相对曲序（同 `addAlbumToLibrary`）。
+        var restored: [Track] = []
+        for track in removal.tracks.reversed() where !libraryTrackIDs.contains(track.id) {
+            libraryTrackIDs.insert(track.id)
+            libraryTracks.insert(track, at: 0)
+            // 值是 nil 时下标赋值等于删键——原来就没有添加日期的那几首照旧没有。
+            addedAt[track.id] = removal.addedAt[track.id]
+            restored.append(track)
+        }
+        let front = Array(restored.reversed())
+        if !front.isEmpty {
+            onTracksAdded?(front)
+            change.insert(.tracks)
+        }
+
+        var restoredFavorites: [Track] = []
+        for track in removal.favorites.reversed() where !favoriteTrackIDs.contains(track.id) {
+            favoriteTrackIDs.insert(track.id)
+            favoriteTracks.insert(track, at: 0)
+            restoredFavorites.append(track)
+        }
+        let favoriteFront = Array(restoredFavorites.reversed())
+        if !favoriteFront.isEmpty { change.insert(.favorites) }
+
+        var restoredPlaylists: [LibraryPlaylist] = []
+        for (id, saved) in removal.playlistTracks {
+            guard let index = playlists.firstIndex(where: { $0.id == id }),
+                  playlists[index].tracks.map(\.id) != saved.map(\.id) else { continue }
+            playlists[index].tracks = saved
+            restoredPlaylists.append(playlists[index])
+        }
+        if !restoredPlaylists.isEmpty { change.insert(.playlists) }
+
+        let unchecked = removal.unchecked.subtracting(uncheckedTrackIDs)
+        if !unchecked.isEmpty {
+            uncheckedTrackIDs.formUnion(unchecked)
+            change.insert(.checkmarks)
+        }
+
+        persist("撤销退库") { db in
+            // `albums` 是「先收进来的排在前」，而 `prependAlbum` 每调一次都顶到 position 0，
+            // 按这个顺序逐张前插，表里的先后正好与内存那份对上。
+            for album in albums { try self.prependAlbum(album, in: db) }
+            try self.moveToFront(front, of: .library, in: db)
+            for track in front { try self.persistStat(id: track.id, in: db) }
+            try self.moveToFront(favoriteFront, of: .favorite, in: db)
+            for playlist in restoredPlaylists { try self.persistPlaylistTracks(playlist, in: db) }
+            try self.persistIDSet("unchecked_track", adding: unchecked, removing: [], in: db)
+        }
+        registerUndo(UndoName.deleteFromLibrary, removal.redo)
         notify(change)
     }
 
@@ -401,20 +586,25 @@ final class LibraryStore {
 
     /// 歌移出资料库后，若所属专辑在资料库里已经没有任何歌了，连带把这张空碟也移出资料库，
     /// 避免资料库留下幽灵专辑（无曲目占位、或者本地导入后删除了所有曲目残留的空碟）。
-    @discardableResult
-    private func pruneEmptyAlbums() -> LibraryChange {
+    ///
+    /// 交回**被摘掉的那几张碟**（连它们的添加日期），而不再只是一位 `.albums`：
+    /// 撤销退库要把这几张原样放回去，而「哪几张是这一下摘的」只有这里算得出来。
+    /// 空数组 ＝ 一张都没摘，调用方据此决定发不发 `.albums`。
+    private func pruneEmptyAlbums() -> (albums: [Album], addedAt: [String: Date]) {
         let emptyAlbums = libraryAlbums.filter { album in
             !libraryTracks.contains { Self.belongs($0, to: album) }
         }
-        guard !emptyAlbums.isEmpty else { return [] }
+        guard !emptyAlbums.isEmpty else { return ([], [:]) }
         let emptyIDs = Set(emptyAlbums.map(\.id))
         libraryAlbumIDs.subtract(emptyIDs)
         libraryAlbums.removeAll { emptyIDs.contains($0.id) }
+        var saved: [String: Date] = [:]
         for id in emptyIDs {
+            saved[id] = albumAddedAt[id]
             albumAddedAt.removeValue(forKey: id)
         }
         rebuildAlbumIndex()
-        return .albums
+        return (emptyAlbums, saved)
     }
 
     // MARK: - 播放列表
@@ -453,6 +643,7 @@ final class LibraryStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
+        let previousName = playlists[index].name
         playlists[index].name = trimmed
         let renamed = playlists[index]
         persist("列表改名") { db in
@@ -462,13 +653,19 @@ final class LibraryStore {
             try self.searchIndex.upsert(.playlist, id: id, name: trimmed,
                                         artist: renamed.source?.creatorName ?? "", in: db)
         }
+        // 名字没真变就不记一笔（否则「确定」一下没改名也能撤销，菜单里凭空多一格）。
+        // 这条列表后来要是被删了，撤销落到上面那道 `firstIndex` 守卫上，什么都不做。
+        if previousName != trimmed {
+            registerUndo(UndoName.renamePlaylist) { $0.renamePlaylist(id: id, to: previousName) }
+        }
         notify(.playlists)
     }
 
     /// 从资料库里删掉一份列表。账号同步来的要记一笔，否则下次同步又冒出来。
     func deletePlaylist(id: String) {
         guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
-        let wasAccountPlaylist = playlists[index].origin == .account
+        let removed = playlists[index]
+        let wasAccountPlaylist = removed.origin == .account
         if wasAccountPlaylist {
             dismissedAccountPlaylistIDs.insert(id)
         }
@@ -482,7 +679,30 @@ final class LibraryStore {
             try db.run("DELETE FROM playlist WHERE id = ?", [id])
             try self.searchIndex.delete(.playlist, id: id, in: db)
         }
+        registerUndo(UndoName.deletePlaylist) {
+            $0.restorePlaylist(removed, at: index, wasAccountPlaylist: wasAccountPlaylist)
+        }
         notify(.playlists)
+    }
+
+    /// 撤销「删除播放列表」：整份（含曲目）放回原来那一格。
+    ///
+    /// 同 id 的列表此刻要是又在了（用户删完自己又从音源加了回来 / 账号同步补了回来），
+    /// 原样放弃——撤销一条已经被后续操作改过的记录，宁可什么都不做，
+    /// 也不能让资料库里出现两份同 id 的列表。
+    ///
+    /// 走 `updatePlaylists` 而不是自己拼一条增量写：插回中间会把它后面每一行的
+    /// position 都挤动一格，而 position 允许有空洞（见 §position），算不出
+    /// 「从哪一行起 +1」——整份镜像是这一步唯一忠实的写法，与 `updatePlaylists`
+    /// 自己那条理由一模一样。代价是歌单份数，不是资料库大小。
+    private func restorePlaylist(_ playlist: LibraryPlaylist, at index: Int,
+                                 wasAccountPlaylist: Bool) {
+        guard !playlists.contains(where: { $0.id == playlist.id }) else { return }
+        if wasAccountPlaylist { dismissedAccountPlaylistIDs.remove(playlist.id) }
+        let slot = min(max(index, 0), playlists.count)
+        registerUndo(UndoName.deletePlaylist) { $0.deletePlaylist(id: playlist.id) }
+        // `updatePlaylists` 自己会落库（含那份「已删账号歌单」）并发一次 `.playlists`。
+        updatePlaylists { $0.insert(playlist, at: slot) }
     }
 
     /// 往本地列表里加歌。Music 允许同一首在一份列表里出现多次，这里跟它一致，不去重。
@@ -515,20 +735,42 @@ final class LibraryStore {
     func removeTracks(at offsets: IndexSet, fromPlaylist id: String) {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
-        playlists[index].tracks.amberRemove(atOffsets: offsets)
-        let updated = playlists[index]
-        persist("列表删歌") { try self.persistPlaylistTracks(updated, in: $0) }
-        notify(.playlists)
+        var tracks = playlists[index].tracks
+        tracks.amberRemove(atOffsets: offsets)
+        setPlaylistTracks(tracks, inPlaylist: id, label: "列表删歌",
+                          actionName: UndoName.removeFromPlaylist)
     }
 
     func moveTracks(fromOffsets offsets: IndexSet, toOffset destination: Int, inPlaylist id: String) {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
-        playlists[index].tracks.amberMove(fromOffsets: offsets, toOffset: destination)
-        // 重排没有增量写法——一次任意置换的最小描述就是新顺序本身，见 §position。
-        // 重写的范围是**这一份列表**，不是整张 `playlist_track`。
+        var tracks = playlists[index].tracks
+        tracks.amberMove(fromOffsets: offsets, toOffset: destination)
+        setPlaylistTracks(tracks, inPlaylist: id, label: "列表重排",
+                          actionName: UndoName.reorderPlaylist)
+    }
+
+    /// 一份列表的曲目整份换掉。删歌与重排共用，撤销就是把换之前那一份再换回去。
+    ///
+    /// **撤销记的是整份数组，不是「哪几条、在第几位」。** 下标会被后续的增删作废，
+    /// 而「把这份列表恢复成某个样子」不管中间发生过什么都说得通；而且它正好与
+    /// `persistPlaylistTracks`（整份重写、顺序没真变就一行不写）是同一个写入口——
+    /// 撤销路径与正向路径落库口相同，这是这一批的硬约束。
+    ///
+    /// 重写的范围是**这一份列表**，不是整张 `playlist_track`（见 §position）。
+    private func setPlaylistTracks(_ tracks: [Track], inPlaylist id: String,
+                                   label: String, actionName: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == id }),
+              playlists[index].isEditable else { return }
+        let previous = playlists[index].tracks
+        playlists[index].tracks = tracks
         let updated = playlists[index]
-        persist("列表重排") { try self.persistPlaylistTracks(updated, in: $0) }
+        persist(label) { try self.persistPlaylistTracks(updated, in: $0) }
+        if previous.map(\.id) != tracks.map(\.id) {
+            registerUndo(actionName) {
+                $0.setPlaylistTracks(previous, inPlaylist: id, label: label, actionName: actionName)
+            }
+        }
         notify(.playlists)
     }
 
@@ -590,9 +832,9 @@ final class LibraryStore {
     /// 一次改动整份播放列表数组。
     ///
     /// 直接对 `playlists` 连着写（摘一批、逐条改字段、再补一批）的话，每一笔都要发一次
-    /// `objectWillChange`、让侧栏与所有列表页重画一遍，而且`@Published` 的 willSet 会在
-    /// 每次下标赋值时多留一份数组引用，写时复制就真的复制了——一次账号同步几十份列表
-    /// 就是几十次全量拷贝。这里在局部变量上改完再整份换回去：一次通知、一次拷贝、一次落盘。
+    /// 细出口、让侧栏与所有列表页重画一遍，而且可观察属性在每次下标赋值时都多留一份
+    /// 数组引用，写时复制就真的复制了——一次账号同步几十份列表就是几十次全量拷贝。
+    /// 这里在局部变量上改完再整份换回去：一次通知、一次拷贝、一次落盘。
     func updatePlaylists(_ mutate: (inout [LibraryPlaylist]) -> Void) {
         var working = playlists
         mutate(&working)
@@ -614,11 +856,19 @@ final class LibraryStore {
     }
 
     func toggleFavorite(_ track: Track) {
-        var nowFavorite = true
-        if let index = favoriteTracks.firstIndex(where: { $0.id == track.id }) {
-            favoriteTracks.remove(at: index)
+        setFavorite(track, !favoriteTrackIDs.contains(track.id))
+    }
+
+    /// 心水的真正写入口。
+    ///
+    /// **取「置成某个状态」而不是「取反」**，就为了撤销：取反那条在
+    /// 「撤销一条已经被后续操作改过的记录」上是错的（用户自己又点了一次心水，
+    /// 再按 ⌘Z 会把它取消掉）；置位那条在这种情况下是一次干干净净的空操作。
+    private func setFavorite(_ track: Track, _ nowFavorite: Bool) {
+        guard favoriteTrackIDs.contains(track.id) != nowFavorite else { return }
+        if !nowFavorite {
+            favoriteTracks.removeAll { $0.id == track.id }
             favoriteTrackIDs.remove(track.id)
-            nowFavorite = false
         } else {
             favoriteTracks.insert(track, at: 0)
             favoriteTrackIDs.insert(track.id)
@@ -635,6 +885,11 @@ final class LibraryStore {
                 try self.remove([track.id], from: .favorite, in: db)
             }
         }
+        // 撤销只管心水这一位：加心水时那条「同步」开关顺手做的入库**不跟着撤**
+        //（与取消心水不删歌同解——那是两件事，Music 也是）。
+        registerUndo(nowFavorite ? UndoName.favorite : UndoName.undoFavorite) {
+            $0.setFavorite(track, !nowFavorite)
+        }
         // 入库那一声由 `addToLibrary` 自己发（它发的是 `.tracks`），这里只报心水这一位。
         notify(.favorites)
     }
@@ -649,8 +904,8 @@ final class LibraryStore {
 
     /// 整批改（菜单「勾选所选项 / 取消勾选所选项」走这条）。
     ///
-    /// 一批只发一次 `objectWillChange`、只排一次落盘：逐首调单曲版的话，
-    /// 全选一千首就是一千次通知 + 一千次防抖续期。
+    /// 一批只发一次细出口、只写一次盘：逐首调单曲版的话，
+    /// 全选一千首就是一千次通知 + 一千次写盘。
     func setChecked(_ tracks: [Track], _ checked: Bool) {
         let ids = Set(tracks.map(\.id))
         guard !ids.isEmpty else { return }
@@ -794,10 +1049,10 @@ final class LibraryStore {
     /// 曲目是**值类型、各存各的副本**，漏掉哪一处，那一处的行就还是旧值——
     /// 表格里刚改好的歌，切到「最近播放」又是老标题，重新指过路的还会再次播放失败。
     ///
-    /// 改的是数组的**整份替换**而不是逐条下标赋值：`@Published` 的 willSet 会在每次
-    /// 下标赋值时多留一份数组引用，写时复制就真的复制了（理由同 `updatePlaylists`）。
+    /// 改的是数组的**整份替换**而不是逐条下标赋值：可观察属性在每次下标赋值时都多留
+    /// 一份数组引用，写时复制就真的复制了（理由同 `updatePlaylists`）。
     ///
-    /// `transform` 改完与原值相等的那一份不动（也就不发`objectWillChange`、不排落盘）：
+    /// `transform` 改完与原值相等的那一份不动（也就不发细出口、不写盘）：
     /// 「显示简介」面板提交时五个字段里往往只动了一个，其余四个原样写回来。
     ///
     /// 返回值：真改了任何一处没有。
@@ -807,7 +1062,7 @@ final class LibraryStore {
         /// 所以碰上的第一份就是权威，它就是要写进 `track` 表的那一行。
         var canonical: Track?
 
-        /// 改完返回新数组；这一份里没有要改的就返回 nil，好让调用处别去碰 `@Published`。
+        /// 改完返回新数组；这一份里没有要改的就返回 nil，好让调用处别去碰那份可观察属性。
         func rewritten(_ tracks: [Track]) -> [Track]? {
             var changed = false
             let updated = tracks.map { track -> Track in
@@ -1012,12 +1267,18 @@ final class LibraryStore {
     /// 再次点击当前星级会清空，与 Music.app 一致。
     func setRating(_ value: Int, for id: String) {
         let clamped = max(0, min(5, value))
+        let previous = ratings[id] ?? 0
         if clamped == 0 || ratings[id] == clamped {
             ratings.removeValue(forKey: id)
         } else {
             ratings[id] = clamped
         }
         persist("星级") { try self.persistRating(id: id, in: $0) }
+        // 撤销 ＝ 写回原来那一档。`setRating` 本身就是「置成某个值」（0 就是清空），
+        // 所以反向那一条与正向是同一个函数，中间被改过也不会越改越乱。
+        if (ratings[id] ?? 0) != previous {
+            registerUndo(UndoName.rating) { $0.setRating(previous, for: id) }
+        }
         notify(.ratings)
     }
 
@@ -1175,11 +1436,11 @@ final class LibraryStore {
             recentTracks = Array(recentTracks.prefix(200))
         }
         // 已经是台账首位那一格＝同一份歌单/专辑里接着听：整份数组不会有任何变化，
-        // 却照样会发一次 `@Published`，主页目录页于是每首歌重灌一遍快照
+        // 却照样会惊动一次观察者，主页目录页于是每首歌重灌一遍快照
         // （悬浮态被清、货架横向位置回到最左）。没变就不动。
         if let container, recentContainers.first != container {
-            // 先在本地数组上改完再**整份替换**（同 `updateTrack`）：`@Published` 每次
-            // 原地改动都发一声 willSet，逐条改的话一次记账要发三声，
+            // 先在本地数组上改完再**整份替换**（同 `updateTrack`）：每一次原地改动都惊动
+            // 一次观察者，逐条改的话一次记账要惊动三次，
             // 订阅方（主页目录页）就得连着重灌三遍快照。
             var updated = recentContainers
             updated.removeAll { $0.id == container.id }
@@ -1250,7 +1511,7 @@ final class LibraryStore {
     ///（建库那一侧的落点在 `AmberDatabaseMigration`）。
     private var isLoaded = false
 
-    /// 启动时把主库读进内存那几份 `@Published`。
+    /// 启动时把主库读进内存那几份可观察属性。
     private func load() {
         guard let db = database?.sqlite else { return }
         do {

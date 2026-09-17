@@ -193,8 +193,9 @@ final class LibrarySongsViewController: ContentPageController {
 
     /// SwiftUI 那边靠 `updateNSView` 被动重跑，AppKit 侧要显式订阅。
     ///
-    /// 每一路都只调 `setNeedsRefresh()`：**`objectWillChange` 是在值变之前发的，
-    /// 必须推迟到下一轮 runloop 再读值**，否则读到的还是旧的。
+    /// 每一路都只调 `setNeedsRefresh()`：同一次用户操作往往连着改好几项
+    /// （入库一张碟＝曲目 + 专辑 + 添加日期三笔），合批到下一轮 runloop 再重算一次，
+    /// 整张表才不会被同一件事重排好几遍。
     private func bind() {
         // 这一页读得最宽：曲目集合、心水（筛选）、评分 / 播放次数 / 加入日期（既进筛选
         // 也进排序）、专辑（类型 / 专辑艺人 / 年份几列回查专辑）、勾选列与失联感叹号。
@@ -356,6 +357,42 @@ final class LibrarySongsViewController: ContentPageController {
         AuxiliaryWindows.shared.showInfoPanel(tracks: picked)
     }
 
+    // MARK: - 另外三条页面级命令
+
+    /// 「编辑 ▸ 删除」。表格里的 ⌫ / ⌘⌫ 发的是**同一个选择器**
+    /// （`TrackDisplayTableView.keyDown` 往响应链上 `tryToPerform`），
+    /// 于是菜单与键盘是同一条命令：启用态由下面那一句 validate 给，
+    /// 确认框与撤销名字都只在 `SongsTableController.deleteSelection()` 那一处。
+    @objc func amberDeleteSelection(_ sender: Any?) {
+        controller.deleteSelection()
+    }
+
+    /// 「编辑 ▸ 查找」（⌘F）：把焦点交给标题栏那颗搜索框。
+    ///
+    /// **不写 validate**：没有搜索框的页（主页、新发现、广播）链上根本没人接这个选择器，
+    /// AppKit 自己把菜单项变灰——这正是页面级命令要买下的东西（铁律 4）。
+    ///
+    /// 搜索框还没进窗（这一页刚建、工具栏那一件还没插上）时什么都不做：这一条只在
+    /// 本页在栈顶时才够得着，而那时候件一定已经在了。
+    /// `SearchFieldBinder` 自己没有 focus 方法（搜索页那一份 `SearchPageFieldBinder`
+    /// 才有），字段本身是公开的，直接让窗口把第一响应者交给它。
+    @objc func amberFind(_ sender: Any?) {
+        let field = binder.field
+        guard let window = field.amberWindow else { return }
+        window.makeFirstResponder(field)
+    }
+
+    /// 「显示 ▸ 查看显示选项…」。
+    ///
+    /// 原先实现在 `AppDelegate` 上，而 AppDelegate 是响应链最后一环、永远接得住，
+    /// 于是这一条在主页/新发现/广播上也亮着，点开是一扇调不到任何东西的面板
+    /// （那扇面板调的是**歌曲表**的列与行高）。挪到这一页之后，不在这一页时自动变灰。
+    /// 面板本身的开合语义不变（Music 的 `doShowHideViewOptions:` 就是「开着就收」），
+    /// 与筛选菜单里那一条走同一个入口。
+    @objc func amberShowSongsViewOptions(_ sender: Any?) {
+        AuxiliaryWindows.shared.toggleSongsViewOptions()
+    }
+
     // MARK: - 筛选 → 重复项 → 搜索 → 排序
 
     /// 筛选 → 重复项 → 搜索 → 排序，与 Music 工具栏那颗菜单的语义一致。
@@ -410,6 +447,10 @@ extension LibrarySongsViewController: NSMenuItemValidation {
         // 「文件 ▸ 显示简介」：选中了才可用。这一页不是 `TrackTableViewController` 的子类
         // （它走 `SongsTableController` 那套），所以命令要在这里单独接一份。
         if item.action == MainMenu.Action.getInfo { return !controller.selectedTracks().isEmpty }
+        // 「编辑 ▸ 删除」同解：没选中曲目就没得删。
+        if item.action == MainMenu.Action.deleteSelection {
+            return !controller.selectedTracks().isEmpty
+        }
         guard item.action == MainMenu.Action.showHideDuplicates else { return true }
         item.title = DuplicatesMenuItem.title(
             showingDuplicates: duplicatesMatch != nil,

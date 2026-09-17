@@ -156,6 +156,11 @@ final class PlayQueueViewController: NSViewController {
         self.appState = appState
         self.model = PlayQueueModel(appState: appState)
         super.init(nibName: nil, bundle: nil)
+        // 撤销登记处跟着**宿主窗**走：主窗那份由 `MainWindowController` 交出来
+        // （`windowWillReturnUndoManager`），迷你窗没有委托，取回 nil ＝ 不注册。
+        // 每次现问一遍，因为这台控制器在两扇窗之间搬家（整窗 ↔ 迷你窗）。
+        // `window` 是 unowned(unsafe)，走仓库现成的 `@safe` 外壳（二档，AGENTS.md）。
+        model.undoManagerProvider = { [weak self] in self?.viewIfLoaded?.amberWindow?.undoManager }
     }
 
     @available(*, unavailable)
@@ -747,8 +752,9 @@ final class PlayQueueViewController: NSViewController {
     // MARK: - 拖拽落点
 
     /// 外部拖进来的曲目（从歌曲表、专辑页、歌单页的行拖到面板上）。
-    /// 换成 AppKit 之后这条要在表格上重接：原先挂在面板那片 SwiftUI 叶子的
-    /// `.amberTrackDrop` 上（见`MainView.swift`），那是 SwiftUI 的落点，AppKit 面板收不到。
+    /// 换成 AppKit 之后这条在表格上重接过一次：原先挂在面板那片 SwiftUI 叶子的
+    /// `.amberTrackDrop` 上（那份宿主已随 `MainView.swift` 一起删了），
+    /// 那是 SwiftUI 的落点，AppKit 面板收不到。
     func acceptTracks(_ tracks: [Track], before target: PlayQueueItem?) -> Bool {
         guard !tracks.isEmpty else { return false }
         model.acceptDrop(tracks, before: target)
