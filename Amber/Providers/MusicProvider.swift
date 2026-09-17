@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum ProviderError: Error, LocalizedError {
     case invalidResponse
@@ -21,6 +22,114 @@ enum ProviderError: Error, LocalizedError {
         // toast 上没有可点的「查找」。
         case .localFileMissing: return "找不到原始文件"
         }
+    }
+}
+
+// MARK: - 连接类失败
+
+extension URLError {
+    /// 「网络本身没打通」的那一类，与「服务端收到了、然后拒绝」分开。
+    ///
+    /// 这一份名单同时决定两件事，所以只能有一份：**要不要重试**（前提是「这次没打通、
+    /// 下次可能打通」），以及**界面上说不说「网络不可用」**（`CatalogSlotResult.failure`）。
+    ///
+    /// 业务错误一条都不在里面，这是硬要求而不是偏好：QQ 的 104003（匿名态点 VIP 曲目）
+    /// 走的是 `ProviderError.api`，退避三次再报错的话，用户点一下下载要盯着三秒才看见
+    /// 提示——上一轮验收第 33 条钉的就是这件事。
+    ///
+    /// `.secureConnectionFailed`（TLS 握手失败）**故意不收**：它既不是「没网」，
+    /// 重试也治不好（证书/协议不匹配下一次还是那样），收进来只会白等两轮退避。
+    var isConnectionFailure: Bool {
+        switch code {
+        case .notConnectedToInternet, .networkConnectionLost, .timedOut,
+             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// 只对连接类失败重试的小包装：**首次 + 最多 2 次重试，指数退避 0.3 s / 0.6 s**。
+///
+/// 三个收口点共用这一份（`QQAPI.musicu`、`NeteaseAPI.get(base:_:params:)`、
+/// `NeteaseAPI.eapiRaw`），别在三处各抄一遍——名单一旦分叉，「哪种错会白等三秒」
+/// 就变成得逐处去读的事。
+///
+/// 包在**传输那一句**上而不是整条请求上：`URLError` 只可能从 `URLSession.data` 里出来，
+/// 重试建请求体没有意义；而业务错误（`ProviderError.api`）压根不是 `URLError`，
+/// 就算把整条请求包进来也不会被重试。
+///
+/// 退避用 `Task.sleep` 而不是 `Thread.sleep`：这一层跑在协作线程池上
+/// （`MusicProvider` 的 `@concurrent`，理由见下面协议的注释），阻塞式等待会占着
+/// 池里的一根线程不放，而目录页一次就有 4 条请求在跑。`Task.sleep` 也顺带把取消
+/// 传下去——换音源时 `reloadTask.cancel()` 不必等退避睡完。
+///
+/// 函数本身不标 `@concurrent`：它要跟调用方待在同一个隔离域里（SE-0461 的默认行为），
+/// 否则每次重试都多一次无谓的执行器跳转。
+func withConnectionRetry<T>(_ operation: () async throws -> T) async throws -> T {
+    for attempt in 0..<2 {
+        do {
+            return try await operation()
+        } catch let error as URLError where error.isConnectionFailure {
+            try await Task.sleep(for: .milliseconds(300 << attempt))
+        }
+    }
+    // 最后一次不再兜。连接类失败在这里**顺手记进** `CatalogFailureSink`：
+    // 目录页那两条取数接口（`catalogItems` / `playlists(tag:)`）按设计不抛错
+    // （见它们各自的注释），错误码到不了界面层，只能在这儿留个记号。
+    do {
+        return try await operation()
+    } catch {
+        if let urlError = error as? URLError, urlError.isConnectionFailure {
+            CatalogFailureSink.record(urlError)
+        }
+        throw error
+    }
+}
+
+/// 目录格子「取不到」的上报口：网络层把最终的连接类失败放进来，
+/// `catalogItems` 在出口处取走，填进 `CatalogSlotResult.failure`。
+///
+/// 为什么需要这么一条旁路：`catalogItems` 一格底下常常是七八条请求
+/// （QQ 的 `.topPicks` 就是「新碟 + 电台分组」两路各自再分叉），中间每一层都用
+/// `try?` 吞掉失败换取「这一段交不出来就整段省掉」——把错误改成层层上抛，
+/// 等于把三十来个辅助函数全改一遍签名，只为了在出口处回答一个是非题。
+enum CatalogFailureSink {
+
+    /// 一次 `catalogItems` 调用期间共用的那一格。
+    ///
+    /// `@TaskLocal` 而不是 API 对象上的属性：一页十几格是**并发**在跑的
+    /// （`CatalogFeedModel.performReload` 的 `withTaskGroup`，上限 4），
+    /// 放在实例上会串味。任务局部量按**调用树**划界，`async let` 与 `withTaskGroup`
+    /// 开出去的子任务自动继承，正好就是「这一格」的范围。
+    ///
+    /// **一处已知的不精确**：`RequestCache` 同键去重时，后到的那一格 `await` 的是
+    /// 先到那一格建的 `Task`，失败因此记在**先到者**的格子里。断网时每一格都会自己
+    /// 发请求、自己记一次，消费端问的又是「这一页有没有任何一格连接失败」，
+    /// 所以这点偏差不改变结论；写在这里是免得下次有人拿单格去对账。
+    @TaskLocal private static var current: Box?
+
+    private final class Box: Sendable {
+        let error = OSAllocatedUnfairLock<URLError?>(initialState: nil)
+    }
+
+    /// 网络层调用。只留**第一条**：同一格里后续请求的失败多半是同一个原因，
+    /// 留哪条都一样，留第一条省一次写锁。
+    static func record(_ error: URLError) {
+        current?.error.withLock { if $0 == nil { $0 = error } }
+    }
+
+    /// provider 的 `catalogItems` 在出口处套这一层。
+    ///
+    /// 只在**这一格什么都没交出来**时才贴 `failure`：格子里有内容就说明该拿的拿到了，
+    /// 某条支线超时不该让整页被判成「网络不可用」。这也正是 `failure` 那个字段
+    /// 写着的语义——「这一格取不到」，不是「这一格里出过错」。
+    static func attach(_ body: () async -> CatalogSlotResult) async -> CatalogSlotResult {
+        let box = Box()
+        var result = await $current.withValue(box) { await body() }
+        if result.items.isEmpty { result.failure = box.error.withLock { $0 } }
+        return result
     }
 }
 
@@ -48,6 +157,10 @@ protocol MusicProvider: Sendable {
     /// 目录页（主页/新发现/广播）的一个格子。**栏目结构照 Apple Music 写死在
     /// `CatalogPages` 里**，音源只按 slot 交数据；交不出来就返回`.empty`，
     /// 页面会把那一段整段省掉，不要为了填满而拿别的内容顶。
+    ///
+    /// 这一条**不抛错**是有意的：`.empty` 对它是有意义的返回值（很多格子音源本来就不供）。
+    /// 「没这一格」与「取不到」靠 `CatalogSlotResult.failure` 分开，两家实现都把整个
+    /// 函数体套进 `CatalogFailureSink.attach`，别漏。
     @concurrent
     func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult
 

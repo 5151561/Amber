@@ -47,8 +47,9 @@ final class QQAPI: MusicProvider {
 
     /// 凭证过期回调（`GetLoginUserInfo` 复核确认失效时触发）。
     /// 必须声明成主线程回调：触发点在 URLSession 的后台续体上，接的那头要弹 toast、
-    /// 改 @Published；不带 @MainActor 的话 Swift 5 下编译期不查，运行期就在后台线程动
-    /// AppKit（`NSView.isHidden` 直接抛异常 → SIGABRT）。
+    /// 改 `@Observable` 状态对象上的属性（写这条注释时那里还是 `@Published`，剥离 Combine
+    /// 之后换了类型、要守的东西没变）；不带 @MainActor 的话 Swift 5 下编译期不查，
+    /// 运行期就在后台线程动 AppKit（`NSView.isHidden` 直接抛异常 → SIGABRT）。
     var onCredentialExpired: (@MainActor @Sendable () -> Void)? {
         get { injected.withLock { $0.onCredentialExpired } }
         set { injected.withLock { $0.onCredentialExpired = newValue } }
@@ -121,7 +122,10 @@ final class QQAPI: MusicProvider {
             request.setValue(credential.cookie, forHTTPHeaderField: "Cookie")
         }
         request.setValue("https://y.qq.com/portal/player.html", forHTTPHeaderField: "Referer")
-        let (data, response) = try await session.data(for: request)
+        // 连接类失败重试两次（指数退避），业务错误一次都不重试——名单与理由都在
+        // `withConnectionRetry`。下面 `code != 0` 那一支走的是 `ProviderError`，
+        // 不是 `URLError`，所以 104003 这类照旧当场抛出。
+        let (data, response) = try await withConnectionRetry { try await session.data(for: request) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ProviderError.api("请求失败")
         }
@@ -401,7 +405,15 @@ final class QQAPI: MusicProvider {
     // MARK: - 目录页取数
 
     /// 页面结构由 CatalogPages 定死（照 Apple Music），这里只按格子交数据。
+    ///
+    /// 外面这一层只做一件事：把这一格底下所有请求里的连接类失败收上来，
+    /// 一格都没交出内容时填进 `CatalogSlotResult.failure`，让目录页分得开
+    /// 「断网」与「音源没这一格」（§2.6-8）。机理见 `CatalogFailureSink`。
     func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult {
+        await CatalogFailureSink.attach { await self.catalogSlot(slot) }
+    }
+
+    private func catalogSlot(_ slot: CatalogSlot) async -> CatalogSlotResult {
         switch slot {
         case .recentlyPlayed, .musicMemories:
             return .empty   // 本地资料库来的，页面自己填
@@ -1921,7 +1933,6 @@ final class QQAPI: MusicProvider {
     /// 匿名探测会被 500003/500005 一律挡掉，看不出是「没有这个接口」还是「要登录」。
     func debugProbeCatalog(to path: String) async {
         let seedSongID = 107192078      // 告白气球，用来试相似歌曲
-        let seedSongMid = "003OUlho2HcRHC"
         let seedSingerMid = "0025NhlN2yWrP4" // 周杰伦
         let candidates: [(String, String, [String: Any])] = [
             // 瞩目之星：歌手列表 / 相似歌手
@@ -1995,7 +2006,7 @@ final class QQAPI: MusicProvider {
             report += line + "\n"
         }
         try? report.write(toFile: path, atomically: true, encoding: .utf8)
-        NSLog("[qqprobe] 写入 \(path)")
+        Self.log.notice("探测报告写入 \(path, privacy: .public)")
     }
 
     // MARK: - 账号歌单接口探测（-qqplaylistprobe）
@@ -2122,7 +2133,7 @@ final class QQAPI: MusicProvider {
         // 所以 Amber 直接复用现成的 `dissDetail`，不必为账号歌单另开一条取数路径。
 
         try? report.write(toFile: path, atomically: true, encoding: .utf8)
-        NSLog("[qqprobe] 账号歌单探测写入 \(path)")
+        Self.log.notice("账号歌单探测报告写入 \(path, privacy: .public)")
     }
 #endif
 
