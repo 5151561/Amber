@@ -105,6 +105,24 @@ final class InspectorContainerViewController: NSViewController {
         ])
     }
 
+    /// 把某一档的面板**交出去**给宿主自己演退场（整窗播放器换档那条路，
+    /// 见 `NowPlayingContainerViewController.detachOutgoingPanel`）。
+    ///
+    /// 容器内部那次交叉淡入有个前提：两档的落点一样大。整窗播放器不满足——队列档在玻璃盘里
+    /// （`platterRect`），歌词档直接铺在容器上（宽 19pt = `hostedContentInset`）。
+    /// 淡出的旧面板被容器的约束钉着，抽屉一改尺寸它就跟着重排一次，肉眼是「先变形再消失」。
+    /// 所以那条路让宿主先把旧面板摘走、原地钉住，再各演各的。
+    ///
+    /// 摘走就是撤掉 `install` 钉它的那组约束 + 从容器里移出去；下次`install` 会照常重钉，
+    /// 面板控制器本身（`addChild` 的父子关系）一点不动。
+    func releasePanel(_ panel: NSView) {
+        guard panel.superview === view else { return }
+        view.removeConstraints(view.constraints.filter {
+            $0.firstItem === panel || $0.secondItem === panel
+        })
+        panel.removeFromSuperview()
+    }
+
     /// [实测] §1.4 `mode` 的 didSet：**交叉淡入，不是抽换**。
     ///
     /// - 新面板插在旧面板**底下**（`positioned: .below`），靠 alpha 过渡，不做位移/推挤；

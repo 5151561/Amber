@@ -57,6 +57,13 @@ final class NowPlayingContainerViewController: NSViewController {
     /// 玻璃只保证 `contentView` 在效果里面（头文件原话），队列档时抽屉挂这一层。
     private let platterContent = NSView()
 
+    /// 换档时被摘出抽屉、钉在原地单独演退场的**上一档面板**（见 `detachOutgoingPanel`）。
+    private var outgoingPanel: NSView?
+
+    /// 「盘正带着上一档的队列面板滑出去」这一程。期间 `syncDrawerPlacement`
+    /// 不许摘掉/藏掉玻璃盘——落位统一交给 `animatePlatter` 的收尾。
+    private var platterIsExiting = false
+
     private let chrome: NowPlayingChromeView
 
     /// 没有封面时的那层底色。
@@ -510,28 +517,109 @@ final class NowPlayingContainerViewController: NSViewController {
         }
     }
 
+    /// 换档。
+    ///
+    /// [实测] §1.4 说档位切换是容器**内部**的交叉淡入。整窗播放器这一台不能照搬：
+    /// 两档的落点不一样大（队列档在玻璃盘里 = `platterRect`，歌词档直接铺在容器上
+    /// = `lyricsPanelRect`，宽 19pt），容器内部淡出的旧面板被约束钉着，抽屉一改尺寸
+    /// 它就跟着被拉宽并重排一次——**先变形，再（因为盘被当场摘掉）突然消失**。
+    ///
+    /// 这里改成「交接」：先把上一档的面板从抽屉里摘出来钉在原地，再各演各的——
+    /// - 出队列档：旧面板**留在玻璃盘里**，盘带着它滑下去，与「直接收起清单」完全同一条
+    ///   曲线（都是 `animatePlatter(expanded: false)`）；歌词在自己的位置淡入。
+    /// - 进队列档：旧的歌词面板留在容器上原地淡出；盘带着队列面板滑上来。
     private func applyInspectorMode(_ mode: PlayerInspector, animated: Bool) {
         guard mode != inspectorMode else { return }
+        let previous = inspectorMode
         inspectorMode = mode
-        // [实测] §1.4：档位切换是容器内部的交叉淡入，不是抽换内容。
+        // 上一程还没演完就又换档：先把它收干净，免得两份旧面板叠在场上。
+        finishOutgoingPanel()
+
+        let handoff = animated && isInspectorOpen
+        platterIsExiting = handoff && previous == .queue
+        if handoff { detachOutgoingPanel(of: previous) }
+
         syncDrawerPlacement()
-        drawer.setMode(mode, animated: animated && isInspectorOpen)
+        // 旧面板已经被摘走，容器里没有可淡出的对象了，直接换。
+        drawer.setMode(mode, animated: false)
         chrome.setInspector(open: isInspectorOpen, mode: mode)
         view.needsLayout = true
         layoutPieces()
-        if isInspectorOpen {
-            // 抽屉本身恒可见：档位之间那一下交叉淡入是容器**内部**的事（§1.4），
-            // 外面这层只负责盘的玻璃。alpha 也要掰回来——上一轮收起走的是
-            // `fadeDrawer(to: 0)`，它把 alpha 留在 0 上。
-            drawer.view.isHidden = false
-            drawer.view.alphaValue = 1
-            animatePlatter(expanded: mode == .queue, animated: animated)
+        guard isInspectorOpen else {
+            platterIsExiting = false
+            finishOutgoingPanel()
+            return
+        }
+        // 抽屉本身恒可见。alpha 也要掰回来——上一轮收起走的是 `fadeDrawer(to: 0)`，
+        // 它把 alpha 留在 0 上。
+        drawer.view.isHidden = false
+        drawer.view.alphaValue = 1
+        if mode == .queue {
+            animatePlatter(expanded: true, animated: animated)
+            fadeOutOutgoingPanel(animated: animated)
+        } else {
+            animatePlatter(expanded: false, animated: animated)
+            if handoff { fadeDrawer(to: 1, animated: true) }
         }
     }
+
+    /// 把上一档的面板从抽屉里摘出来，钉在它此刻画着的位置上（TAMIC + 定 frame，
+    /// 不再吃容器的约束，于是抽屉换尺寸也不会把它重排——「变形」那一半就没了）。
+    ///
+    /// 落点按档位分：队列那份留在 `platterContent`（玻璃盘的内容层）里，跟着盘一起走；
+    /// 歌词那份留在容器上、压在四角胶囊底下，原地淡出。
+    private func detachOutgoingPanel(of mode: PlayerInspector) {
+        let panel = mode == .queue ? drawer.queue.viewIfLoaded : drawer.lyrics.viewIfLoaded
+        guard let panel, panel.superview === drawer.view else { return }
+        let host: NSView = mode == .queue ? platterContent : view
+        let frame = host.convert(panel.bounds, from: panel)
+        drawer.releasePanel(panel)
+        panel.translatesAutoresizingMaskIntoConstraints = true
+        panel.frame = frame
+        if mode == .queue {
+            host.addSubview(panel)
+        } else {
+            view.addSubview(panel, positioned: .below, relativeTo: chrome)
+        }
+        outgoingPanel = panel
+    }
+
+    /// 上一档的面板在原地淡出（只有「进队列档」这条路用得上——出队列档那份是被玻璃盘
+    /// 整块带着淡走的，盘的 alpha 已经把它一起吃了）。
+    private func fadeOutOutgoingPanel(animated: Bool) {
+        guard let panel = outgoingPanel else { return }
+        guard animated else { finishOutgoingPanel(); return }
+        panel.alphaValue = 1
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.panelHandoffFade
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.finishOutgoingPanel() }
+        }
+    }
+
+    /// 退场演完：把面板还原成「没在场上」的样子并撤走。下次 `setMode` 时容器的
+    /// `install` 会重新钉约束，什么都不用交回来。
+    private func finishOutgoingPanel() {
+        guard let panel = outgoingPanel else { return }
+        outgoingPanel = nil
+        panel.alphaValue = 1
+        panel.removeFromSuperview()
+        // 队列面板是被**移出视图树**而不是 `isHidden` 掉的，`viewDidHide` 不会来，
+        // 5 秒回滚得自己停（照 `setInspectorOpen(false)` 那一处）。
+        if panel === drawer.queue.viewIfLoaded { drawer.queue.panelDidBecomeHidden() }
+    }
+
+    /// 换档交接时旧面板原地淡出的时长，与 `fadeDrawer` 那条同值。
+    private static let panelHandoffFade: TimeInterval = 0.22
 
     private func setInspectorOpen(_ open: Bool, animated: Bool) {
         guard open != isInspectorOpen else { return }
         isInspectorOpen = open
+        // 换档的交接还没演完就要开合：先收干净，免得旧面板留在盘里跟着一起动。
+        platterIsExiting = false
+        finishOutgoingPanel()
         syncDrawerPlacement()
         chrome.setInspector(open: open, mode: inspectorMode)
 
@@ -597,7 +685,9 @@ final class NowPlayingContainerViewController: NSViewController {
                 drawer.view.removeFromSuperview()
                 view.addSubview(drawer.view, positioned: .below, relativeTo: chrome)
             }
-            platterGlass.removeFromSuperview()
+            // 交接期间盘还要带着上一档的队列面板滑出去，这里不摘——
+            // 收尾在 `animatePlatter` 的 completion 里（`platterIsExiting`）。
+            if !platterIsExiting { platterGlass.removeFromSuperview() }
         }
         // 「谁负责淡」随档位换：队列档淡的是玻璃盘（抽屉在盘里恒不透明），
         // 歌词档淡的是抽屉自己。换过去之前把另一位复位，免得留着上一档的 alpha 0。
@@ -605,7 +695,7 @@ final class NowPlayingContainerViewController: NSViewController {
         // `hasValidLayout` 见它自己的注释：0 尺寸下让队列表上屏 = AppKit 断言。
         let shows = isInspectorOpen && hasValidLayout
         drawer.view.isHidden = !shows
-        platterGlass.isHidden = !(wantsPlatter && shows)
+        if !platterIsExiting { platterGlass.isHidden = !(wantsPlatter && shows) }
     }
 
     /// 内容列此刻**画在**哪（不是它的落点）。
@@ -656,6 +746,8 @@ final class NowPlayingContainerViewController: NSViewController {
         guard animated, let layer = platterGlass.layer else {
             platterGlass.alphaValue = target
             platterGlass.isHidden = !expanded
+            platterIsExiting = false
+            if !expanded { finishOutgoingPanel() }
             return
         }
         platterGlass.alphaValue = expanded ? 0 : 1
@@ -678,8 +770,14 @@ final class NowPlayingContainerViewController: NSViewController {
         } completionHandler: { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                if !expanded { self.platterIsExiting = false }
                 let stillExpanded = self.isInspectorOpen && self.inspectorMode == .queue
                 guard stillExpanded == expanded else { return }
+                if !expanded {
+                    // 盘带着走的那份队列面板，演到这里才撤。
+                    self.finishOutgoingPanel()
+                    if self.inspectorMode != .queue { self.platterGlass.removeFromSuperview() }
+                }
                 self.platterGlass.isHidden = !expanded
             }
         }
