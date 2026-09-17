@@ -1,4 +1,3 @@
-import Compression
 import Foundation
 
 /// QQ 音乐逐字歌词（QRC）解码。
@@ -108,39 +107,39 @@ enum QRCDecoder {
 
     // MARK: - zlib
 
-    /// `Compression` 的 `COMPRESSION_ZLIB` 实际是**裸 DEFLATE**，
-    /// 所以要自己剥掉 zlib 的 2 字节头和 4 字节 adler32 尾。
+    /// 剥掉 zlib 的 2 字节头与 4 字节 adler32 尾，中间那段交给
+    /// `NSData.decompressed(using:)`。
+    ///
+    /// **为什么头剥了还传 `.zlib`**：`NSData.h` 给这一档的原话是
+    /// 「It uses the raw DEFLATE format as described in IETF RFC 1951」——
+    /// 名字叫 zlib，吃进去的却是**裸 DEFLATE**，与从前手写循环里用的 `COMPRESSION_ZLIB`
+    /// 同语义（两者本来就是同一个 libcompression 后端的两层皮）。所以剥头这一步跟着换 API
+    /// 一起留下：把完整的 RFC 1950 流原样递进去，那 2 字节头会被当成 DEFLATE 的
+    /// 第一个块头读，解不开。
+    ///
+    /// 失败形式[实测]：`decompressed(using:)` 抛的是能被 Swift 接住的 `NSError`
+    /// （`NSCocoaErrorDomain` / 5377），不是 ObjC 异常，所以 `try?` 兜得住，
+    /// 与从前「循环里 return nil」落在同一条路上。
+    ///
+    /// 与手写循环**唯一的行为差别是它更严**，这一条是有意收下的：从前拿
+    /// `COMPRESSION_STREAM_FINALIZE` 跑一轮，流中途断掉时 libcompression 回的是 `OK`
+    /// 而不是 `ERROR`（[实测 2026-09-17] 截断的真密文回 `OK` + 221 字节、纯垃圾回
+    /// `OK` + 59 字节），那段循环分不出「正常收尾」和「输入不够了」，于是把半截数据
+    /// 当成功交了出去。现在一律 nil。
+    ///
+    /// 那半截数据**几乎总是死路**——`lyricContent` 要的收尾 `"/>` 不在里面，抛的从
+    /// `.noLyricContent` 变成 `.inflateFailed`，两边都是抛，调用方（一律 `try?`）看不出差别。
+    /// 只有一个窄窗例外：丢掉的那几字节恰好只编码了 XML 的收尾 `</LyricInfo></QrcInfos>`
+    /// 时，老写法能把完整正文捞回来（[实测]去掉末尾 1 个分组正是这种），现在它归失败。
+    /// 这个捞回从来就不是设计出来的（`OK` 与 `END` 分不清才有的副产品），
+    /// 而且早一个分组就已经捞不动；捞成功也只会把「少了一截的歌词」当完好的交下去。
+    /// 换成明着失败，上游 `lyrics(track:)` 正好退回行级那一问。
     private static func inflate(_ data: [UInt8]) -> Data? {
         guard data.count > 6, data[0] == 0x78 else { return nil }
-        let payload = Array(data[2..<(data.count - 4)])
-        var out = Data()
-        var stream = compression_stream(dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!,
-                                        dst_size: 0,
-                                        src_ptr: UnsafePointer<UInt8>(bitPattern: 1)!,
-                                        src_size: 0, state: nil)
-        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
-                == COMPRESSION_STATUS_OK else { return nil }
-        defer { compression_stream_destroy(&stream) }
-
-        let bufferSize = 64 * 1024
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { buffer.deallocate() }
-
-        return payload.withUnsafeBufferPointer { src -> Data? in
-            stream.src_ptr = src.baseAddress!
-            stream.src_size = src.count
-            while true {
-                stream.dst_ptr = buffer
-                stream.dst_size = bufferSize
-                switch compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue)) {
-                case COMPRESSION_STATUS_OK, COMPRESSION_STATUS_END:
-                    out.append(buffer, count: bufferSize - stream.dst_size)
-                    if stream.dst_size != 0 { return out.isEmpty ? nil : out }
-                default:
-                    return nil
-                }
-            }
-        }
+        let payload = Data(data[2..<(data.count - 4)])
+        guard let out = try? (payload as NSData).decompressed(using: .zlib) as Data,
+              !out.isEmpty else { return nil }
+        return out
     }
 
     // MARK: - 3DES（QQ 变体）
