@@ -263,10 +263,12 @@ enum AmberDatabaseMigration {
     ///     解析规则与四个 store 的 `init(directory:)` 逐字相同。
     ///   - mediaFolder: 媒体文件夹（`index.json` 的家，与上面那个目录**不是**同一个）。
     ///     nil ＝ 设置 › 文件 ›「媒体」文件夹。
-    ///   - renameLegacyOnSuccess: 成功之后把 Application Support 那三份 JSON 改名
-    ///     `*.json.migrated-<yyyyMMdd>`。**这一轮默认关着**：JSON 还是唯一真值源，
-    ///     等 store 真的改读 SQL 那一步才打开。媒体夹的 `index.json` 任何时候都不改名
-    ///     ——它是媒体文件夹的自解释**清单**，不是 Amber 的存档。
+    ///   - renameLegacyOnSuccess: 成功之后把**已经没人读的**那些旧存档改名
+    ///     `*.json.migrated-<yyyyMMdd>`。默认关着（阶段 1、2 那两轮 JSON 仍是唯一真值源）。
+    ///     打开之后改哪几份**跟着 store 一份一份来**：阶段 3 只有 `library.json`，
+    ///     `trackinfo.json` / `loudness.json` 要等阶段 4 它们各自的 store 并进主库
+    ///     （理由见下面那段实测）。媒体夹的 `index.json` 任何时候都不改名——
+    ///     它是媒体文件夹的自解释**清单**，不是 Amber 的存档。
     @discardableResult
     static func runIfNeeded(directory: URL? = nil,
                             mediaFolder: URL? = nil,
@@ -322,7 +324,20 @@ enum AmberDatabaseMigration {
         }
 
         if renameLegacyOnSuccess {
-            for url in [archiveURL, infoURL, loudnessURL] { renameLegacy(url) }
+            // **只改名 `library.json` 这一份。**
+            //
+            // 改名的含义是「这份存档已经没人读了」，所以它只能跟着**对应的 store 真的
+            // 改读 SQL** 那一刻走，一份都不能提前。阶段 3 只搬了 `LibraryStore`；
+            // `TrackInfoStore` 与 `LoudnessStore` 仍各自读 `trackinfo.json` /
+            // `loudness.json`（见两者 `init` 里的 `fileURL`），这时候把它们改名，
+            // 两个 store 下次启动就读不到自己的存档、当成空的从头开始，
+            // 然后把空的写回去——正是这次改造要堵的那条「读不出来变成写空的」，
+            // 只不过换了个地方发生。
+            //
+            // [实测 2026-09-17] 三份一起改名之后跑了一次实机：`loudness.json` 从 15 条
+            // 变成 6 条（当场重新量出来的那几首），原来那 15 条只剩留底和主库里还有。
+            // 阶段 4 把这两个 store 并进主库时，把它们的 URL 加回这个数组。
+            renameLegacy(archiveURL)
         }
 
         return Report(didRun: true, databaseURL: databaseURL, counts: counts, warnings: warnings)
@@ -646,8 +661,8 @@ enum AmberDatabaseMigration {
         let sql = """
             INSERT INTO track (id, kind, title, artist_name, artist_id, album_name, album_id,
                                artwork_url, duration, track_number, disc_number, media_mid,
-                               lossless_available, album_key)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                               lossless_available, album_key, local_path)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """
         for track in plan.tracks {
             try db.run(sql, [
@@ -657,6 +672,13 @@ enum AmberDatabaseMigration {
                 // 物化的 album_key：**调仓库里那一份 `fallbackKey`**，不在这儿重拼。
                 // 它现在是一个落盘的列，抄一份就是第二份真相。
                 LibraryStore.fallbackKey(for: track.asTrack),
+                // `local_path` 是一根**临时**的桥，见 schema 里 v2 那一步的注释：
+                // `Track.localPath` 要到阶段 6 才退场，在那之前它得有地方存，
+                // 否则库一当真值源，本地导入的歌重启之后就没有路径可播了。
+                // 这里搬的是**旧存档里那一格原样**（死路径也照搬——它与
+                // `local_file` 的种子规则是两码事，那边有 `fileExists` 闸，这边没有，
+                // 因为退库路径判定 `missingLocalTracks` 要的正是「记着的那条路径」）。
+                track.localPath,
             ])
         }
     }
@@ -752,70 +774,24 @@ enum AmberDatabaseMigration {
         }
     }
 
-    /// 最近播放台账。六个 case 各有各的落法，见每一段的注释。
+    /// 最近播放台账。
+    ///
+    /// 六个 case 各落成什么样由 `RecentContainer.storageRow` 说了算，**这里不自己摊**：
+    /// 同一份映射运行期还要反过来走一遍（`LibraryStore.load()`），抄成两份的话
+    /// 以后加一个 case 只改了一头，表现是「存进去了、读回来没了」，而且不报错。
     private static func insertRecentContainers(_ plan: Plan, into db: SQLiteDatabase) throws {
         let sql = """
             INSERT INTO recent_container (position, dedupe_key, kind, ref_id, payload)
             VALUES (?,?,?,?,?)
             """
-        let encoder = JSONEncoder()
-        func json(_ value: some Encodable) -> String? {
-            (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }
-        }
-
         for (position, container) in plan.containers.enumerated() {
-            let kind: String
-            let refID: String?
-            let payload: String?
-            switch container {
-            case .track(let track):
-                // 曲目从 `track` 表取。**这一下删掉 `updateTrack` 的第五处写入点**：
-                // 改一首歌的标题不必再翻一遍 50 条台账。
-                kind = "track"
-                refID = track.id
-                payload = nil
-            case .libraryPlaylist(let id):
-                // 资料库歌单只存 id：名字 / 封面 / 还在不在都实时解析，存快照必然发霉。
-                kind = "libraryPlaylist"
-                refID = id
-                payload = nil
-            case .playlist(let playlist):
-                // 音源那份歌单**故意是快照**：它不在资料库里，没有表可以指。
-                kind = "playlist"
-                refID = playlist.id
-                payload = json(playlist)
-            case .album(let album):
-                kind = "album"
-                refID = album.id
-                payload = json(album)
-            case .artist(let id, let artistKind, let name, let avatarURL):
-                // 不存整个 `Artist`（它不落盘，非可选属性缺键会让合成的 Decodable 抛错），
-                // 只存卡片与 `Route` 要的这四项，展示时现造一个。
-                kind = "artist"
-                refID = id
-                payload = json(ArtistPayload(id: id, kind: artistKind, name: name,
-                                             avatarURL: avatarURL))
-            case .favorites:
-                // 心水是一份虚拟列表，没有 id 可存，所以两列都是 NULL。
-                kind = "favorites"
-                refID = nil
-                payload = nil
-            }
+            let row = container.storageRow
             // `dedupe_key` 一律取 `RecentContainer.id`，**不按 case 自己拼**。
             // 关键在 `.playlist` 与 `.libraryPlaylist` **故意共用 `playlist:` 前缀**：
             // 同一份歌单有两条路进来（资料库歌单页 / 目录页），而 `LibraryPlaylist.from`
             // 沿用的就是音源歌单的 id。按 case 拆开前缀就会把同一份歌单摆成两张卡。
-            try db.run(sql, [position, container.id, kind, refID, payload])
+            try db.run(sql, [position, container.id, row.kind, row.refID, row.payload])
         }
-    }
-
-    /// `.artist` 的 payload：只有这四项。字段名与 `RecentContainer.artist` 的关联值同名，
-    /// 将来要还原成那个 case 时逐个对得上。
-    private struct ArtistPayload: Codable {
-        let id: String
-        let kind: ProviderKind
-        let name: String
-        let avatarURL: String?
     }
 
     /// 按 id 挂的那几本账：播放统计、评分、几份 id 集合。

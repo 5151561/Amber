@@ -45,3 +45,86 @@ enum RecentContainer: Codable, Hashable {
         }
     }
 }
+
+// MARK: - 与 recent_container 表的互转
+
+extension RecentContainer {
+
+    /// 一格台账在 `recent_container` 表里占的那三列。
+    ///
+    /// **这份映射只有这一处。** 迁移器写进去、`LibraryStore` 读出来与写回去，
+    /// 三条路都走它——抄成两份的话，以后往上面加一个 case 只改了一头，
+    /// 表现是「那一格存进去了、读回来没了」，不报错。
+    struct StorageRow {
+        /// 六个 case 的判别符。**取值是持久化契约**，改一个字等于让旧库里那些行认不出来。
+        let kind: String
+        /// 指向别的表的 id（`.track` → `track.id`，`.libraryPlaylist` → 歌单 id）。
+        let refID: String?
+        /// 故意存成快照的那几个 case 的原样 Codable JSON。
+        let payload: String?
+    }
+
+    /// `.artist` 的 payload：只有这四项。
+    ///
+    /// **不存整个 `Artist`**：它不落盘（非可选属性缺键会让合成的 Decodable 抛错），
+    /// 卡片与 `Route` 要的也就这四项，展示时现造一个。
+    /// 字段名与 `.artist` 的关联值同名，逐个对得上。
+    struct ArtistPayload: Codable {
+        let id: String
+        let kind: ProviderKind
+        let name: String
+        let avatarURL: String?
+    }
+
+    var storageRow: StorageRow {
+        func json(_ value: some Encodable) -> String? {
+            (try? JSONEncoder().encode(value)).flatMap { String(data: $0, encoding: .utf8) }
+        }
+        switch self {
+        case .track(let track):
+            // 曲目从 `track` 表取。**这一下删掉 `updateTrack` 的第五处写入点**：
+            // 改一首歌的标题不必再翻一遍 50 条台账。
+            return StorageRow(kind: "track", refID: track.id, payload: nil)
+        case .libraryPlaylist(let id):
+            // 资料库歌单只存 id：名字 / 封面 / 还在不在都实时解析，存快照必然发霉。
+            return StorageRow(kind: "libraryPlaylist", refID: id, payload: nil)
+        case .playlist(let playlist):
+            // 音源那份歌单**故意是快照**：它不在资料库里，没有表可以指。
+            return StorageRow(kind: "playlist", refID: playlist.id, payload: json(playlist))
+        case .album(let album):
+            return StorageRow(kind: "album", refID: album.id, payload: json(album))
+        case .artist(let id, let kind, let name, let avatarURL):
+            return StorageRow(kind: "artist", refID: id,
+                              payload: json(ArtistPayload(id: id, kind: kind, name: name,
+                                                          avatarURL: avatarURL)))
+        case .favorites:
+            // 心水是一份虚拟列表，没有 id 可存，所以两列都是 NULL。
+            return StorageRow(kind: "favorites", refID: nil, payload: nil)
+        }
+    }
+
+    /// 从表里那三列还原。认不出来（kind 是未来版本写的、payload 解不动、
+    /// `.track` 指的那行不在了）就返回 nil，调用方跳过这一格——
+    /// 一格台账认不出来只是货架上少一张卡，不该让整份台账连坐。
+    ///
+    /// - Parameter track: 按 id 取曲目（`.track` 那一格要用）。
+    static func make(kind: String, refID: String?, payload: String?,
+                     track resolve: (String) -> Track?) -> RecentContainer? {
+        func decode<T: Decodable>(_ type: T.Type) -> T? {
+            payload.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode(type, from: $0) }
+        }
+        switch kind {
+        case "track": return refID.flatMap(resolve).map { .track($0) }
+        case "libraryPlaylist": return refID.map { .libraryPlaylist(id: $0) }
+        case "playlist": return decode(Playlist.self).map { .playlist($0) }
+        case "album": return decode(Album.self).map { .album($0) }
+        case "artist":
+            guard let payload = decode(ArtistPayload.self) else { return nil }
+            return .artist(id: payload.id, kind: payload.kind, name: payload.name,
+                           avatarURL: payload.avatarURL)
+        case "favorites": return .favorites
+        default: return nil
+        }
+    }
+}

@@ -65,10 +65,27 @@ final class AmberDatabaseTests: XCTestCase {
         XCTAssertFalse(tables.contains("missing_file"))
     }
 
+    /// 版本号跟着升级链走。
+    ///
+    /// 写死数字而不是拿代码里那个常量对——拿常量对是同义反复，永远绿。
+    /// 每加一步升级链就改这里一次，顺手确认那一步真的跑过了（下面那条列检查）。
     @MainActor
-    func testUserVersionIsOne() throws {
+    func testUserVersionIsCurrent() throws {
         let database = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try database.userVersion(), 1)
+        XCTAssertEqual(try database.userVersion(), 2)
+    }
+
+    /// v2 那一步：`track.local_path`。
+    ///
+    /// 它是一根**说好了要拆的**临时桥——`Track.localPath` 要到阶段 6 才退场，
+    /// 在那之前主库得存得下它，否则本地导入的歌重启之后没有路径可播。
+    /// 这条用例在那一天会红，那正是提醒「该把这一列一起 DROP 了」。
+    @MainActor
+    func testTrackHasTemporaryLocalPathColumn() throws {
+        let database = try AmberDatabase(directory: directory)
+        let columns = Set(try database.sqlite.query(
+            "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
+        XCTAssertTrue(columns.contains("local_path"))
     }
 
     /// 重复开同一个目录不会再建一次表。
@@ -84,7 +101,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let second = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 1)
+        XCTAssertEqual(try second.userVersion(), 2)
         let value = try second.sqlite.value(
             "SELECT value FROM rating WHERE id = ?", ["qq:1"]) { $0.int(0) }
         XCTAssertEqual(value, 5)
@@ -132,7 +149,7 @@ final class AmberDatabaseTests: XCTestCase {
 
         // 空壳条目不会挡住下一次开库。
         let second = try AmberDatabase.shared(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 1)
+        XCTAssertEqual(try second.userVersion(), 2)
     }
 
     // MARK: - 外键：该级联的级联

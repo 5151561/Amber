@@ -64,8 +64,12 @@ final class SuggestLessMirrorTests: XCTestCase {
         XCTAssertFalse(makeStore().isSuggestedLessArtist("qq:0025NhlN2yWrP4"))
     }
 
-    /// 旧存档里没有这两个键（`suggestLessTracks` / `suggestLessArtists`），
-    /// 解码要回落到空集合而不是整份 library.json 解不动——与 `uncheckedTracks` 同一个坑。
+    /// 旧存档里没有这两个键（`suggestLessTracks` / `suggestLessArtists`）：
+    /// 缺键要回落成「那两张表 0 行」，而不是整份存档解不动——与 `uncheckedTracks` 同一个坑。
+    ///
+    /// 这条现在守的是 `AmberDatabaseMigration`（fixture 一个字节没动）。
+    /// 值钱的地方在于：从前「缺这个键」与「这个键解坏了」被压成同一种处置（一律回落默认值），
+    /// 数据出问题时一声不响；迁移器把「主存档解不动」单拎出来当致命错，不再静默。
     func testOldArchiveWithoutTheKeysStillLoads() throws {
         let legacy = """
         {"favorites":[],"recents":[]}
