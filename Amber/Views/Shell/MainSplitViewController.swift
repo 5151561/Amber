@@ -166,3 +166,19 @@ final class MainSplitViewController: NSSplitViewController {
         }
     }
 }
+
+// MARK: - 导航意图（响应链）
+
+/// 面板列（歌词 / 待播清单）里发出的导航意图走到这里。
+///
+/// **为什么这一环是必要的**：响应链只往上走，不会横着拐进兄弟节点。待播清单那条链是
+/// 面板视图 → `InspectorContainerViewController` → **这里** → `RootViewController` → 窗口，
+/// 内容列的 `ContentNavigationController` 是本控制器的另一个孩子，不在那条链上。
+/// 本控制器是两列**唯一的共同祖先**，所以转发写在这里，链就闭合了——
+/// 不必去全窗口深搜实现者（`AGENTS.md` 界面层铁律 4：意图冒泡，不要跨层飞线）。
+extension MainSplitViewController: NavigationIntentReceiving {
+
+    @objc func amberOpenRoute(_ sender: Any?) {
+        navigationController.amberOpenRoute(sender)
+    }
+}

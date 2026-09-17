@@ -829,26 +829,27 @@ final class AppState {
     /// 那张卡、那一行的右键菜单——第一响应者就在内容列里，链条一路穿过页面控制器走到
     /// `ContentNavigationController.amberOpenRoute(_:)`。
     ///
-    /// **第二条是兜底**，因为有四类调用点第一响应者**不在内容列上**，`sendAction`
-    /// 会一路走到 `NSApp` 与 AppDelegate 都没人接、返回 false：
+    /// **有四类调用点第一响应者不在内容列上**，它们靠链上另外两环接住，这里不做任何
+    /// 特判（这一节原先是一个「全窗口深搜实现者」的兜底，2026-09-17 换掉了——
+    /// 深搜不是响应链，正是铁律 4 要消灭的那种跨层飞线）：
     ///
-    /// 1. 待播清单面板（`PlayQueueModel.doContinuePlayingSourceClicked`）——分栏的另一列，
-    ///    它那条响应链与内容列是两条分叉，碰不到导航控制器；
+    /// 1. 待播清单面板（`PlayQueueModel.doContinuePlayingSourceClicked`）——分栏的另一列。
+    ///    响应链只往上走、不横着拐，但那条链穿过**两列共同的祖先**
+    ///    `MainSplitViewController`，转发写在它那儿（见该文件尾部的扩展）。
     /// 2. 迷你播放器与整窗播放器（`PlayerMoreMenu` / `NowPlayingContainerViewController`）
-    ///    ——另一扇窗，key 与 main 可能都是它；
+    ///    ——另一扇窗 key，主窗的链根本没被走到；
     /// 3. 菜单栏命令（`AppDelegate.amberGoToNowPlaying`）——第一响应者可能就是窗口自己，
-    ///    而窗口的下一位是 `contentViewController`，不会往子控制器里下探；
+    ///    而窗口的下一位是窗口控制器，不会往 `contentViewController` 的子控制器里下探；
     /// 4. `-albumdemo` / `-recentsroom` 这类启动参数——从 `Task` / `asyncAfter` 里发，
     ///    那会儿多半还没有视图当第一响应者。
     ///
-    /// 兜底走「自上而下」：按 key → main → 其余窗口，从 `contentViewController`
-    /// 往下深搜第一个实现者。它不是响应链，但**要守的东西没变**——不持有引用、
-    /// 不留状态，意图随这次调用走完就没了。这正是与 `pendingRoute` 的分界。
+    /// 后三类归 **`AppDelegate`**：`NSApplication.targetForAction` 给 `to: nil` 定的顺序里
+    /// 「`NSApp` 的委托」是文档保证的一环，排在 `MainSplitViewController` 之后，
+    /// 所以主窗有焦点时永远轮不到它。两环都只转发、不持有、不留状态。
     private func deliver(_ destination: NavigationIntent.Destination) {
         let intent = NavigationIntent(destination)
         let action = #selector((any NavigationIntentReceiving).amberOpenRoute(_:))
-        if NSApp.sendAction(action, to: nil, from: intent) { return }
-        NavigationIntent.receiverInWindows()?.amberOpenRoute(intent)
+        NSApp.sendAction(action, to: nil, from: intent)
     }
 
     /// 「前往艺人」：详情页按 id 拉全量资料，这里给个只带 id/名字的壳就够。
@@ -961,34 +962,6 @@ protocol NavigationIntentReceiving {
     func amberOpenRoute(_ sender: Any?)
 }
 
-extension NavigationIntent {
-
-    /// 兜底的「自上而下」找法（理由见 `AppState.deliver`）。
-    ///
-    /// 顺序是 key → main → 其余：迷你播放器那扇窗 key 的时候主窗往往还是 main，
-    /// 先问这两位能少走一圈。整个过程不留任何引用。
-    @MainActor
-    static func receiverInWindows() -> (any NavigationIntentReceiving)? {
-        var visited: [NSWindow] = []
-        for window in [NSApp.keyWindow, NSApp.mainWindow].compactMap({ $0 }) + NSApp.windows {
-            guard !visited.contains(where: { $0 === window }) else { continue }
-            visited.append(window)
-            if let hit = receiver(in: window.contentViewController) { return hit }
-        }
-        return nil
-    }
-
-    /// 深度优先，先看自己再看孩子。整棵内容树里只有一位实现者，顺序不影响结论。
-    @MainActor
-    private static func receiver(in controller: NSViewController?) -> (any NavigationIntentReceiving)? {
-        guard let controller else { return nil }
-        if let hit = controller as? any NavigationIntentReceiving { return hit }
-        for child in controller.children {
-            if let hit = receiver(in: child) { return hit }
-        }
-        return nil
-    }
-}
 
 // MARK: - 侧栏与导航
 
