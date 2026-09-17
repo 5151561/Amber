@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// 独立迷你播放器窗的内容视图，对应 Music 的 **`MPContentView`**。
@@ -153,7 +152,6 @@ final class MiniPlayerContentView: NSView {
     private let appState: AppState
     private var player: PlayerController { appState.player }
     private var library: LibraryStore { appState.library }
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
     private var track: Track?
 
@@ -1200,8 +1198,8 @@ final class MiniPlayerContentView: NSView {
     // MARK: - 订阅
 
     private func bind() {
-        // 一律 `receive(on: .main)` 再读属性：`@Published` 是在 **willSet** 里发的，
-        // 同步读回去拿到的是旧值（同 `MiniPlayerView.bind()` 的注释）。
+        // 闭包里回读属性拿到的就是新值。（从前 `@Published` 在 **willSet** 里发，
+        // 同步读回去是旧值，所以每条都要先 `receive(on: .main)`——同 `MiniPlayerView.bind()`。）
         observers.observeAny({ [player] in (player.currentIndex, player.queue) }) { [weak self] in
             guard let self else { return }
             self.updateTrack(self.player.currentTrack)
@@ -1237,7 +1235,7 @@ final class MiniPlayerContentView: NSView {
         }
 
         // 别处切档时本窗跟着走：档位是全局一份，两台容器显示的该是同一档。
-        // （`@Published` 在 willSet 发布，所以照例先 `receive(on:)` 再读属性。）
+        // （从前 `@Published` 在 willSet 发布，照例要先 `receive(on:)` 才读得到新值。）
         observers.observe({ [appState] in appState.inspectorMode }) { [weak self] _ in
             self?.syncPanelModeFromGlobal()
         }

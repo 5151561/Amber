@@ -1,6 +1,5 @@
 import AppKit
 import AVFoundation
-import Combine
 import Foundation
 import os
 
@@ -108,7 +107,6 @@ final class DownloadStore {
     /// 测试注入了目录时不跟着设置跑：那份临时目录才是这次测的落点。
     private let directoryIsPinned: Bool
     private let settings: AppSettings
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
     /// id → 索引条目。`states` 是它加上「正在下的那几首」的视图。
     ///

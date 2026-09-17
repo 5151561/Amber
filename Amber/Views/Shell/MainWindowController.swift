@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 /// 主窗。Amber 是单窗 App（Music 也是），所以这一份由 AppDelegate 持有，不做多开。
 ///
@@ -37,7 +36,6 @@ final class MainWindowController: NSWindowController {
 
     private let appState: AppState
     private let rootViewController: RootViewController
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
     private var currentIdentifiers: [NSToolbarItem.Identifier] = []
     private weak var currentTopPage: ContentPageController?

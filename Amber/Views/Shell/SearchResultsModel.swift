@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 
 // MARK: - 搜索页的状态机（计划 design-ref/appkit-rewrite-plan.md 阶段 5 批 C）
@@ -63,7 +62,6 @@ final class SearchResultsModel: CatalogPageModelProviding {
     private var failureMessage: String?
     /// 资料库派生艺人的真实头像缓存（艺人名 → 头像地址）。
     private var resolvedArtistAvatars: [String: String] = [:]
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     private static let recentSearchesKey = "Amber.recentSearches"

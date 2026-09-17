@@ -1,6 +1,5 @@
 import AVKit
 import AppKit
-import Combine
 import SwiftUI
 
 /// 底部悬浮播放条：液态玻璃胶囊，对 macOS Music.app 逐项实测复刻。
@@ -30,7 +29,6 @@ final class MiniPlayerView: NSView {
     private let appState: AppState
     private var player: PlayerController { appState.player }
     private var library: LibraryStore { appState.library }
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     // MARK: 视图
@@ -467,10 +465,11 @@ final class MiniPlayerView: NSView {
     // MARK: - 订阅（每个 sink 只刷它自己那几件）
 
     private func bind() {
-        // 下面这些 sink 一律 `receive(on: .main)` 再读属性，不是为了换线程——
-        // `@Published` 是在 **willSet** 里发的，同步读回去拿到的是**旧值**
-        // （所以随机/循环/音量那几颗会慢一拍、永远显示上一次的状态）。
-        // 异步回主队列这一跳正好落在赋值之后。`clock.$time` 例外：它把值当参数传下来。
+        // 下面这些订阅都在闭包里回读属性（`clock` 那条例外：它把值当参数传下来）。
+        // 从前这里一律先 `receive(on: .main)` 再读，不是为了换线程——`@Published` 是在
+        // **willSet** 里发的，同步读回去拿到的是**旧值**（随机/循环/音量那几颗因此慢一拍、
+        // 永远显示上一次的状态），异步回主队列那一跳正好落在赋值之后。
+        // `Observations` 在值落定之后才发，回读就是新值，那一跳整类删掉了。
         //
         // 当前曲目：`currentIndex` 与`queue` 分别发一次，中间那一拍两者还不同步，
         // 同一跳之后直接读 `currentTrack` 才是两者都落定的值。

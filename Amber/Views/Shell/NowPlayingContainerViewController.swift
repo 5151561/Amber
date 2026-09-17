@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import QuartzCore
 import SwiftUI
 
@@ -91,7 +90,6 @@ final class NowPlayingContainerViewController: NSViewController {
     private var artworkTask: Task<Void, Never>?
     private var loadedArtworkTrackID: String?
 
-    private var cancellables = Set<AnyCancellable>()
 
     private let observers = TaskBag()
 

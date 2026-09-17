@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - 侧栏
@@ -31,7 +30,6 @@ final class SidebarViewController: NSViewController {
     private let accountIcon = SidebarAccountAvatarView()
     /// 头像当前贴的是哪个地址：异步取图回来时对一下，换号后不会把上一个人的头像贴上去。
     private var accountAvatarURL: String?
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     init(appState: AppState) {
