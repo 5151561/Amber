@@ -447,3 +447,66 @@ final class AppSettings {
         defaults.set(data, forKey: Self.key)
     }
 }
+
+// MARK: - 细粒度投影
+
+// `values` 是 37 个字段的**单体**，而且是本类唯一的可观察属性：改一次歌词字号，
+// 订阅整份的消费方全都被叫醒，各自把自己那摊重算一遍。
+//
+// 修法不是把 `values` 拆成 37 个属性（那样设置窗的「按好才整份写回」就没了落点），
+// 而是让消费方订**自己真读的那几项**投影出来的小结构：`Observations` 对 Equatable
+// 自带相邻去重，投影没变就不往下发。惊动的只剩「重算一个两字段的结构体」，
+// 真正贵的那一步（重排整张歌曲表、重建待播清单快照、重推有效音质）不再跑。
+//
+// 现成的正例是 `Player/AudioTap.swift:61` 的 `AudioPrefs`——`PlayerController` 从一开始
+// 就是这个形状（`observeNow({ AudioPrefs(AppSettings.shared.values) })`）。
+// 下面三个是照它补的其余三处出口：
+//
+// | 消费方（不归本批） | 真读的 | 该换成 |
+// | --- | --- | --- |
+// | `App/AppState.swift:366`（`pushEffectiveQuality`） | `losslessEnabled` / `dolbyAtmos` | `observe({ AppSettings.shared.qualityPrefs })` |
+// | `Views/Components/SongsTableSettings.swift:141` | `showStarRatings` / `songListCheckboxes` | `observe({ AppSettings.shared.songsTablePrefs })` |
+// | `Player/PlayQueueModel.swift:144` | `crossfade` / `playQueueAutoplay` | `observe({ AppSettings.shared.playQueuePrefs })` |
+//
+// 加新投影的判据：**消费方回调里真正读到的字段**，多一项都不要——多进来的那一项
+// 会把「与我无关的写入不再叫醒我」这条收益按比例吃掉。
+
+/// 取流档位要读的那两项。`AppState.effectiveQuality` 就只读这两个
+///（`dolbyAtmos` 还要先经 `resolved(for:)` 折算，那一步吃的是输出设备、不是设置）。
+struct QualityPrefs: Equatable, Sendable {
+    var losslessEnabled: Bool
+    var dolbyAtmos: DolbyAtmosMode
+
+    init(_ values: SettingsValues) {
+        losslessEnabled = values.losslessEnabled
+        dolbyAtmos = values.dolbyAtmos
+    }
+}
+
+/// 歌曲表列机制要镜像的那两个显示开关（设置 › 通用 › 显示）。
+struct SongsTablePrefs: Equatable, Sendable {
+    var showStarRatings: Bool
+    var songListCheckboxes: Bool
+
+    init(_ values: SettingsValues) {
+        showStarRatings = values.showStarRatings
+        songListCheckboxes = values.songListCheckboxes
+    }
+}
+
+/// 待播清单面板顶部两颗按钮读的那两项（`PlayQueueModel.mixingEnabled` / `autoplayEnabled`）。
+struct PlayQueuePrefs: Equatable, Sendable {
+    var crossfade: Bool
+    var playQueueAutoplay: Bool
+
+    init(_ values: SettingsValues) {
+        crossfade = values.crossfade
+        playQueueAutoplay = values.playQueueAutoplay
+    }
+}
+
+extension AppSettings {
+    var qualityPrefs: QualityPrefs { QualityPrefs(values) }
+    var songsTablePrefs: SongsTablePrefs { SongsTablePrefs(values) }
+    var playQueuePrefs: PlayQueuePrefs { PlayQueuePrefs(values) }
+}

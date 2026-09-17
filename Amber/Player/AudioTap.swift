@@ -34,6 +34,10 @@ import Synchronization
 //    `tapPrepare` 里 allocate/initialize，`tapUnprepare` 里 deinitialize/deallocate，
 //    `TapShared.deinit` 兜底。MediaToolbox 把同一支 tap 的 prepare / process / unprepare
 //    **串行**发出，所以 process 拿到的非空 `dsp` 在这一次调用里一定活着、而且只有它一个在摸。
+//    这个句柄本身存成 `Atomic<UInt>`（`TapShared.dspBits`，读写各经 `dsp` / `installDSP`）：
+//    串行下发是平台保证、不是这里的假设，但「跨线程共享的字段一律走 `Atomic`」这条
+//    在本文件里不该有例外——少一条要靠读注释才成立的规矩。装新的一份走
+//    `installDSP` 的 exchange，**先装新的再交出旧的**，释放永远发生在「不可能再被读到」之后。
 //    这一条被 51 处 `dsp.pointee.<字段>` 重复表述了 51 遍——同一件事不写 51 遍，
 //    收进下面 `UnsafeMutablePointer<TapDSP>.rt` 那个 `@safe` 外壳，契约写在它那儿一次。
 //
@@ -81,10 +85,11 @@ struct AudioPrefs: Equatable, Sendable {
 
 // MARK: - 实时线程与主线程之间的共享状态
 
-/// tap 的共享状态。**主线程只写、实时线程只读**（测量结果反过来），全部走 `Atomic`：
-/// 实时回调里不许有锁，也不许有任何会走到 ObjC runtime / 分配器的东西。
+/// tap 的共享状态。**主线程只写、实时线程只读**（测量结果反过来），全部走 `Atomic`
+///（**包括 `dsp` 那个句柄**，见契约 ③）：实时回调里不许有锁，
+/// 也不许有任何会走到 ObjC runtime / 分配器的东西。
 ///
-/// `@safe`：这个类持有两块裸内存（`blocks` 与 `dsp`），但生命周期全在自己手里
+/// `@safe`：这个类持有两块裸内存（`blocks` 与 `dsp` 指着的那块），但生命周期全在自己手里
 ///（`blocks` 在 init/deinit 配平，`dsp` 见契约 ③），对外只暴露安全 API。
 /// 见文件头「顺带一条」：标 `@unsafe` 会把契约泄漏给 `PlayerController` 那些正常调用点。
 @safe
@@ -132,7 +137,41 @@ final class TapShared: @unchecked Sendable {
     /// DSP 状态。**只有 tap 的 prepare / process / unprepare 摸它**，
     /// prepare 里分配、unprepare 里释放；`audioMix` 重装会走一遍 unprepare→prepare，
     /// 但上面那些测量结果**不重置**，否则一次重装就把已经量了三分钟的数据丢了。
-    var dsp: UnsafeMutablePointer<TapDSP>?
+    ///
+    /// 存的是**指针位模式**，不是 `UnsafeMutablePointer<TapDSP>?`。它从前是这 13 个
+    /// `Atomic` 兄弟里唯一的裸字段：实时线程的 `tapProcess` 读、prepare / unprepare 写。
+    ///
+    /// **这不是在修一个 use-after-free**——契约 ③ 写明 MediaToolbox 对同一支 tap 的
+    /// prepare / process / unprepare 是串行下发的，那是平台保证，不是这里的假设。
+    /// 换成 `Atomic` 是把「靠外部时序假设兜住」换成「靠类型系统兜住」：这个字段的
+    /// 跨线程可见性从此与 `enhancerLevel`、`gainMilliDB` 那些同一套规矩，
+    /// 读它的人不必再翻到文件头去确认自己有没有资格读。零成本——
+    /// `Atomic<UInt>.load` 编出来就是一条 `ldar`，实时线程上不分配、不加锁、不碰 runtime。
+    private let dspBits = Atomic<UInt>(0)
+
+    /// 实时线程侧的读法：0 ＝ 没装 dsp，`tapProcess` 直接直通（见 `tapPrepare` 的格式闸）。
+    /// `.acquiring` 与 `installDSP` 的 `.acquiringAndReleasing` 配对：读到非空指针时，
+    /// `tapPrepare` 往那块内存里写的初值也一定一并可见。
+    ///
+    /// **只有「整数 → 指针」这半边是 `unsafe`**：凭一个位模式造出指针是编译器管不了的一步，
+    /// 反过来（指针 → 整数，见 `installDSP`）只是把指针丢掉，标了反而会被
+    /// `[#UnnecessaryUnsafe]` 哨兵点名。
+    var dsp: UnsafeMutablePointer<TapDSP>? {
+        unsafe UnsafeMutablePointer<TapDSP>(bitPattern: dspBits.load(ordering: .acquiring))
+    }
+
+    /// 装上新的一份，**返回被换下来的那一份**（nil 表示本来就没有）。
+    /// 调用方负责在拿到之后 `release()` + `deinitialize` + `deallocate`。
+    ///
+    /// 先换后放，不是先放后换：旧那份从这一刻起就不可能再被 `tapProcess` 读到，
+    /// 释放它才是安全的。从前的写法是「先释放旧的、再赋新的」，那中间有一拍
+    /// `dsp` 仍指着已经释放的内存——串行契约下摸不到，但没必要留着。
+    @discardableResult
+    func installDSP(_ new: UnsafeMutablePointer<TapDSP>?) -> UnsafeMutablePointer<TapDSP>? {
+        let bits = UInt(bitPattern: UnsafeMutableRawPointer(new))
+        let old = dspBits.exchange(bits, ordering: .acquiringAndReleasing)
+        return unsafe UnsafeMutablePointer<TapDSP>(bitPattern: old)
+    }
 
     // 下面 init / deinit 这一对就是 `blocks` 的全部生命周期：一次 allocate + initialize，
     // 一次 deinitialize + deallocate，中间只有实时线程按 `blockCapacity` 封顶地写。
@@ -145,7 +184,7 @@ final class TapShared: @unchecked Sendable {
         unsafe blocks.deinitialize(count: Self.blockCapacity)
         unsafe blocks.deallocate()
         // 兜底：正常路径上 `tapUnprepare` 已经收掉了，这里管的是「tap 没走完就整个没了」。
-        if let dsp = unsafe dsp {
+        if let dsp = unsafe installDSP(nil) {
             dsp.rt.release()
             unsafe dsp.deinitialize(count: 1)
             unsafe dsp.deallocate()
@@ -391,12 +430,13 @@ private func tapPrepare(tap: MTAudioProcessingTap,
     dsp.rt.kHighPass = LoudnessMeter.kWeightingHighPass(sampleRate: fs)
 
     // 重装 audioMix 会再走一遍 prepare，旧的那份在这里收掉（契约 ③）。
-    if let old = unsafe shared.dsp {
+    // `installDSP` 是「先装新的、再交出旧的」：旧那份被交出来的那一刻起就不可能
+    // 再被 `tapProcess` 读到，释放它才是安全的。
+    if let old = unsafe shared.installDSP(dsp) {
         old.rt.release()
         unsafe old.deinitialize(count: 1)
         unsafe old.deallocate()
     }
-    unsafe shared.dsp = dsp
 }
 
 /// 契约 ③的终点：`dsp` 在这里释放。与 `tapPrepare` 由 MediaToolbox 串行发出，
@@ -405,8 +445,7 @@ private func tapPrepare(tap: MTAudioProcessingTap,
 private func tapUnprepare(tap: MTAudioProcessingTap) {
     let shared = unsafe Unmanaged<TapShared>.fromOpaque(MTAudioProcessingTapGetStorage(tap))
         .takeUnretainedValue()
-    guard let dsp = unsafe shared.dsp else { return }
-    unsafe shared.dsp = nil
+    guard let dsp = unsafe shared.installDSP(nil) else { return }
     dsp.rt.release()
     unsafe dsp.deinitialize(count: 1)
     unsafe dsp.deallocate()
