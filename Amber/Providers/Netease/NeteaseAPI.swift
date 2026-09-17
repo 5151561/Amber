@@ -57,7 +57,8 @@ final class NeteaseAPI: MusicProvider {
     }
     /// 凭证过期回调（专用校验接口确认失效时触发）。
     /// 与 QQAPI 同样声明成主线程回调：触发点在 URLSession 的后台续体上，
-    /// 接的那头要改 @Published、弹提示，跑到后台线程动 AppKit 会直接 SIGABRT。
+    /// 接的那头要改 `@Observable` 状态对象上的属性、弹提示，
+    /// 跑到后台线程动 AppKit 会直接 SIGABRT。
     var onCredentialExpired: (@MainActor @Sendable () -> Void)? {
         get { injected.withLock { $0.onCredentialExpired } }
         set { injected.withLock { $0.onCredentialExpired = newValue } }

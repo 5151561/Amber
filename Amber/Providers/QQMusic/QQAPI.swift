@@ -47,8 +47,9 @@ final class QQAPI: MusicProvider {
 
     /// 凭证过期回调（`GetLoginUserInfo` 复核确认失效时触发）。
     /// 必须声明成主线程回调：触发点在 URLSession 的后台续体上，接的那头要弹 toast、
-    /// 改 @Published；不带 @MainActor 的话 Swift 5 下编译期不查，运行期就在后台线程动
-    /// AppKit（`NSView.isHidden` 直接抛异常 → SIGABRT）。
+    /// 改 `@Observable` 状态对象上的属性（写这条注释时那里还是 `@Published`，剥离 Combine
+    /// 之后换了类型、要守的东西没变）；不带 @MainActor 的话 Swift 5 下编译期不查，
+    /// 运行期就在后台线程动 AppKit（`NSView.isHidden` 直接抛异常 → SIGABRT）。
     var onCredentialExpired: (@MainActor @Sendable () -> Void)? {
         get { injected.withLock { $0.onCredentialExpired } }
         set { injected.withLock { $0.onCredentialExpired = newValue } }
@@ -1932,7 +1933,6 @@ final class QQAPI: MusicProvider {
     /// 匿名探测会被 500003/500005 一律挡掉，看不出是「没有这个接口」还是「要登录」。
     func debugProbeCatalog(to path: String) async {
         let seedSongID = 107192078      // 告白气球，用来试相似歌曲
-        let seedSongMid = "003OUlho2HcRHC"
         let seedSingerMid = "0025NhlN2yWrP4" // 周杰伦
         let candidates: [(String, String, [String: Any])] = [
             // 瞩目之星：歌手列表 / 相似歌手
@@ -2006,7 +2006,7 @@ final class QQAPI: MusicProvider {
             report += line + "\n"
         }
         try? report.write(toFile: path, atomically: true, encoding: .utf8)
-        NSLog("[qqprobe] 写入 \(path)")
+        Self.log.notice("探测报告写入 \(path, privacy: .public)")
     }
 
     // MARK: - 账号歌单接口探测（-qqplaylistprobe）
@@ -2133,7 +2133,7 @@ final class QQAPI: MusicProvider {
         // 所以 Amber 直接复用现成的 `dissDetail`，不必为账号歌单另开一条取数路径。
 
         try? report.write(toFile: path, atomically: true, encoding: .utf8)
-        NSLog("[qqprobe] 账号歌单探测写入 \(path)")
+        Self.log.notice("账号歌单探测报告写入 \(path, privacy: .public)")
     }
 #endif
 
