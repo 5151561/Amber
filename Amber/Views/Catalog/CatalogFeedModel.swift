@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import SwiftUI
 
 // MARK: - 目录页三页的数据模型（主页 / 新发现 / 广播）
@@ -152,7 +153,39 @@ final class CatalogFeedModel {
             rendered.append(section(plan, result))
         }
         guard !Task.isCancelled else { return }
-        state = .content(title: title, sections: rendered)
+        guard rendered.isEmpty else {
+            // 本地段先上屏那一份与这一份形状相同时，页面那边是零差异 diff、
+            // 版式指纹也不变，一次 `invalidateLayout()` 都不会发生（见
+            // `CatalogPageViewController.apply(sections:)` 末尾）——断网就是这一支。
+            state = .content(title: title, sections: rendered)
+            return
+        }
+        // 一段都摆不出来：断网与「音源真的没有内容」在界面上必须分得开（§2.6-8）。
+        let offline = await Self.isNetworkUnavailable()
+        guard !Task.isCancelled else { return }
+        state = offline ? .error(Self.offlineMessage) : .content(title: title, sections: [])
+    }
+
+    /// 断网时的那句话。配套的图标（`wifi.exclamationmark`）与「重试」键页面早就铺好了，
+    /// 只是从前没人发 `.error`，取不到就一律落到「当前音乐源暂无推荐内容。」。
+    static let offlineMessage = "网络不可用"
+
+    /// 现在是断网，还是音源真的交不出内容？
+    ///
+    /// 计划里写的是「从错误码（`URLError` 的连接类）判断就够，不必引入`NWPathMonitor`」，
+    /// 但 `MusicProvider.catalogItems` / `playlists(tag:)` 这两条**都不抛错**
+    /// （`Providers/MusicProvider.swift:52,57`：交不出来就回`.empty`/空数组，
+    /// 那一层归批 G），错误码根本到不了这里。在不动音源层的前提下，
+    /// 判连通性只剩系统给的这一条路——它也不多发一个请求。
+    ///
+    /// 只在**已经确定一件都摆不出来**时才问，正常那条路一次都不走。
+    /// `NWPathMonitor` 自 macOS 14 起就是 `AsyncSequence`，首个元素就是当前路径
+    /// （用异步序列时不要自己 `start(queue:)`），取到就`cancel()` 收摊。
+    static func isNetworkUnavailable() async -> Bool {
+        let monitor = NWPathMonitor()
+        defer { monitor.cancel() }
+        for await path in monitor { return path.status != .satisfied }
+        return false
     }
 
     /// 只重算**本地资料库来的那两段**（最近播放 / 音乐回忆），一条音源请求都不发。
@@ -167,6 +200,13 @@ final class CatalogFeedModel {
     /// 该插在第几段是 `sections(_:)` 那份计划说了算，只有整页重排才排得准，
     /// 而那是每位用户一辈子只会遇上一次的时刻。
     func refreshLocalSections() {
+        // 出错态（断网且一段都摆不出来）下台账刚有了第一条：重跑一次 `reload()`。
+        // 它会**同步**把本地段发上屏（见那边的注释），网络那半照旧在后台再试一遍。
+        // 不接这一条的话，断网 + 空资料库的用户听完第一首歌，货架要等到下次重启才出现。
+        if case .error = state {
+            if !localSections(in: sections(appState)).isEmpty { reload() }
+            return
+        }
         guard case .content(let title, var rendered) = state else { return }
         for plan in sections(appState) {
             let fresh: CatalogSection?
