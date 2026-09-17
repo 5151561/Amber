@@ -36,6 +36,24 @@ final class ArtworkDisplayTests: XCTestCase {
         XCTAssertNil(ImageCache.decode(Data()))
     }
 
+    /// 本地封面按档解码：内嵌封面动辄 1500–3000px，40pt 的行只要 80px。
+    ///
+    /// 两条都要钉：给了档位就砍到档位（长边），**源图比档位还小时不放大**
+    /// ——放大等于把 80px 的图插值成 4000px 再塞进缓存，比不降采样还糟。
+    func testDecodeDownsamplesToRequestedPixelSize() throws {
+        let data = try makeJPEG(size: 1200, color: .systemPink)
+        let thumb = try XCTUnwrap(ImageCache.decode(data, maxPixelSize: 80))
+        XCTAssertEqual(thumb.size, NSSize(width: 80, height: 80))
+        XCTAssertEqual(try XCTUnwrap(thumb.amberCGImage).width, 80)
+
+        let full = try XCTUnwrap(ImageCache.decode(data, maxPixelSize: 4000))
+        XCTAssertEqual(full.size, NSSize(width: 1200, height: 1200))
+
+        // 不给档位就是原尺寸，与改这条之前一致。
+        XCTAssertEqual(try XCTUnwrap(ImageCache.decode(data)).size,
+                       NSSize(width: 1200, height: 1200))
+    }
+
     /// 几张图同时解码时互不影响（串图的原形是「解码推迟到画的时候」，
     /// 提前到这里之后每张图各有各的位图）。
     func testConcurrentDecodesStayIndependent() async throws {

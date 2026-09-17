@@ -480,12 +480,31 @@ extension SyncedLyricsVisualExperienceManager {
 
         let clamped = min(radius, Self.maxBlurRadius)
         view.lineLayer?.setBlurRadius(clamped, animated: animated)
+        // 「开」要立刻：`setLyrics` 那次回填是 `animated: false`，晚一帧就是
+        // 整表先清晰地闪一帧再糊上。「关」这里也调一次，真关不关得成由
+        // `needsCoreImageFilters` 说了算（淡变还在跑时它仍答「要」，
+        // 等每帧那次兜底来收）。
+        view.syncCoreImageFilterUsage()
 
         if radius == 0 {
             blurredLineViews.remove(view)
         } else {
             blurredLineViews.insert(view)
         }
+    }
+
+    /// 每帧走一遍「这一行还要不要进程内渲染」。
+    ///
+    /// 「开」由各下发口当场做（见上面那个出口与 `SyncedLyricsLineView.setHovered`），
+    /// 这里只负责收「关」：去模糊 / 去提亮是 0.12s 的淡变，跑完那一刻没有主 actor
+    /// 侧的回调（动画落位回调在 `CALayer` 那一侧，够不着 `@MainActor` 的视图），
+    /// 所以由每帧问一次来收尾——`setCoreImageFiltersActive` 值没变就整个早退，
+    /// 一行一次 Bool 比较。
+    ///
+    /// 调用点两个：`displayLinkFired` 每帧一次，以及 `updateDisplayLink` 停链那一下
+    /// （同 `syncBlurToPlaybackState` 的理由，链停了就没有下一帧了）。
+    func syncCoreImageFilterUsage() {
+        for view in lineViews { view.syncCoreImageFilterUsage() }
     }
 
     /// 逐行模糊半径的上限。[实测] 的。
@@ -681,6 +700,7 @@ extension SyncedLyricsVisualExperienceManager {
         let onScreen = Set((viewController?.visibleLineViews() ?? []).map(ObjectIdentifier.init))
         for view in blurredLineViews {
             view.lineLayer?.setBlurRadius(0, animated: onScreen.contains(ObjectIdentifier(view)))
+            view.syncCoreImageFilterUsage()
         }
         blurredLineViews = []
         for view in lineViews {

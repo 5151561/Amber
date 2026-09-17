@@ -5,7 +5,11 @@ import XCTest
 final class ArtworkSizeTests: XCTestCase {
 
     /// 阶梯是按 point 记的，URL 上要乘回像素倍率。
-    private var scale: Int { Int((NSScreen.main?.backingScaleFactor ?? 2).rounded()) }
+    ///
+    /// 问的是 `ArtworkSize` 自己的兜底倍率而不是就地读一次 `NSScreen`：
+    /// 兜底取的是**全部屏幕里最大的那个**（理由见 `ArtworkSize.defaultScale`），
+    /// 混合 DPI 的机器上与 `NSScreen.main` 不是一个数。
+    private var scale: Int { Int(ArtworkSize.defaultScale.rounded()) }
 
     func testNeteaseParamRewritten() {
         let url = ArtworkSize.url("https://p1.music.126.net/abc.jpg?param=300y300", points: 40)
@@ -49,6 +53,29 @@ final class ArtworkSizeTests: XCTestCase {
     func testNilAndEmpty() {
         XCTAssertNil(ArtworkSize.url(nil, points: 40))
         XCTAssertNil(ArtworkSize.url("", points: 40))
+    }
+
+    /// 本地文件地址里没有档位段可改，档位写进 URL 片段交给 `ImageCache` 降采样。
+    /// 片段不参与文件定位，所以路过别的消费方也读得到原文件。
+    func testLocalFileCarriesPixelTier() {
+        let raw = "file:///Users/x/Library/Application%20Support/Amber/Artwork/abc.jpg"
+        XCTAssertEqual(ArtworkSize.url(raw, points: 40),
+                       "\(raw)#\(ArtworkSize.localPixelMarker)\(40 * scale)")
+        // 档位不同 → 串不同 → 缓存键不同，小档不会把大档的位图顶掉。
+        XCTAssertNotEqual(ArtworkSize.url(raw, points: 40), ArtworkSize.url(raw, points: 400))
+    }
+
+    /// 地址自己已经带片段时不再追加一段，免得拼出两个 `#`。
+    func testLocalFileWithExistingFragmentUntouched() {
+        let raw = "file:///Users/x/cover.jpg#page=2"
+        XCTAssertEqual(ArtworkSize.url(raw, points: 40), raw)
+    }
+
+    /// 倍率可以由调用点给：封面画在哪块屏上，只有那个调用点知道。
+    func testExplicitScaleOverridesDefault() {
+        let url = ArtworkSize.url("https://p1.music.126.net/abc.jpg?param=300y300",
+                                  points: 40, scale: 1)
+        XCTAssertEqual(url, "https://p1.music.126.net/abc.jpg?param=40y40")
     }
 
     /// 断点分档：<300 侧栏、<528 small、<672 medium、<760 large、否则 x-large。
