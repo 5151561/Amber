@@ -47,11 +47,12 @@ final class SidebarViewController: NSViewController {
         outline.dataSource = controller
         outline.delegate = controller
 
-        // 玻璃只有窗口根那一层（`NSVisualEffectView(material: .contentBackground)` 铺满整窗）。
-        // 侧栏看着半透明是因为它**什么都不画**——自己糊 `.sidebar` / `.behindWindow` 材质是错的：
-        // 窗口 `isOpaque == true`、采不到桌面，只会渲染成恒定浅灰（实测 #4E4D4B，
-        // 而侧栏该是 #2A2B2C）。所以这里从滚动视图到表格全线不画背景。
-        // 同理**不能**设 `style = .sourceList`：那会自己画一层 sidebar 材质，与窗口根那层叠起来颜色就错了。
+        // **侧栏这一列的玻璃是系统给的**：macOS 26 在 `NSSplitViewItem(sidebarWith...)`
+        // 的包装里挂了一张 `NSGlassEffectView`（[实测 -dumpviews]：`[0, 0, 202.5, 900]`），
+        // 它糊的是窗内从它底下穿过去的内容（内容列铺满整窗，见 `MainSplitViewController`）。
+        // 所以这里从滚动视图到表格全线不画背景——自己糊 `.sidebar` / `.behindWindow` 更是错的：
+        // 窗口 `isOpaque == true`、采不到桌面，只会渲染成恒定浅灰（实测 #4E4D4B，而侧栏该是 #2A2B2C）。
+        // 同理**不能**设 `style = .sourceList`：那会自己再画一层 sidebar 材质，与系统那层叠起来颜色就错了。
         outline.style = .plain
         outline.backgroundColor = .clear
         outline.usesAlternatingRowBackgroundColors = false

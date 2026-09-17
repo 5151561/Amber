@@ -207,8 +207,13 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     /// `isHidden` 收着时不走布局回调（`ContentNavigationController` 切页只切
     /// `isHidden`），只有通知这条还在。
     private func syncDetailWidth() {
-        guard let table = detailTableView else { return }
-        let width = table.bounds.width
+        guard let table = detailTableView, let clip = table.enclosingScrollView?.contentView else { return }
+        // **量的是可视区（clipView），不是表格自己。** 表格的宽度就是这里写下去的列宽，
+        // 拿它当输入是一条自反馈：列宽一旦被写成某个值，`table.bounds.width` 就恒等于
+        // 它，下面那条守卫从此永远短路。[实测 -dumpviews 2026-09-17] 面板展开动画中途
+        // 有一帧可视区是 910.5，列宽被固化在那一帧上，动画结束可视区已经是 710.5，
+        // 表格却还是 910.5——行右端的下载箭头、时长、••• 整段被推到面板玻璃底下。
+        let width = clip.bounds.width
         guard width > 0, abs(width - detailLayoutWidth) > 1 else { return }
         detailLayoutWidth = width
         table.tableColumns.first?.width = width

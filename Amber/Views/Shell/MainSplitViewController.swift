@@ -41,7 +41,8 @@ final class MainSplitViewController: NSSplitViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // 分栏自己不画背景：玻璃在窗口根那一层（见 RootViewController）。
+        // 分栏自己不画背景：底色在内容列那一层（见 RootViewController 的类型注释），
+        // 侧栏／面板两列的玻璃由系统挂（macOS 26 的 `NSGlassEffectView`）。
         splitView.dividerStyle = .thin
         splitView.autosaveName = "AmberMainSplit"
 
@@ -50,14 +51,25 @@ final class MainSplitViewController: NSSplitViewController {
         // 给首次厚度——`SidebarViewController.loadView` 的容器 frame 已经是 202.5。
         sidebar.minimumThickness = MusicMetrics.Sidebar.widthMin
         sidebar.maximumThickness = MusicMetrics.Sidebar.widthMax
-        sidebar.canCollapse = true
-        // 标题栏那颗系统侧栏开关照 Music 摘掉（工具栏里没有这一件），
-        // 收起入口是「显示 ▸ 隐藏边栏」⌃⌘S → `toggleSidebar(_:)`。
+        // **侧栏不收起**（2026-09-17 按要求定死）：标题栏那颗系统侧栏开关照 Music 摘掉过，
+        // 现在连「显示 ▸ 隐藏边栏 ⌃⌘S」和拖分隔线这两条也一起关了。
+        // `canCollapseFromWindowResize` 跟着 `canCollapse` 一起变（头文件原话：
+        // Setting `canCollapse` for sidebars will reset this value to that new value），
+        // 所以窄窗口也不会把它挤没。
+        sidebar.canCollapse = false
         sidebar.allowsFullHeightLayout = true
         addSplitViewItem(sidebar)
 
         let content = NSSplitViewItem(viewController: navigationController)
         content.minimumThickness = 400
+        // **侧栏与面板覆盖在内容之上，内容列自己铺满整窗宽**（macOS 26 这一位默认 NO，
+        // 头文件原话：other items such as sidebars or inspectors may appear overlaid on
+        // top of this item's viewController，并按遮挡自动补 `safeAreaInsets`）。
+        //
+        // 这就是那两列「看着半透明」的唯一来源：系统给它们的 `NSGlassEffectView` 糊的是
+        // **窗内下层内容**，底下若只有一片纯色，玻璃等于没有。页面按 safe area 排版、
+        // 横向货架的卡片则从玻璃底下穿过去（见 `CatalogPageViewController` 的段内缩）。
+        content.automaticallyAdjustsSafeAreaInsets = true
         addSplitViewItem(content)
 
         let inspector = NSSplitViewItem(inspectorWithViewController: inspectorContainer)

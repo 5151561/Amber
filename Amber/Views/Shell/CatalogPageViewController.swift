@@ -292,6 +292,13 @@ class CatalogPageViewController: ContentPageController {
         } else {
             scrollView.additionalSafeAreaInsets = NSEdgeInsets(
                 top: 0, left: 0, bottom: MusicMetrics.MiniPlayer.scrollReserve, right: 0)
+            // **水平那两档 safe area 不折进 `contentInsets`。** 内容列现在铺满整窗、
+            // 侧栏与面板覆盖在它上面（`MainSplitViewController` 的 `automaticallyAdjusts-
+            // SafeAreaInsets`），文稿也要铺满整窗宽，货架的卡片才能从那两列玻璃底下滚过去
+            // ——那正是两列「看着半透明」的来源。左右避让改由**段内缩**负责（见 `makeLayout`）：
+            // 文件头实测 4 记着 orthogonal 段的 `contentInsets.leading/trailing` 不裁切范围。
+            // 纵向照旧交给系统那两档，只是自动调整一关就得自己抄一遍（见 `viewDidLayout`）。
+            scrollView.automaticallyAdjustsContentInsets = false
         }
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scrollView)
@@ -310,6 +317,20 @@ class CatalogPageViewController: ContentPageController {
             // 首次状态（offset 0）也要送一次：清晰/模糊两层的透明度由它初始化。
             backdropView.catalogPageScrollOffsetDidChange(0)
         }
+
+        // 一条 0 高的量尺，左右钉在 `safeAreaLayoutGuide` 上：侧栏／面板一开合它的宽度就变，
+        // `layout()` 跟着被调。本页的 view 铺满整窗、frame 一个数都不变，`viewDidLayout`
+        // 接不住这种变化，而 AppKit 又没有 `safeAreaInsetsDidChange`（那是 UIKit 的）——
+        // 这是让「按 safe area 排版的布局」自己醒过来的办法。
+        safeAreaProbe.translatesAutoresizingMaskIntoConstraints = false
+        safeAreaProbe.onWidthChange = { [weak self] _ in self?.safeAreaDidChange() }
+        container.addSubview(safeAreaProbe)
+        NSLayoutConstraint.activate([
+            safeAreaProbe.leadingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.leadingAnchor),
+            safeAreaProbe.trailingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.trailingAnchor),
+            safeAreaProbe.topAnchor.constraint(equalTo: container.topAnchor),
+            safeAreaProbe.heightAnchor.constraint(equalToConstant: 0),
+        ])
 
         overlay.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(overlay)
@@ -522,27 +543,76 @@ class CatalogPageViewController: ContentPageController {
         clearHover()
     }
 
+    /// 目录页是唯一铺满整窗的那一族：货架横滚时卡片要从两列玻璃底下穿过去。
+    override var extendsUnderOverlays: Bool { true }
+
+    private let safeAreaProbe = SafeAreaProbeView()
+
+    /// 可用区变了（开合侧栏／面板、拖分隔线）：卡宽、段内缩、段头位置、翻页箭头、
+    /// 滚动条位置全按可用宽算，得重来一遍。
+    private func safeAreaDidChange() {
+        syncScrollInsets()
+        laidOutWidth = usableWidth
+        rebuildShelfMetrics()
+        collectionView.collectionViewLayout?.invalidateLayout()
+        refreshHover()
+    }
+
+    /// 侧栏／面板覆盖在内容之上时，各自糊住的那一段宽度。
+    /// 面板收起、侧栏收起时对应的那一位自然是 0。
+    private var overlayInsets: NSEdgeInsets { view.safeAreaInsets }
+
+    /// 排版用的宽度：整窗宽减掉被两列玻璃糊住的两段。
+    /// 卡宽、每段内缩、翻页箭头都按它算——按整窗宽算会让卡片整体偏大、箭头跑到玻璃底下。
+    private var usableWidth: CGFloat {
+        max(0, collectionView.bounds.width - overlayInsets.left - overlayInsets.right)
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
+        syncScrollInsets()
         if let pending = pendingSections, collectionView.bounds.width > 0 {
             pendingSections = nil
             apply(sections: pending)
         }
         // 内容列宽变了（改窗口宽、开合侧栏或右侧面板）：卡宽跟着换一档，
         // 翻页胶囊的 pitch 与封面中心也得跟着重算。段布局本身由组合布局自己重求解。
-        if collectionView.bounds.width != laidOutWidth {
-            laidOutWidth = collectionView.bounds.width
+        if usableWidth != laidOutWidth {
+            laidOutWidth = usableWidth
             rebuildShelfMetrics()
+            // 段布局吃的是可用宽，开合侧栏／面板改的正是它——组合布局自己不知道
+            // safe area 变了，得说一声。
+            collectionView.collectionViewLayout?.invalidateLayout()
         }
         refreshHover()
+    }
+
+    /// 自动调整关掉之后，纵向那两档得自己抄进 `contentInsets`：顶上是标题栏那 52
+    /// （`safeAreaInsets.top`，艺人页要大图顶到窗顶所以是 0），底下是给迷你播放器留的白
+    /// （已经加在 `additionalSafeAreaInsets` 上，所以直接读 safe area）。水平恒 0。
+    private func syncScrollInsets() {
+        // 竖直滚动条在两种页上都要从整窗右沿收回到面板玻璃左边，否则它就藏在玻璃底下了。
+        // （`scrollerInsets` 是在 `contentInsets` 之外单独给条子的内缩；纵向那两档
+        // 条子自己跟着 `contentInsets` 让位，不用写。）
+        let overlay = overlayInsets
+        if scrollView.scrollerInsets.right != overlay.right || scrollView.scrollerInsets.left != overlay.left {
+            scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: overlay.left,
+                                                     bottom: 0, right: overlay.right)
+        }
+        guard !extendsUnderTitlebar else { return }
+        let wanted = NSEdgeInsets(top: scrollView.safeAreaInsets.top, left: 0,
+                                  bottom: scrollView.safeAreaInsets.bottom, right: 0)
+        let current = scrollView.contentInsets
+        guard current.top != wanted.top || current.bottom != wanted.bottom
+            || current.left != 0 || current.right != 0 else { return }
+        scrollView.contentInsets = wanted
     }
 
     private func rebuildShelfMetrics() {
         var metrics: [Int: ShelfMetrics] = [:]
         for (index, entry) in layoutSections.enumerated() {
             guard case .content(let section, _, _) = entry,
-                  let shelf = makeShelfMetrics(for: section,
-                                               containerWidth: collectionView.bounds.width)
+                  let shelf = makeShelfMetrics(for: section, containerWidth: usableWidth)
             else { continue }
             metrics[index] = shelf
         }
@@ -714,7 +784,7 @@ class CatalogPageViewController: ContentPageController {
                 topGap = M.sectionSpacing
             }
             layout.append(.content(section, topGap: topGap, isLast: offset == sections.count - 1))
-            if let shelf = makeShelfMetrics(for: section, containerWidth: collectionView.bounds.width) {
+            if let shelf = makeShelfMetrics(for: section, containerWidth: usableWidth) {
                 metrics[layout.count - 1] = shelf
             }
             snapshot.appendSections([section.id])
@@ -961,16 +1031,41 @@ class CatalogPageViewController: ContentPageController {
             guard let self, let section = self.layoutSection(at: index) else {
                 return CatalogPageViewController.blankSection()
             }
+            // 段照**可用宽**排（整窗宽减掉被侧栏／面板糊住的两段），排完再把那两段
+            // 加回左右内缩：静止时内容正好落在两列玻璃之间，横向滚动时卡片却能从玻璃
+            // 底下穿过去（orthogonal 段的内缩不裁切，见文件头实测 4）。
+            let overlay = self.overlayInsets
+            var container = environment.container.contentSize
+            container.width = max(0, container.width - overlay.left - overlay.right)
+            let result: NSCollectionLayoutSection
             switch section {
             case .pageTitle:
-                return self.titleLayoutSection(containerWidth: environment.container.contentSize.width)
+                result = self.titleLayoutSection(containerWidth: container.width)
             case .content(let content, let topGap, let isLast):
                 // `container.contentSize` 是内容列的尺寸（内缩之前）——hero 的高按窗口高
                 // 取比例就用它的 height（Apple 文档 `NSCollectionLayoutContainer`：
                 // contentSize 是应用 content insets 之前的容器尺寸）。
-                return self.contentLayoutSection(content, topGap: topGap, isLast: isLast,
-                                                 container: environment.container.contentSize)
+                result = self.contentLayoutSection(content, topGap: topGap, isLast: isLast,
+                                                   container: container)
             }
+            if result.orthogonalScrollingBehavior == .none {
+                result.contentInsets.leading += overlay.left
+                result.contentInsets.trailing += overlay.right
+            } else {
+                // **横滚的段不能加**：段内部那台 `_NSCollectionScrollView` 铺满整段宽，
+                // 自己就把 safe area 折成了 `contentInsets`（[实测 -dumpviews] 那台的
+                // `clipOrigin=(-202.5, 0)`）——避让它已经做了，而且做的正是我们要的那种：
+                // 停靠位置让开玻璃，横向滚动时卡片照旧从玻璃底下穿过去。段内缩再加一遍
+                // 就是双份，第一张卡会停在 439 而不是 236.5。
+                //
+                // 段头不在那台 scroll view 里（它是主文稿上的 boundary supplementary），
+                // 所以要单独补上，否则「最近播放」那行字会跑到侧栏玻璃底下。
+                for supplementary in result.boundarySupplementaryItems {
+                    supplementary.contentInsets.leading += overlay.left
+                    supplementary.contentInsets.trailing += overlay.right
+                }
+            }
+            return result
         }
     }
 
@@ -1433,12 +1528,15 @@ class CatalogPageViewController: ContentPageController {
         // 左胶囊中心正对该档的左内缩（宽档 34），因此 frame.origin.x = 34 - 14 = 20；
         // 右胶囊中心正对右侧内缩，因此 frame.origin.x = width - 34 - 14 = width - 48。
         // 垂直居中于封面中心（或多行货架中心）。
-        let width = collectionView.bounds.width
+        // 箭头在文稿坐标里，而文稿现在铺满整窗——两侧的落点要从**可用区**的边算起，
+        // 不然左胶囊会停在侧栏玻璃底下。
+        let overlay = overlayInsets
+        let width = usableWidth
         let outset = M.Shelf.margin(containerWidth: width) - Self.arrowSize.width / 2
         let y = coverMidY - Self.arrowSize.height / 2
-        leftArrow.frame = NSRect(x: outset, y: y,
+        leftArrow.frame = NSRect(x: overlay.left + outset, y: y,
                                  width: Self.arrowSize.width, height: Self.arrowSize.height)
-        rightArrow.frame = NSRect(x: width - outset - Self.arrowSize.width, y: y,
+        rightArrow.frame = NSRect(x: overlay.left + width - outset - Self.arrowSize.width, y: y,
                                   width: Self.arrowSize.width, height: Self.arrowSize.height)
     }
 
@@ -2097,3 +2195,19 @@ private final class CatalogShelfArrowButton: NSView {
     }
 }
 
+
+
+/// 0 高的量尺：左右钉在 `safeAreaLayoutGuide` 上，宽度一变就报一声。
+/// AppKit 没有 `safeAreaInsetsDidChange`（UIKit 才有），铺满整窗的页面又等不到
+/// `viewDidLayout`（frame 不变），所以用一条随可用区伸缩的视图把这件事转成布局事件。
+private final class SafeAreaProbeView: NSView {
+    var onWidthChange: ((CGFloat) -> Void)?
+    private var lastWidth: CGFloat = -1
+
+    override func layout() {
+        super.layout()
+        guard bounds.width != lastWidth else { return }
+        lastWidth = bounds.width
+        onWidthChange?(bounds.width)
+    }
+}

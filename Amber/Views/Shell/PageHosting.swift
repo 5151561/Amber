@@ -149,6 +149,14 @@ class ContentPageController: NSViewController, ContentPageToolbarProviding {
     /// 页面自己的订阅都装这里，随控制器一起收摊。
     let observers = TaskBag()
 
+    /// 这一页要不要**铺满整窗宽**（铺到侧栏／面板两列玻璃底下）。
+    ///
+    /// 默认 **false**：页面只占 safe area 那块，几何与两列没覆盖上来之前一模一样——
+    /// 把子视图钉在 `view` 水平边上的页面（艺人页那种自己分两栏的）因此一行都不用改。
+    /// 返回 true 的页面得自己按 `safeAreaInsets` 排版，换来的是横滚的内容能从玻璃底下
+    /// 穿过去（目前只有目录页那一族，见 `CatalogPageViewController`）。
+    var extendsUnderOverlays: Bool { false }
+
     init(appState: AppState, bottomReserve: Bool = true,
          @ViewBuilder content: @escaping () -> some View) {
         self.appState = appState
@@ -174,7 +182,7 @@ class ContentPageController: NSViewController, ContentPageToolbarProviding {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        // 页面自己不画背景：玻璃只有窗口根那一层（见 RootViewController）。
+        // 页面自己不画背景：底色由内容列那一层铺（见 RootViewController 的类型注释）。
         let container = NSView()
         guard let makeContent else { view = container; return }
         let host = appState.hostingView(bottomReserve: bottomReserve) { makeContent() }
