@@ -128,15 +128,22 @@ final class MusicSearchField: NSSearchField {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 搜索框 ↔ 页模型的接线。`NSSearchField` 要一个 delegate，而页模型是
-/// `ObservableObject`（不是 NSObject），所以中间放这一层。
+/// 搜索框 ↔ 页模型的接线。`NSSearchField` 要一个 delegate，而页模型不是 NSObject，
+/// 所以中间放这一层。
+///
+/// `text` 收的是**任意**元素为 `String`、不抛错的异步序列，不绑死在某一套观察机制上：
+/// 页模型还是 `@Published` 时传 `model.$search.values`，改成 `@Observable` 之后传
+/// `Observations { model.search }`，这一层一个字不用动。
 @MainActor
 final class SearchFieldBinder: NSObject, NSSearchFieldDelegate {
     let field = MusicSearchField(frame: .zero)
     private let onChange: (String) -> Void
-    private var cancellable: AnyCancellable?
+    private var sync: Task<Void, Never>?
 
-    init(text: Published<String>.Publisher, onChange: @escaping (String) -> Void) {
+    init<Text: AsyncSequence>(
+        text: Text,
+        onChange: @escaping (String) -> Void
+    ) where Text.Element == String, Text.Failure == Never {
         self.onChange = onChange
         super.init()
         field.delegate = self
@@ -144,11 +151,17 @@ final class SearchFieldBinder: NSObject, NSSearchFieldDelegate {
         field.sendsWholeSearchString = false
         // 模型那边被别处改了（比如切页重建），把字段同步过来；只在真的不同才回写，
         // 否则会把输入光标顶到末尾。
-        cancellable = text.sink { [weak self] value in
-            guard let self, self.field.stringValue != value else { return }
-            self.field.stringValue = value
+        // Task 在 @MainActor 的 init 里建，继承主 actor 隔离——序列不跨隔离域，
+        // 所以 Text 不必是 Sendable（Combine 的 AsyncPublisher 就不是）。
+        sync = Task { [weak self] in
+            for await value in text {
+                guard let self, self.field.stringValue != value else { continue }
+                self.field.stringValue = value
+            }
         }
     }
+
+    deinit { sync?.cancel() }
 
     func controlTextDidChange(_ notification: Notification) {
         onChange(field.stringValue)
@@ -171,7 +184,7 @@ class LibraryPageController: ContentPageController {
     /// 专辑页有排序菜单；最近添加页没有（[实测] `supportedSortOptions` 返回 nil，
     /// `recents 规格` §2.2）。艺人页与所有播放列表页同样没有。
     private let hasSort: Bool
-    private lazy var binder = SearchFieldBinder(text: model.$search) { [weak self] text in
+    private lazy var binder = SearchFieldBinder(text: model.$search.values) { [weak self] text in
         self?.model.search = text
     }
     private lazy var menuController = LibraryFilterMenuController(

@@ -23,7 +23,7 @@ import SwiftUI
 final class LibrarySongsViewController: ContentPageController {
 
     private let model = SongsPageModel()
-    private lazy var binder = SearchFieldBinder(text: model.$search) { [weak self] text in
+    private lazy var binder = SearchFieldBinder(text: model.$search.values) { [weak self] text in
         self?.model.search = text
     }
     private lazy var menuController = SongsFilterMenuController(settings: appState.songsTable)

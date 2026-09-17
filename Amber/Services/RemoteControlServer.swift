@@ -1,4 +1,5 @@
 import AppKit
+import AsyncAlgorithms
 import Combine
 import Foundation
 import Network
@@ -25,8 +26,10 @@ protocol RemoteControlTarget: AnyObject {
     /// DACP 的 `dacp.repeatstate`：0 关 / 1 单曲 / 2 全部
     func remoteSetRepeat(_ state: Int)
     func snapshot() -> RemotePlayState
-    /// 播放状态变了就发一下（不含进度跳动——那会把长轮询打成每秒十次）
-    var remoteChanges: AnyPublisher<Void, Never> { get }
+    /// 播放状态变了就发一下（不含进度跳动——那会把长轮询打成每秒十次）。
+    ///
+    /// 每次读都开一条新流；订阅方的 `Task` 一取消，流自己注销。
+    var remoteChanges: AsyncStream<Void> { get }
 }
 
 /// 一次播放状态的快照，`cmst` 容器就按它拼。
@@ -111,7 +114,7 @@ final class RemoteControlServer: ObservableObject {
     /// session-id → 最后一次活动时间。30 分钟不动就作废。
     private var sessions: [Int: Date] = [:]
     private let gate = RemoteRevisionGate()
-    private var changeCancellable: AnyCancellable?
+    private var changeTask: Task<Void, Never>?
 
     private static let sessionIdleTimeout: TimeInterval = 30 * 60
     /// 长轮询挂起的上限。到点回当前状态，让客户端重新发一轮（连接不至于被中间设备掐掉）。
@@ -145,11 +148,18 @@ final class RemoteControlServer: ObservableObject {
 
     func configure(target: any RemoteControlTarget) {
         self.target = target
-        changeCancellable = target.remoteChanges
-            // `objectWillChange` 是「就要变了」，立刻取快照会拿到旧值；
-            // 攒 50 ms 再报，顺便把连点几下的抖动合成一次修订。
-            .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
-            .sink { [weak self] in self?.gate.bump() }
+        // 攒 50 ms 再报：把连点几下的抖动合成一次修订。
+        //
+        // 以前这里还有第二个理由——`objectWillChange` 是「就要变了」，立刻取快照会拿到
+        // 旧值。换成 `Observations` 之后事件在值**落定之后**才到，那个理由没了；
+        // 合抖动这个还在，所以 debounce 留着。
+        changeTask?.cancel()
+        changeTask = Task { [weak self] in
+            for await _ in target.remoteChanges.debounce(for: .milliseconds(50)) {
+                guard let self else { return }
+                self.gate.bump()
+            }
+        }
     }
 
     // MARK: 启停
