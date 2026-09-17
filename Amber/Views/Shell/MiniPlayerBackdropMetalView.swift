@@ -271,13 +271,28 @@ final class MiniPlayerBackdropMetalView: MTKView {
 
     // MARK: - 省电：没封面 / 看不见就停（[推]，Amber 自己的处理，原版没这条）
 
+    /// 宿主说「现在该不该跑」。
+    ///
+    /// 下面那三条判据（窗口可见、没被遮挡、`isHidden`）对迷你播放器够用，对**整窗播放器
+    /// 不够**：那一块收起时是**位移到窗外 + alpha 0**，不是`isHidden`
+    /// （`isHidden` 会连带把里面那棵 SwiftUI 的更新一起停掉，见
+    /// `NowPlayingContainerViewController.hideAfterCollapse` 与 reactive-ui-review 故障 16），
+    /// 三条判据一条都不命中，背景于是在没人看的时候一直画。所以多留这一位由宿主推。
+    var isActive = true {
+        didSet {
+            guard isActive != oldValue else { return }
+            updatePausedState()
+        }
+    }
+
     /// 停了之后还要**再画一帧**，否则上一首的背景会留在屏幕上（MTKView 停下来只是不再
     /// 驱动帧循环，drawable 里的内容还在）——所以转成暂停时补一次 `draw()` 直画。
     private func updatePausedState() {
         let visible = window?.isVisible == true
             && window?.occlusionState.contains(.visible) == true
             && !isHiddenOrHasHiddenAncestor
-        let shouldRun = isRenderable && visible && (sourceTexture != nil || destinationTexture != nil)
+        let shouldRun = isActive && isRenderable && visible
+            && (sourceTexture != nil || destinationTexture != nil)
         isPaused = !shouldRun
         if !shouldRun, window != nil { draw() }
     }

@@ -21,8 +21,8 @@ import Foundation
 @MainActor
 final class LyricsStore: ObservableObject {
 
-    /// 整窗歌词由 `NowPlayingViewModel` 构造的 `NowPlayingLyrics` 驱动，那条路上拿不到
-    /// `AppState`，所以缓存本体是进程级的一份；`AppState.lyricsStore` 指的就是它。
+    /// 侧栏与整窗播放器的歌词面板各是一台 `InspectorLyricsViewController`，
+    /// 缓存要在两处之间共用，所以本体是进程级的一份；`AppState.lyricsStore` 指的就是它。
     static let shared = LyricsStore()
 
     /// 内存里最多留几首。

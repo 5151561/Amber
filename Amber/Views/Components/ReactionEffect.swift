@@ -1,4 +1,5 @@
-import SwiftUI
+import AppKit
+import QuartzCore
 
 /// 表情反应的粒子效果，按 Music.app 自带的 `Contents/Resources/ReactionEffect.ca`
 /// 逐项复刻（music-static-assets 笔记「Core Animation 归档」）。
@@ -18,8 +19,15 @@ import SwiftUI
 ///
 /// 这里不用 `CAEmitterLayer`：`colorOverLife` / `valueOverLife` 走的是
 /// `CAEmitterBehavior` 那套私有 API，Amber 不碰私有 API，所以照着同一组参数
-/// 在 SwiftUI 里自己积分。曲线、加速度、生命周期与归档一致。
-struct ReactionEffectView: View {
+/// 自己排关键帧。曲线、加速度、生命周期与归档一致。
+///
+/// 骨架换 AppKit（计划阶段 6）之后这一块是 **CALayer 版**：一粒子一
+/// `CATextLayer` + 一组 `CAKeyframeAnimation`，动画落在渲染服务器上跑，
+/// 主线程每帧不做任何事。旧版是 SwiftUI 的 `TimelineView(.animation)`，
+/// 按住一个表情就按屏幕刷新率把整片重算一遍。
+/// 位移那条带阻尼的积分**预先采样成关键帧**，不必每帧算。
+@MainActor
+final class ReactionEffectView: NSView {
 
     /// 归档里的原始参数，改这里就等于改效果。
     enum Spec {
@@ -45,82 +53,110 @@ struct ReactionEffectView: View {
         static let alphaValues: [Double] = [1, 1, 1, 1, 0.8043, 0]
         /// [实测] `Music.ReactionCell.fittingSize` / `_ReactionCell.fittingSize` → 4
         static let cellPadding: CGFloat = 4
+        /// 位移那条积分采样成多少段关键帧。0.9 秒 40 段 ≈ 22.5ms 一段，
+        /// 中间由 Core Animation 自己线性插值，肉眼看不出与逐帧积分的差别。
+        static let riseSamples = 40
     }
 
-    struct Particle: Identifiable {
-        let id = UUID()
-        let symbol: String
-        let born: TimeInterval
-        /// 在 emitterSize 宽度内的随机横向偏移
-        let offsetX: CGFloat
-        /// 每颗粒子的字号（emoji 本身没有 sprite 图，用字号代替 contentsScale）
-        let baseSize: CGFloat
-    }
-
-    var particles: [Particle]
     /// 发射线相对容器底部的位置
     var emitterBottomInset: CGFloat = 0
 
-    var body: some View {
-        TimelineView(.animation) { context in
-            let now = context.date.timeIntervalSinceReferenceDate
-            GeometryReader { geometry in
-                // renderMode = backToFront：先生的在后面，后生的压在上面
-                ForEach(particles.filter { now - $0.born < Spec.lifetime }) { particle in
-                    let age = now - particle.born
-                    let progress = age / Spec.lifetime
-                    Text(particle.symbol)
-                        .font(.system(size: particle.baseSize))
-                        .padding(Spec.cellPadding)
-                        .scaleEffect(Spec.scale * CGFloat(interpolate(
-                            progress, locations: Spec.scaleLocations, values: Spec.scaleValues)))
-                        .opacity(interpolate(
-                            progress,
-                            locations: evenLocations(Spec.alphaValues.count),
-                            values: Spec.alphaValues))
-                        .position(
-                            x: geometry.size.width / 2 + particle.offsetX,
-                            y: geometry.size.height - emitterBottomInset - CGFloat(rise(after: age)))
-                }
-            }
-            .allowsHitTesting(false)
+    override var isFlipped: Bool { false }
+
+    /// 粒子不接鼠标。
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 发一颗。动画走完自己 `removeFromSuperlayer`。
+    func emit(_ symbol: String) {
+        guard let host = layer else { return }
+        // 每颗粒子的字号（emoji 本身没有 sprite 图，用字号代替 contentsScale）
+        let baseSize = CGFloat.random(in: 18 ... 26)
+        // 在 emitterSize 宽度内的随机横向偏移
+        let half = Spec.emitterWidth / 2
+        let offsetX = CGFloat.random(in: -half ... half)
+
+        let box = baseSize + Spec.cellPadding * 2
+        let cell = CATextLayer()
+        cell.string = NSAttributedString(
+            string: symbol,
+            attributes: [.font: NSFont.systemFont(ofSize: baseSize)])
+        // CATextLayer 认 `alignmentMode`，不认属性串里的段落对齐。
+        cell.alignmentMode = .center
+        cell.truncationMode = .none
+        cell.isWrapped = false
+        cell.contentsScale = window?.backingScaleFactor ?? 2
+        cell.bounds = CGRect(x: 0, y: 0, width: box * 2, height: box)
+        cell.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+
+        let startX = bounds.midX + offsetX
+        let startY = emitterBottomInset
+        cell.position = CGPoint(x: startX, y: startY)
+        // renderMode = backToFront：先生的在后面，后生的压在上面。
+        host.addSublayer(cell)
+
+        let rise = CAKeyframeAnimation(keyPath: "position.y")
+        rise.values = (0 ... Spec.riseSamples).map { step -> CGFloat in
+            let time = Spec.lifetime * Double(step) / Double(Spec.riseSamples)
+            return startY + CGFloat(Self.rise(after: time))
         }
+        rise.keyTimes = (0 ... Spec.riseSamples).map {
+            NSNumber(value: Double($0) / Double(Spec.riseSamples))
+        }
+        rise.calculationMode = .linear
+
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = Spec.scaleValues.map { Spec.scale * CGFloat($0) }
+        scale.keyTimes = Spec.scaleLocations.map { NSNumber(value: $0) }
+
+        let alpha = CAKeyframeAnimation(keyPath: "opacity")
+        alpha.values = Spec.alphaValues.map { Float($0) }
+        alpha.keyTimes = Self.evenLocations(Spec.alphaValues.count).map { NSNumber(value: $0) }
+
+        let group = CAAnimationGroup()
+        group.animations = [rise, scale, alpha]
+        group.duration = Spec.lifetime
+        group.fillMode = .forwards
+        group.isRemovedOnCompletion = false
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { cell.removeFromSuperlayer() }
+        cell.opacity = 0
+        cell.add(group, forKey: "amber.reactionParticle")
+        CATransaction.commit()
     }
 
     /// 带线性阻尼的匀加速位移：v' = a - k·v，积分得
     /// y(t) = (a/k)·(t − (1 − e^(−k·t))/k)。k 取归档里的 drag=0.2。
-    private func rise(after time: TimeInterval) -> Double {
+    private static func rise(after time: TimeInterval) -> Double {
         let a = Spec.yAcceleration
         let k = Spec.drag
         guard k > 0 else { return 0.5 * a * time * time }
         return (a / k) * (time - (1 - exp(-k * time)) / k)
     }
 
-    private func evenLocations(_ count: Int) -> [Double] {
+    private static func evenLocations(_ count: Int) -> [Double] {
         guard count > 1 else { return [0] }
         return (0 ..< count).map { Double($0) / Double(count - 1) }
-    }
-
-    /// CAEmitterBehavior 的 valueOverLife / colorOverLife 都是按 location 分段线性。
-    private func interpolate(_ progress: Double, locations: [Double], values: [Double]) -> Double {
-        guard let first = values.first, let last = values.last else { return 1 }
-        if progress <= locations[0] { return first }
-        if progress >= locations[locations.count - 1] { return last }
-        for index in 1 ..< locations.count where progress <= locations[index] {
-            let span = locations[index] - locations[index - 1]
-            guard span > 0 else { return values[index] }
-            let t = (progress - locations[index - 1]) / span
-            return values[index - 1] + (values[index] - values[index - 1]) * t
-        }
-        return last
     }
 }
 
 /// 按住不放持续发射、松手停发射，速率取归档里的 birthRate。
-@Observable
+@MainActor
 final class ReactionEmitter {
 
-    private(set) var particles: [ReactionEffectView.Particle] = []
+    /// 发一颗。接在粒子层上（`ReactionEffectView.emit`）——发射器只管节拍，
+    /// 粒子的生死由那一层自己管。
+    var onEmit: ((String) -> Void)?
+
     private var timer: Timer?
 
     /// Music 的反应表情组
@@ -128,11 +164,11 @@ final class ReactionEmitter {
 
     func start(_ symbol: String) {
         stop()
-        emit(symbol)
+        onEmit?(symbol)
         // birthRate 4.5 颗/秒
         let interval = 1 / ReactionEffectView.Spec.birthRate
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.emit(symbol) }
+            MainActor.assumeIsolated { self?.onEmit?(symbol) }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
@@ -145,15 +181,7 @@ final class ReactionEmitter {
         timer = nil
     }
 
-    private func emit(_ symbol: String) {
-        let now = Date.timeIntervalSinceReferenceDate
-        let half = ReactionEffectView.Spec.emitterWidth / 2
-        particles.append(ReactionEffectView.Particle(
-            symbol: symbol,
-            born: now,
-            offsetX: CGFloat.random(in: -half ... half),
-            baseSize: CGFloat.random(in: 18 ... 26)))
-        // 过期的清掉，别让数组无限长
-        particles.removeAll { now - $0.born > ReactionEffectView.Spec.lifetime }
+    deinit {
+        timer?.invalidate()
     }
 }

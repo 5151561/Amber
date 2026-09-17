@@ -114,7 +114,7 @@ AmberApp (NSApplicationDelegate)                       主菜单在这里用 NSM
 | **3 目录页** | 主页/新发现/广播换 `NSCollectionView` + `NSCollectionViewCompositionalLayout`：每段一个 section，货架用`orthogonalScrollingBehavior = .continuous`（Music 的货架不吸附；翻页箭头自己按列算，见 §5），七种卡型各一个`NSCollectionViewItem`，段头是 supplementary view；`CatalogPageState / CatalogSection / CatalogItem` 模型原样用。悬浮播放键用 tracking area | 组合布局、`NSCollectionViewDiffableDataSource` | 主页触控板滑动 p90 ≤ 8.4 ms（120 fps），用`PerfScrollHarness` 的「观察」模式量 | **已完成（版式与帧率已核，用户已验悬浮，等看外观）** |
 | **4 曲目行 + 详情页** | `TrackRow` → `TrackRowView: NSTableRowView` + 三种形态的`NSTableCellView`（专辑 / 歌单 / 资料库），悬浮由行视图推给格子；歌单/专辑/艺人详情 = 一张`NSTableView`，第 0 行头部（高度由`heightOfRow` 给，横竖排按表宽判、不再需要 GeometryReader）；`TrackActionsMenu` 改`NSMenu` | `NSTableView` 变高行、`NSMenu` | 点开歌单不再有「转圈不动」的回环；专辑页对`album-detail.png` 像素比 | **已完成（待用户看外观）**：曲目行 + 菜单、歌单/专辑/本地列表三页照计划走表格；**艺人页没有走表格**，见下面那条更正 |
 | **5 资料库四页 + 搜索** | 专辑网格 / 所有播放列表 → collection view 网格（`Page.gridItemMinWidth = 183` 等已是`AMPGridLayoutModel` 的值）；艺人 →`NSSplitView` + 表格；最近添加 → 分段 collection view（段头吸顶联动标题）；搜索落地/结果页 → collection view | 同上 | 各页对`pages/*.png` | **已完成（待用户看外观）**：资料库四页 + 所有播放列表 + 目录二级页 + 搜索两页全部走 AppKit，网格 cell 也去掉了`NSHostingView`。见下面那条补记 |
-| **6 整窗播放器** | AppKit 壳：背景纱罩与律动改 `CALayer` + `CADisplayLink`（收起即停）、位移动画、rollover 计时、四角胶囊`NSGlassEffectContainerView`、待播盘`NSTableView`、歌词 VC 直接当子控制器；封面 / 元数据 / 传输键那一块**留 SwiftUI**装进`NSHostingController`（Music 同构） |`NSAnimationContext`、`NSGlassEffectContainerView` | 收起后 CPU ≈ 0；展开位移与 Music 的`transitionResponse/Damping` 一致 | 未开始 |
+| **6 整窗播放器** | AppKit 壳：背景换现成的 `MiniPlayerBackdropMetalView`、位移动画（已在 `NowPlayingHostController`）、rollover 计时、四角胶囊 `NSGlassEffectView`、右半区抽屉复用 `InspectorContainerViewController`（沉浸档）、歌词 VC 直接当子控制器；封面 / 元数据 / 传输键那一块**留 SwiftUI**、装进定尺寸槽（Music 同构）。三处决定见下面那条补记 | `NSAnimationContext`、`NSGlassEffectView`、`NSTrackingArea` | 收起后 CPU ≈ 0；展开位移与 Music 的 `transitionResponse/Damping` 一致；`-dumpviews` 迁移前后内容列 frame 一个不差 | **已完成（待用户看外观）** 2026-09-17 |
 | **7 附属窗** | 设置窗 `NSTabViewController(tabStyle: .toolbar)`，五个 pane 是`NSHostingController`；QQ 登录 sheet、显示选项面板（`NSPanel`）同法 | — | 设置窗 AX 树与`settings 规格 ` 对位 | **已完成**：三扇都归`Shell/AuxiliaryWindows`；旧 SwiftUI`Settings` 场景连同`SettingsView` 壳、`AppState.settingsTab` 已于 2026-09-07 删净 |
 | **8 清场** | ~~删 `PerfFlags / PerfScrollHarness / PerfWindowConfigurator`~~（已于 2026-09-07 单独清掉）、`ContentColumnBoundsKey`、`SidebarTrackDrop`、所有`*Host`/`*Representable`、`environmentObject` 注入链；README 架构段改写；AGENTS.md 写入 §2 的铁律 | — |`grep -rn Representable Amber` 为 0 | 未开始 |
 
@@ -185,6 +185,65 @@ AmberApp (NSApplicationDelegate)                       主菜单在这里用 NSM
 >    `MusicInspectorContainer`），一扇窗一份实例。于是 SwiftUI 那份待播清单没有宿主了，
 >    `PlayerInspectorView` 瘦成只剩歌词并改名`InspectorLyricsView`。
 > 5. 没做完的记在 [todo.md](todo.md) §3–§6（自动连播、私人 FM 与心动模式、惯性滚动吸附、三处小缺口）。
+
+> **阶段 6 开工前的三处决定（2026-09-17）**：勘察发现计划里写的活有三件仓库里已经有现成的，
+> 三条都由用户拍板，记在这里免得实现时又按旧计划走。
+>
+> 1. **右半区抽屉 = `InspectorContainerViewController` 的第二个实例，不是新写的待播盘表格。**
+>    计划原写「待播盘 `NSTableView`」，那是漏了 `inspector 规格` §4 的实读结论：`MPContentView`
+>    自己持有 `inspectorContainer`(+88) 与 `inspector`(+96)，**「窗口右侧栏」与「全屏播放器抽屉」
+>    是同一个容器类的两个实例**，全屏那份打开 `isImmersionMode`（§4.2：它与 `isMiniPlayerMode`
+>    是同一个开关的正反面，一起传给歌词控制器），容器本身 `includeBackdrop = false`
+>    （§4：**两处创建点都传 false**），全屏那层玻璃来自把容器套进 `AMPVibrantContainerView`（§4.1）。
+>    所以 `TrackSectionsPlatter.swift` 与 `FullWindowHostedContentView` 整个删掉，platter 的玻璃外形
+>    与 `MusicMetrics.NowPlaying.platter*` 度量保留，里面换成 `PlayQueueViewController`。
+>    **代价是盘内外观会变**（四分区、§3.5 那张行高表、顶部按钮条），这是用户认下的。
+>    顺带订正 `InspectorContainerViewController` 里那句「传 true 的调用方在全屏播放器侧」——
+>    §4 实读两处都是 false。
+> 2. **背景换成 `MiniPlayerBackdropMetalView`**（`TSLBackdropMetalView` 的复刻，数值逐条实测落在
+>    `MusicMetrics.Backdrop`，文件头本来就写着「迷你/全窗播放器底衬」）。纱罩 `0.7 − 0.4p`、
+>    律动 `10.5 − 9p` 正是 nowplaying 规格 §2.1 那两条，减弱动态、遮挡暂停、换图 0.5s 交叉淡化
+>    都在里面。**整窗背景外观因此会变**：现在那份是 Amber 自拟的 12×12 均值场 + 60 模糊
+>    （`NowPlayingBackdrop.swift` + `NSImage.amberBackdropField` + `NowPlaying.backdrop*` 那一组），
+>    一并删净——留着的那份反而是没有实测出处的那一份。
+> 3. **内容列（封面/元数据/时间行/传输行）留 SwiftUI**，照计划原文与 Music 同构。但**槽位契约反过来**：
+>    列宽由容器算好传进去，不再让 SwiftUI 自己 `GeometryReader` 量；四角 overlay、`onContinuousHover`、
+>    背景、粒子层全部移出 SwiftUI；`primaryArtworkCenterY` 由容器按同一个列宽自算
+>    （堆叠常量本来就都在 `MusicMetrics.NowPlaying`），`NowPlayingCoordinateSpace` 与两个
+>    `PreferenceKey` 删掉。`AmberTrackBar` / `PlaybackTimeReader` 因此保留。
+>
+> 另外两条顺手做的：rollover 的停留计时从现在的 `[推] 3s` 换成迷你窗那份实测值
+> （窗内静止 3.75 = `kMouseInterestTimeoutInSeconds`、离开窗口 0.3 =
+> `kMouseInterestExitingWindowTimeoutInSeconds`，miniplayer 规格 §11.1），同一条 §2.3 机制两处统一；
+> 歌词那一格换成 `SyncedLyricsViewController` 直接当子控制器之后，`SyncedLyricsView` 与
+> `AirPlayButton` 这最后两处 `NSViewRepresentable` 一起没了——阶段 8 那条
+> `grep -rn Representable Amber` 为 0 会在本阶段提前达成。
+
+> **阶段 6 的收尾（2026-09-17 当天）**：两批（容器＋胶囊 / 沉浸档＋歌词 VC）并行落地之后，
+> 集成时实机抓出三处，都不是子代理的分工边界内能看见的：
+>
+> 1. **收起时没停歌词的每帧驱动**。整窗播放器收起是「位移出窗 + alpha 0」，既不走
+>    `viewWillDisappear` 也不走 `viewDidHide()`，两条自动通路都盖不住它。容器按 `isPresented`
+>    推 `backdrop.isActive` / `chrome.isActive` 时漏了 `drawer.isActive`，补上。
+> 2. **背景在没有封面时整块透明**。`MiniPlayerBackdropMetalView` 的安全降级是「纹理拿不到
+>    就是一块透明的空视图」——迷你窗缺省走毛玻璃那一支，这条降级从没露过面；整窗这边它是
+>    唯一的背景，于是资料库直接从播放器底下透上来。补回旧 SwiftUI 版那层空态底
+>    （[PX] 反算自 Music 空态截图的 `#6E6F72`），有封面时让位给 Metal 那层。
+>    **这条是 `-dumpviews` 看不出来的**：它只给 frame，Metal 与 SwiftUI 的内部都不进树，
+>    背景这类必须截屏看（见记忆 `am-dumpviews-verification`）。
+> 3. **「待播清单 → 歌词」切回去一片空白**。盘的收起动画收尾时连 `drawer.view` 一起藏，
+>    而那时抽屉里装的已经是歌词面板；再手动开关一次会走 `fadeDrawer` 把 `isHidden` 掰回来，
+>    所以症状是「要开关一次才显示」。盘动画改成只管玻璃盘（队列档时抽屉在玻璃**里面**，
+>    藏玻璃本来就连它一起藏了），换档时抽屉恒可见、alpha 复位。
+>
+> 另有一处是验收口子自己造出来的假故障，记下来免得再踩：把抽屉状态**预置**成「一上来就开着」，
+> 队列表会在 0 尺寸下走一遍布局，AppKit 抛 `NSInternalInconsistencyException`
+> **“The row at 0 is not floating.”**（`NSTableRowData.m:6900`）整个 App 在 `didFinishLaunching`
+> 里就死了——而且 AppKit 把异常吞了，`stderr` 一个字都没有，靠 `lldb -o "breakpoint set -E objc"`
+> 才抓得到（同 AGENTS.md「实机现象要先验证再照着改」）。真实路径（窗口布好局之后点底栏那颗键）
+> 没有这个问题，所以验收口子改成**走点击同一条路**：第一次有效布局之后再 `setInspectorOpen`。
+> `-nowplaying -queue -lyrics` 三个一起给 = 「开在队列档再切到歌词档」，就是上面第 3 条那一步。
+
 
 顺序的理由：壳先做，因为其余一切挂在它上面，而且阶段 1 做完就已经消掉 §1.2 表里的全部绕路；目录页第二，因为它是量到的掉帧现场；整窗播放器最后，因为它最大、而 Music 自己在那里也是 SwiftUI，收益/成本比最低。
 

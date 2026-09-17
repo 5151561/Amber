@@ -110,10 +110,10 @@ final class SyncedLyricsViewController: NSViewController {
             stopDisplayLink()
         }
         // 停链之后补同步一次模糊。[PX] §22.3 的「暂停后全表清晰」平时靠
-        // `displayLinkFired` 每帧看一眼，但整窗那端的`isActive` 本身就带着
-        // `isPlaying`（`NowPlayingLyrics.syncOptions`：`isVisible && !isEmpty && isPlaying`）
-        // ——一暂停 `isActive` 先翻 false、链子跟着停，那一帧永远轮不到，
-        // 模糊会卡在暂停前的样子。恢复播放时链子重开，回填由第一帧自己做。
+        // `displayLinkFired` 每帧看一眼；而宿主推进来的`isActive`（整窗播放器收起时
+        // 翻 false，见 `InspectorLyricsViewController.isActive`）一翻链子就停，
+        // 那一帧永远轮不到，模糊会卡在停之前的样子。恢复时链子重开，
+        // 回填由第一帧自己做。
         manager?.syncBlurToPlaybackState()
     }
 

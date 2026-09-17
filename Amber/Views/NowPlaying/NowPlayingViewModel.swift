@@ -8,8 +8,12 @@ import SwiftUI
 /// PBPlayerControlsState   能力位（纯值对象，49 方法里 48 个存取器）
 /// PBPlayerViewModel       播放状态：playButtonState / shuffle / repeat / 音量
 /// PBPlayerMetadataViewModel   元数据：标题、时间三值、徽标、心水
-/// NowPlayingViewModel  呈现状态：抽屉、rollover、LayoutHints
 /// ```
+///
+/// 第四支「呈现状态」（抽屉、rollover、时间行档位、`preMuteVolume`、反应条）本来在这里
+/// 落成 `NowPlayingViewModel` 那个 `ObservableObject`，阶段 6 换 AppKit 骨架之后归了
+/// `NowPlayingContainerViewController` 与 `NowPlayingChromeView` 自己（铁律 3）；
+/// 这个文件从此**只剩值类型**——迷你播放器、菜单、⌘↑/⌘↓ 也都在用它们。
 ///
 /// 出处标注沿用 nowplaying 规格的章节号：
 /// `§3.3` 指该文第 3.3 节，节里每条都带函数地址。
@@ -291,216 +295,48 @@ struct NowPlayingMetadata {
     var favoritingState: FavoritingState { isFavorite ? .liked : .none }
 }
 
-// MARK: - 呈现状态（NowPlayingViewModel）
+// MARK: - 呈现状态
 
-/// [实测] §6.1 的字段树里，与 Amber 对得上的那几支：`presentation` / `geometry` /
-/// `windowProperties`（抽屉与窗口）、`trackSections`（待播清单盘）、`hostedContent`（歌词）。
-@MainActor
-final class NowPlayingViewModel: ObservableObject {
+// [实测] §6.1 的字段树里，与 Amber 对得上的那几支——`presentation` / `geometry` /
+// `windowProperties`（抽屉与窗口）、`trackSections`（待播清单盘）、`hostedContent`（歌词）
+// ——现在**全部归 AppKit 那台容器**（`NowPlayingContainerViewController`）：抽屉开合、
+// rollover、反应条、`preMuteVolume` 都是视图自己的状态，不必再经一个 `ObservableObject`
+// 绕一圈（计划 §2 铁律 3）。`LayoutHints` 那两个锚点也一并没了：封面中心由容器按
+// 同一个列宽自算，不再走 `PreferenceKey` 往上报（「阶段 6 开工前的三处决定」第 3 条）。
+//
+// 只有下面这一枚枚举还留在值类型这一侧——时间行画在 SwiftUI 那棵内容列里，
+// 容器把当前档位当参数传进去、把「翻下一档」当回调收回来。
 
-    /// 歌词桥。[实测] §8.1 `Lyrics`：
-    /// 面板自己持 viewModel + options + footerButton，播放器只经它开合。
-    ///
-    /// **这一层不转发它的 `objectWillChange`**：要听歌词内容的子视图自己
-    /// `@ObservedObject` 它（`FullWindowHostedContentView`、底栏那颗翻译键）。
-    /// 从前 `LyricsOptions` → `NowPlayingLyrics` → 这里三级人肉转发，
-    /// 末端是整棵 `NowPlayingView` 重算（reactive-ui-review §2.1）。
-    let lyrics = NowPlayingLyrics()
+/// [实测] §3.2 `showTotalInsteadOfRemaining`（`doTimeRemainingClicked:` 翻转它）。
+/// AppKit 那块盘只有「剩余 / 总时长」两态；SwiftUI 侧的
+/// `TimeControlAccessoryView` [TYPE] 另有`TimeAtEndView` / `TrackDurationView` /
+/// `ClockTimeText` 三个成员，Amber 取三态，第一态与 AppKit 的「剩余」同解。
+enum NowPlayingTimeAccessory: Equatable {
+    case remaining, duration, endsAt
 
-    /// **整窗播放器这一扇**的「抽屉开着没有」。[实测] §2.2 `lyricsClicked` / `queueClicked`。
-    ///
-    /// 「开着没有」一扇窗一份（主窗是 `AppState.isInspectorOpen`、迷你窗是
-    /// `MiniPlayerContentView.currState`），「开的是哪一档」全局一份
-    /// （`AppState.inspectorMode`）。从前这里是`isQueueOpen` + `LyricsOptions.isVisible`
-    /// 两个各自为政的布尔、且与全局那一位完全不通，于是后者默认 true ⇒
-    /// 不管用户上次选的是待播清单还是把面板关了，**第一次开「播放中」永远是歌词抽屉**。
-    @Published private(set) var isInspectorOpen = false
-
-    /// 面板档位的**只读窄镜像**，真值在 `AppState.inspectorMode`。
-    ///
-    /// 为什么要镜一份：SwiftUI 的 `@EnvironmentObject` 只认整份`objectWillChange`，
-    /// 让整窗播放器直接观察 `AppState` 等于把 toast、导航意图那几位也收进依赖集
-    /// ——弹一句「已加入待播清单」就重算整屏。窄化只能发生在某一层，放在这里最省；
-    /// 它是 `removeDuplicates` 的单向跟随，写入一律回全局那一份（见`inspectorClicked`），
-    /// 所以不会与真值分叉。
-    @Published private(set) var inspectorMode: PlayerInspector = .lyrics
-
-    /// [实测] §3.2 `showTotalInsteadOfRemaining`（`doTimeRemainingClicked:` 翻转它）。
-    /// AppKit 那块盘只有「剩余 / 总时长」两态；SwiftUI 侧的
-    /// `TimeControlAccessoryView` [TYPE] 另有`TimeAtEndView` / `TrackDurationView` /
-    /// `ClockTimeText` 三个成员，Amber 取三态，第一态与 AppKit 的「剩余」同解。
-    @Published var timeAccessory: TimeAccessory = .remaining
-
-    /// [TYPE] `NowPlayingViewModel.VolumeControl.preMuteVolume: Float?`：
-    /// 静音只是把音量压到 0，再点一次要还原到静音前那一档。
-    @Published var preMuteVolume: Double?
-
-    /// 反应条（[TYPE] `EmojiReactionPicker`）
-    @Published var isReactionBarOpen = false
-
-    /// [实测] §2.3 `rollState` / `rolloverShouldBeVisible`：鼠标停住一会儿就把悬浮控件收掉，
-    /// 窗口失焦也收（`viewDidMoveToWindow` 挂的`windowFocusObserver` + `accessibilityFocusObserver`）。
-    @Published private(set) var rolloverVisible = true
-
-    /// [实测] §6.1 `LayoutHints`：SwiftUI 布局与 AppKit 侧同步的锚点**只有两个**，
-    /// 就是下面这两支——歌词面板的基线全靠 `primaryArtworkCenterY` 对齐（见 §8.1 与
-    /// `NowPlayingLyrics` 的注释）。
-    @Published var layoutHints = LayoutHints()
-
-    private var rolloverTask: Task<Void, Never>?
-    private var rolloverDeadline = Date.distantPast
-    private weak var appState: AppState?
-    private var modeObserver: AnyCancellable?
-    private var isPresented = false
-
-    /// 接上全局那份档位。视图 `onAppear` 调一次，重复调只认第一次。
-    func bind(to appState: AppState) {
-        guard modeObserver == nil else { return }
-        self.appState = appState
-        inspectorMode = appState.inspectorMode
-        // `@Published` 发的就是**新值**，直接用，不必 `receive(on:)` 再读回属性。
-        modeObserver = appState.$inspectorMode
-            .removeDuplicates()
-            .sink { [weak self] mode in self?.inspectorMode = mode }
-    }
-
-    var isLyricsOpen: Bool { isInspectorOpen && inspectorMode == .lyrics }
-    var isQueueOpen: Bool { isInspectorOpen && inspectorMode == .queue }
-
-    // MARK: 抽屉开合
-
-    /// 底栏那两颗键：点当前这一档 = 收起，点另一档 = 换档并保持展开
-    /// （与主窗 `AppState.toggleInspector` 同一条语义，只是「开着没有」记在本宿主上）。
-    ///
-    /// [实测] §2.2 `lyricsClicked` / `queueClicked`；菜单项`validate_doShowHide*`
-    /// 恒返回 1（§1.1）——**这两个开关永远可用**，没内容时由面板自己兜底显示空态。
-    func inspectorClicked(_ inspector: PlayerInspector) {
-        if isInspectorOpen, inspectorMode == inspector {
-            isInspectorOpen = false          // 收起不动档位：全局那一份要记着上次这一档
-        } else {
-            appState?.inspectorMode = inspector
-            inspectorMode = inspector        // 没 bind 过也要能用（预览 / 测试）
-            isInspectorOpen = true
-        }
-    }
-
-    func lyricsClicked() { inspectorClicked(.lyrics) }
-
-    func queueClicked() { inspectorClicked(.queue) }
-
-    // MARK: rollover
-
-    /// 展开时**只显形、不起计时**：Music 那对计时器是
-    /// `mouseStartingInterestTimer`（等鼠标先进来）+`mouseInterestTimer`（进来之后才计停留），
-    /// 所以「开了播放中但一直没动鼠标」不该把关闭键也收掉。
-    /// 计时从第一次鼠标活动起（`noteMouseActivity`）。
-    func setPresented(_ presented: Bool) {
-        isPresented = presented
-        rolloverTask?.cancel()
-        rolloverTask = nil
-        rolloverVisible = true
-    }
-
-    /// 鼠标动了：立刻显形并把「停留到期时刻」往后推（Music 是
-    /// `mouseStartingInterestTimer` + `mouseInterestTimer` 两只计时器，到点切`rollState`）。
-    ///
-    /// 推的是一个 deadline、不是每次都重开一只计时器：鼠标移动一秒能来几十个事件，
-    /// 每个都 cancel + 新建 Task 纯属白烧。
-    func noteMouseActivity() {
-        guard isPresented else { return }
-        if !rolloverVisible {
-            withAnimation(.easeOut(duration: NowPlayingRollover.fadeIn)) { rolloverVisible = true }
-        }
-        rolloverDeadline = Date().addingTimeInterval(NowPlayingRollover.interest)
-        startRolloverWatch()
-    }
-
-    /// 鼠标停在控件上就别收——Music 的 `rolloverTracker` 也是这么挡的。
-    func holdRollover() {
-        rolloverTask?.cancel()
-        rolloverTask = nil
-        rolloverDeadline = .distantFuture
-        if !rolloverVisible {
-            withAnimation(.easeOut(duration: NowPlayingRollover.fadeIn)) { rolloverVisible = true }
-        }
-    }
-
-    /// [实测] §2.3 `windowFocusObserver`：失焦即收，回焦即显。
-    func noteWindowFocus(_ focused: Bool) {
-        guard isPresented else { return }
-        if focused {
-            noteMouseActivity()
-        } else {
-            rolloverTask?.cancel()
-            rolloverTask = nil
-            withAnimation(.easeOut(duration: NowPlayingRollover.fadeOut)) { rolloverVisible = false }
-        }
-    }
-
-    private func startRolloverWatch() {
-        guard rolloverTask == nil else { return }
-        rolloverTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(NowPlayingRollover.tick))
-                guard !Task.isCancelled, let self else { return }
-                guard Date() >= self.rolloverDeadline else { continue }
-                self.rolloverTask = nil
-                withAnimation(.easeOut(duration: NowPlayingRollover.fadeOut)) {
-                    self.rolloverVisible = false
-                }
-                return
-            }
-        }
-    }
-
-    // MARK: 音量
-
-    /// [实测] §3.3：先查 `canSetVolume`，为假不动；再按 ±12/256 的刻度走。
-    func incrementVolume(_ steps: Int, on player: PlayerController, state: PlayerControlsState) {
-        guard state.canSetVolume else { return }
-        player.volume = VolumeScale.increment(player.volume, steps: steps)
-        if player.volume > 0 { preMuteVolume = nil }
-    }
-
-    /// 静音：压到 0 并记下原值；再点一次还原。`canMute` 为假不动。
-    func toggleMute(on player: PlayerController, state: PlayerControlsState) {
-        guard state.canMute else { return }
-        if let restored = preMuteVolume {
-            player.volume = restored
-            preMuteVolume = nil
-        } else {
-            preMuteVolume = player.volume
-            player.volume = 0
-        }
-    }
-
-    /// [TYPE] `TimeControlAccessoryView` 的三个成员
-    enum TimeAccessory {
-        case remaining, duration, endsAt
-
-        var next: TimeAccessory {
-            switch self {
-            case .remaining: return .duration
-            case .duration:  return .endsAt
-            case .endsAt:    return .remaining
-            }
+    var next: NowPlayingTimeAccessory {
+        switch self {
+        case .remaining: return .duration
+        case .duration:  return .endsAt
+        case .endsAt:    return .remaining
         }
     }
 }
 
-/// [实测] §6.1：`LayoutHints` 实测只有这两个可选 CGFloat
-/// （`primaryArtworkCenterY` / `hostedContentMinY`）。
-/// 两者都记在整窗播放器的公共坐标系里（`NowPlayingCoordinateSpace`）。
-struct LayoutHints: Equatable {
-    var primaryArtworkCenterY: CGFloat?
-    var hostedContentMinY: CGFloat?
-}
-
-/// rollover 的时长。Music 那两只计时器的秒数没在静态数据里，取手感值。[推]
+/// rollover 的时长。
+///
+/// 停留那两档是 [实测] miniplayer spec §11.1 `MPContentView` 的 ivar 表
+/// （`kMouseInterestTimeoutInSeconds` = 3.75、
+/// `kMouseInterestExitingWindowTimeoutInSeconds` = 0.3、
+/// `kDelayBeforeStartingRolloverMin` = 0.1）——那张表记的就是**整窗内容视图自己**的字段，
+/// 迷你横条与整窗共用同一台 `MPContentView`，所以两处本来就是同一个数。
+/// 常量落在 `MusicMetrics.MiniPlayerWindow` 那一组，这里只做转引，不再抄一份
+/// （旧版这里写的 `interest = 3` 是 [推]，已按实测订正）。
 enum NowPlayingRollover {
-    static let interest: TimeInterval = 3
-    /// deadline 的查看周期
-    static let tick: TimeInterval = 0.25
+    static let interest = MusicMetrics.MiniPlayerWindow.mouseInterestTimeout
+    static let exitingWindow = MusicMetrics.MiniPlayerWindow.mouseInterestExitingWindowTimeout
+    static let startDelay = MusicMetrics.MiniPlayerWindow.delayBeforeStartingRolloverMin
+    /// 淡入淡出本身没量到，取手感值。[推]
     static let fadeIn: TimeInterval = 0.14
     static let fadeOut: TimeInterval = 0.45
 }

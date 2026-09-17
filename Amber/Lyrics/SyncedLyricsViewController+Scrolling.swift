@@ -388,3 +388,20 @@ extension SyncedLyricsViewController {
         applyHidePreviousLines(targetLineIndex: line.index)
     }
 }
+
+extension SyncedLyricsViewController {
+
+    /// 基线（`selectedLinePosition`）变了之后，把当前选中行重新滑到新落点。
+    ///
+    /// 走的是既有的 `jump(to:animated:)`：目标行与视口相交才动画、完全不可见就硬跳
+    /// （§2.7）。没有选中行（还没起播 / 歌词为空）时什么都不做，
+    /// 下一次 `didSelect` 自然会用新的 spec 落位。
+    func reanchorSelectedLine() {
+        guard let visual = manager,
+              let view = visual.selectedLineViews.last,
+              let index = visual.lineViews.firstIndex(of: view),
+              let line = lyrics?.lines[safe: index]
+        else { return }
+        jump(to: line, animated: true)
+    }
+}
