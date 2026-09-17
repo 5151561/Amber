@@ -138,9 +138,11 @@ final class SongsTableSettings {
         // 用 `observe`（丢首值）不是 `observeNow`：上面两行已经把当前值同步镜像进来了。
         // 首值靠播种而不是靠订阅，这样刚 init 出来的实例当场就是对的——`observeNow`
         // 的首值要过一跳，中间那一拍列是没镜像的。
-        observers.observe({ AppSettings.shared.values }) { [weak self] values in
-            self?.applyStarRatings(values.showStarRatings)
-            self?.applyCheckboxes(values.songListCheckboxes)
+        // 只订这两个显示开关（见 `AppSettings` §细粒度投影）：订整份 `values` 时
+        // 任何一项偏好变动都会让整张歌曲表重排一次列。
+        observers.observe({ AppSettings.shared.songsTablePrefs }) { [weak self] prefs in
+            self?.applyStarRatings(prefs.showStarRatings)
+            self?.applyCheckboxes(prefs.songListCheckboxes)
         }
         let artwork = defaults.array(forKey: Self.artworkKey) as? [Int] ?? []
         showArtwork = artwork.first == 1

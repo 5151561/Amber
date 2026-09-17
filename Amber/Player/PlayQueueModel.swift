@@ -141,7 +141,9 @@ final class PlayQueueModel {
         }
 
         // 顶部两颗按钮读的是设置（见 `mixingEnabled` / `autoplayEnabled`）——属于「数据」。
-        observers.observe({ AppSettings.shared.values }) { [weak self] _ in
+        // 只订那两项（见 `AppSettings` §细粒度投影）：订整份 `values` 会让每一次偏好写入
+        // 都重建一次待播清单快照。
+        observers.observe({ AppSettings.shared.playQueuePrefs }) { [weak self] _ in
             self?.dataDidChange.send(())
         }
 
