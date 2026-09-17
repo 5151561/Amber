@@ -296,29 +296,17 @@ extension SyncedLyricsViewController {
 
 extension SyncedLyricsViewController {
 
-    /// `jump` 是否要降级成动画滚动。
+    /// `jump` 是否要动画滚动。
     ///
-    /// 复现 `jumping to` 的三重判据。
-    /// 规格见 §2.7。
-    ///
-    /// **注意判据方向与 `transition(forTargetLineFrame:)` 相反**：
-    /// - `selecting` 用`CGRectContainsRect`——没被完整装下就动画。
-    /// - `jump` 用`CGRectIntersectsRect`——有交集才动画，**完全不可见反而硬跳**。
-    ///
-    /// 目标行在附近时动画有连续感；远在几屏之外时动画会变成一次疯狂的长距离滚动。
-    /// 两处若写成同一个判据，长距离跳转（点进度条跳到副歌）会拖出一段甩尾。
-    ///
-    /// - Parameters:
-    ///   - targetLine: 原版在这里判型，目标类型是 `InstrumentalLine`。
-    ///     转型**成功**则硬跳：间奏行没有文字，动画滚过去看不出所以然。见 §4.2。
-    ///   - animated: 原版读的 `[x19, #0x5c]` 布尔，位置上像调用方传入的开关。[推]
+    /// 只要入参 `animated` 为真，均通过 `animateLineScroll` 处理：
+    /// - 近距离（`abs(delta) <= visible.height`）由波浪阶梯动画平滑滑入；
+    /// - 远距离跨屏（`abs(delta) > visible.height`）由 `ScrollSpring` 视口平滑滚动接管，
+    ///   既不产生长距离拖拽与逐行渲染开销，也避免突兀的瞬移硬跳；
+    /// - 间奏行同样平滑展开/滚动落位。
     func jumpShouldAnimate(targetLineFrame: CGRect,
-                                  targetLine: (any LyricsLine)?,
-                                  animated: Bool) -> Bool {
-        guard let visible = scrollView?.documentVisibleRect else { return false }
-        guard visible.intersects(targetLineFrame) else { return false }  // 不相交 → 硬跳
-        guard !(targetLine is InstrumentalLine) else { return false }
-        return animated
+                           targetLine: (any LyricsLine)?,
+                           animated: Bool) -> Bool {
+        animated
     }
 
     /// tracking 模式下的跳转。规格见 §4.4。
