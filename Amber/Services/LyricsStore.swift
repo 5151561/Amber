@@ -129,7 +129,8 @@ final class LyricsStore {
     /// 手打的文本里若带 `[mm:ss]`，`LyricParser` 照旧把它解析成同步歌词——
     /// 白得的，不用为自定义词另写一条解析。
     private func customLines(for track: Track) -> [LyricLine]? {
-        TrackInfoStore.shared.customLyrics(for: track.id).map { LyricParser.parse($0) }
+        TrackInfoStore.shared.customLyrics(for: track.id)
+            .map { LyricParser.parse($0, title: track.title) }
     }
 
     /// 清空缓存（设置 › 高级 › 还原缓存）。在跑的请求不取消——它们落回来时

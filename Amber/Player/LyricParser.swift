@@ -37,8 +37,12 @@ enum LyricParser {
 
     // MARK: - 入口
 
+    /// - Parameter title: 曲名。只用在一处：判首行是不是**光杆标题行**
+    ///   （见 `stripLeadingCredits` 的第 4 条）。不给就当没有这条线索，
+    ///   首行照旧按普通唱词看待。
     static func parse(_ text: String, translation: String? = nil,
-                      transliteration: String? = nil) -> [LyricLine] {
+                      transliteration: String? = nil,
+                      title: String? = nil) -> [LyricLine] {
         var raw = parseTimedLines(text)
         // **一条真正带时间戳的行都没有** ⇒ 纯文本歌词，走无戳那条路。
         //
@@ -50,13 +54,13 @@ enum LyricParser {
         // `raw` 也会变空，但那是「有时间戳、只是没文字」，它该留在带戳这条路上返回 `[]`。
         guard raw.contains(where: { !$0.isMetadata }) else {
             return parseUntimed(text, translation: translation,
-                                transliteration: transliteration)
+                                transliteration: transliteration, title: title)
         }
         // 正文不要空文字行（占位行是给副行对齐用的，正文里没有意义）。
         raw.removeAll { $0.text.isEmpty }
         guard !raw.isEmpty else { return [] }
 
-        var credits = stripLeadingCredits(&raw)
+        var credits = stripLeadingCredits(&raw, title: title)
         // 尾部也有一块（《从未见过的海》正文唱完后接 16 行制作人/编曲/录音师…）。
         // 词曲只在头块缺位时才由尾块补——见 `Credits.fillGaps`。
         credits.fillGaps(from: stripTrailingCredits(&raw))
@@ -336,7 +340,17 @@ enum LyricParser {
     ///    （`封面设计 Cover Designer`）——那是制作表的排版习惯，歌词不会这么写。
     /// 3. **这一块是连着的**：认不出的行先挂起（只推进不摘），后面再出现一条认得出的，
     ///    夹在中间的就跟着一起摘；块尾之后一行都不多摘。所以漏认一条不会连累整块。
-    private static func stripLeadingCredits(_ lines: inout [RawLine]) -> Credits {
+    /// 4. **首行就是曲名时它不算块的终点**：制作表前面常有一行光杆标题
+    ///    （[实测 2026-09-17 curl 匿名] QQ《傻鱼》`004OJ2Hr0NDxI7` 的第一行就是
+    ///    `傻鱼`，没有`- 歌手` 可认，`isHeaderLine` 的「歌名 - 歌手」认不下它，
+    ///    于是整块制作表跟着它一起留在屏上）。这种行照第 3 条挂起：后面真出现制作
+    ///    信息行就一起带走，一条都不出现就原样留在正文里。
+    ///
+    ///    判据是**与曲名相同**，不是「首行认不出就放过」——后者会把
+    ///    「正文一行 + 尾部制作表」的歌吃掉正文（`testTrailingCreditsSupplyMissingSongwriters`）。
+    ///    曲名这条线索由调用方给（`parse(title:)`），没有就什么都不放过。
+    private static func stripLeadingCredits(_ lines: inout [RawLine],
+                                            title: String?) -> Credits {
         var credits = Credits()
         var cut = 0 // 已确认的块尾：`lines[..<cut]` 都不是歌词
         scan: for (offset, line) in lines.enumerated() {
@@ -346,7 +360,9 @@ enum LyricParser {
             }
             switch classify(line, insideBlock: cut > 0) {
             case .stop:
-                break scan
+                // 首行 == 曲名：按第 4 条挂起，别的行一律当场停住。
+                guard offset == 0, isTitleLine(line.text, title: title) else { break scan }
+                continue
             case .suspended:
                 continue // 认不出的先挂起：要么被后面某条确认行带走，要么留在正文里
             case .confirmed(let role, let value):
@@ -515,6 +531,28 @@ enum LyricParser {
     /// 归不到一起，接受——那要的是人名库，不是规律。`[推]`
     private static func normalizedVocalistName(_ name: String) -> String {
         name.lowercased().filter { !$0.isWhitespace }
+    }
+
+    /// 这一行是不是光杆标题行（整行就是曲名）。
+    ///
+    /// 比的是去掉空白、忽略大小写之后的全等，外加两边各自去掉尾部括注
+    /// （`傻鱼 (Live)` 与`傻鱼`算同一个）——「包含」不能用：曲名两三个字时
+    /// 随便哪句唱词都能包含它。
+    private static func isTitleLine(_ text: String, title: String?) -> Bool {
+        guard let title, !title.isEmpty else { return false }
+        let line = normalizedTitle(text)
+        guard !line.isEmpty else { return false }
+        return line == normalizedTitle(title)
+    }
+
+    private static func normalizedTitle(_ text: String) -> String {
+        var trimmed = text.trimmingCharacters(in: .whitespaces)
+        // 尾部括注（`(Live)`、`（伴奏）`）不参与比对。
+        while let open = trimmed.lastIndex(where: { $0 == "(" || $0 == "（" }),
+              let last = trimmed.last, last == ")" || last == "）" {
+            trimmed = String(trimmed[..<open]).trimmingCharacters(in: .whitespaces)
+        }
+        return trimmed.lowercased().filter { !$0.isWhitespace }
     }
 
     /// 首行的「歌名 - 歌手」
@@ -875,11 +913,12 @@ enum LyricParser {
     /// 与 `parse` 的差别只有两处：分词器换成 `untimedRawLines`（**不排序**），
     /// 组装换成 `assembleUntimed`（没有间奏、没有行结束、没有按时间认领的副行）。
     private static func parseUntimed(_ text: String, translation: String?,
-                                     transliteration: String?) -> [LyricLine] {
+                                     transliteration: String?,
+                                     title: String?) -> [LyricLine] {
         var raw = untimedRawLines(text)
         guard !raw.isEmpty else { return [] }
 
-        var credits = stripLeadingCredits(&raw)
+        var credits = stripLeadingCredits(&raw, title: title)
         credits.fillGaps(from: stripTrailingCredits(&raw))
         guard !raw.isEmpty else { return [] }
         markAgentCues(&raw)
@@ -957,7 +996,8 @@ enum LyricParser {
         // 判据与 `parse` 的分支判据是同一句。
         guard !parseTimedLines(text).contains(where: { !$0.isMetadata }) else { return [] }
         var lines = untimedRawLines(text)
-        _ = stripLeadingCredits(&lines)
+        // 副行不认标题行：曲名那条线索是给正文用的，译文里那一行未必与曲名同形。
+        _ = stripLeadingCredits(&lines, title: nil)
         _ = stripTrailingCredits(&lines)
         return lines
     }

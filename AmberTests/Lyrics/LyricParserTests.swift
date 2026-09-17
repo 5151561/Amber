@@ -411,6 +411,62 @@ final class LyricParserTests: XCTestCase {
         XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：某某"])
     }
 
+    /// 制作表前面那行光杆标题（`傻鱼`，没有「- 歌手」）不能把整块的扫描挡在第 0 行。
+    /// [实测 2026-09-17 curl 匿名] QQ《傻鱼》`004OJ2Hr0NDxI7` 的开头就是这个形状。
+    func testBareTitleLineDoesNotBlockCreditBlock() {
+        let lrc = """
+        [00:00.00]傻鱼
+        [00:00.85]演唱歌手Singer: 王栎鑫
+        [00:01.28]作词Lyricist: 王栎鑫
+        [00:01.71]作曲Composer: 王栎鑫
+        [00:02.14]制作人Producer: 程冠焜
+        [00:02.56]编曲Arranger: 程冠焜
+        [00:03.85]班苏里Bansuri: 囚牛
+        [00:05.99]录音工程师Recording Engineer: 詹凌杰@缪思音乐/阮泽霖Raven @2496 Top Music
+        [00:08.56]出品公司: 成都鑫的一天文化传播有限公司
+        [00:08.98]发行公司/推广: 昌禾音乐
+        [00:09.42]它有些大意
+        [00:15.87]落入你的陷阱
+        """
+        let lines = LyricParser.parse(lrc, title: "傻鱼")
+        XCTAssertEqual(lyricLines(lines).map(\.text), ["它有些大意", "落入你的陷阱"])
+        XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text), ["创作者：王栎鑫"])
+    }
+
+    /// 曲名带括注（`傻鱼 (Live)`）也算同一个标题行
+    func testTitleLineMatchesIgnoringParenthetical() {
+        let lrc = """
+        [00:00.00]傻鱼
+        [00:00.85]作词Lyricist: 王栎鑫
+        [00:09.42]它有些大意
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc, title: "傻鱼 (Live)")).map(\.text),
+                       ["它有些大意"])
+    }
+
+    /// 没有曲名这条线索时什么都不放过：首行照旧当场停住，整块留在屏上也好过吃掉正文
+    func testBareFirstLineWithoutTitleStopsScan() {
+        let lrc = """
+        [00:00.00]傻鱼
+        [00:00.85]作词Lyricist: 王栎鑫
+        [00:09.42]它有些大意
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text),
+                       ["傻鱼", "作词Lyricist: 王栎鑫", "它有些大意"])
+    }
+
+    /// 首行不是曲名就当场停住：正文只有一句、制作表挂在尾部的歌不许被吃掉
+    /// （与 `testTrailingCreditsSupplyMissingSongwriters` 同一条线）
+    func testFirstLineThatIsNotTheTitleStopsScan() {
+        let lrc = """
+        [00:00.00]第一句
+        [00:04.00]词：某人
+        [00:12.00]第二句
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc, title: "某首歌")).map(\.text),
+                       ["第一句", "词：某人", "第二句"])
+    }
+
     /// 角色名列不完：认不出的那条夹在块中间时，靠后面认得出的那条一起带走
     func testUnknownRoleInsideCreditBlockIsStripped() {
         let lrc = """
