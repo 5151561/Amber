@@ -26,7 +26,8 @@ import SwiftUI
 //      双击或点 ▶ 起播，右键走 `TrackActions.libraryRow()`。
 
 @MainActor
-final class LibraryArtistsViewController: ContentPageController, NSSplitViewDelegate {
+final class LibraryArtistsViewController: ContentPageController, NSSplitViewDelegate,
+                                          LibraryArtistSelecting {
 
     private typealias M = MusicMetrics.LibraryArtists
 
@@ -191,7 +192,6 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
             needsRefreshWhenShown = false
             refreshData()
         }
-        consumePendingSelection()
     }
 
     override func viewDidLayout() {
@@ -403,10 +403,6 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         // 一个快照：与原来等价，而与它们无关的写入不再把这一页叫醒。
         observers.observeAny({ [model] in (model.favoritesOnly, model.search, model.sort) }) { [weak self] in self?.setNeedsRefresh() }
 
-        observers.observe({ [appState] in appState.pendingLibraryArtistID }) { [weak self] pending in
-            if pending != nil { self?.consumePendingSelection() }
-        }
-
         // 这一页真读的只有「哪首在播、播没播」，不是整台播放器。
         observers.observeAny({ [appState] in
             (appState.player.currentIndex, appState.player.queue, appState.player.isPlaying)
@@ -423,8 +419,9 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     /// 刷新入口：合批 + 可见性闸。
     ///
     /// **合批**照歌曲页那条（`LibrarySongsViewController.setNeedsRefresh`）：这一页一次
-    /// `refreshData()` 是左表 + 右表**各一遍** `reloadData()`，来几声就刷几遍代价最大；
-    /// 而且要推迟到下一轮再读值——`model` 那几项是`@Published`，在 willSet 发布。
+    /// `refreshData()` 是左表 + 右表**各一遍** `reloadData()`，来几声就刷几遍代价最大。
+    /// （推迟到下一轮那半条理由已经没了：`model` 那几项走`Observations`，值落定之后
+    /// 才发；合批留着是为了「一轮里来几声只刷一遍」。）
     ///
     /// **可见性闸**：导航容器把访问过的根页全缓存着、切页只切 `isHidden`，
     /// 隐藏的页重排一遍没人看得见，只记一笔等 `pageDidAppear()` 补。
@@ -521,11 +518,15 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         }
     }
 
-    private func consumePendingSelection() {
-        guard let pending = appState.pendingLibraryArtistID else { return }
-        selectedID = pending
-        appState.pendingLibraryArtistID = nil
-
+    /// 「跳到这位艺人」。由 `ContentNavigationController` 沿导航意图交下来
+    /// （`AGENTS.md` 界面层铁律 4；从前是 `AppState.pendingLibraryArtistID` 那只信箱，
+    /// 页面自己订着它、收到再写回 nil）。
+    ///
+    /// 交下来的时机由导航控制器保证：它先 `setRoot(for: .artists)` 把这一页装上，
+    /// 换根路过 `loadView` / `pageDidAppear`，`artists` 已经是现算好的那一份，
+    /// 下面 `restoreSelection()` 立刻就能按 id 找到行。
+    func selectLibraryArtist(id: String) {
+        selectedID = id
         restoreSelection()
         if let selectedRow = leftTableView.selectedRowIndexes.first {
             leftTableView.scrollRowToVisible(selectedRow)
@@ -682,6 +683,28 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         guard let menu = actions.makeMenu() else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: anchor.bounds.midX, y: anchor.bounds.height + 2),
                    in: anchor)
+    }
+
+    /// 当前高亮的那一首。`selectedTrackID` 记的是 id，而「显示简介」要的是整条曲目——
+    /// 回资料库那份内存快照里取（这一页的行本来就全部出自它，`tracks(in:)` 也是从它派生）。
+    private func selectedTrack() -> Track? {
+        guard let selectedTrackID else { return nil }
+        return appState.library.libraryTracks.first { $0.id == selectedTrackID }
+    }
+
+    /// 「文件 ▸ 显示简介」（⌘I）。选择器与 `TrackTableViewController.amberGetInfo(_:)`
+    /// 同名，走的是同一条响应链——哪一页在前面就由哪一页接。
+    ///
+    /// 这一页从前没实现它，于是 ⌘I 在「资料库 › 艺人」上恒灰，而同一行右键里的
+    /// 「显示简介」是亮的（行菜单走 `TrackActions.libraryRow()`，不经响应链）
+    /// ——同一件事两个答案。
+    ///
+    /// **作用集是当前高亮的那一行**：这一页的音轨行同时只有一行选中
+    /// （`selectTrack(_:)` 一进一出），没有多选态要考虑，也就不必像
+    /// `TrackTableViewController` 那样为多选留一句「先只开第一首」。
+    @objc func amberGetInfo(_ sender: Any?) {
+        guard let track = selectedTrack() else { return }
+        AuxiliaryWindows.shared.showInfoPanel(tracks: [track])
     }
 
     /// 音轨行的选中落点：整页同时只有一行选中，刷新所有可见块。
@@ -2334,5 +2357,15 @@ private extension NSView {
             result.append(contentsOf: sub.subviews(ofType: type))
         }
         return result
+    }
+}
+
+@MainActor
+extension LibraryArtistsViewController: NSMenuItemValidation {
+    /// 「文件 ▸ 显示简介」只在有高亮行时可用；没有就整条变灰。
+    /// 其余菜单项这一页不接，照旧交回默认（`true`），与歌曲页同解。
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard item.action == MainMenu.Action.getInfo else { return true }
+        return selectedTrack() != nil
     }
 }
