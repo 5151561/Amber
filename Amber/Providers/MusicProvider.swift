@@ -25,30 +25,47 @@ enum ProviderError: Error, LocalizedError {
 }
 
 /// 统一的音乐源协议。实现均为无 UI 依赖的纯网络层，可在后台线程调用。
+///
+/// 每个 async 要求都标了 `@concurrent`：SE-0461 之后非隔离 async 函数默认**继承调用方的
+/// 隔离域**，而这一层的调用方几乎都是 `@MainActor` 的状态对象（`CatalogFeedModel`、
+/// `ArtistPageModel`、`AppState`…），不标的话取回来的 JSON 解析与整表映射就全都落在
+/// 主线程上——目录页一次并发十来个请求，那是要掉帧的。标上等于把这一层钉回协作线程池，
+/// 也就是 Swift 5 时代本来的跑法，只不过现在是写出来的而不是靠默认值。
 protocol MusicProvider: Sendable {
     var kind: ProviderKind { get }
 
+    @concurrent
     func searchTracks(keyword: String, limit: Int, offset: Int) async throws -> [Track]
+    @concurrent
     func searchAlbums(keyword: String, limit: Int, offset: Int) async throws -> [Album]
+    @concurrent
     func searchArtists(keyword: String, limit: Int, offset: Int) async throws -> [Artist]
+    @concurrent
     func searchPlaylists(keyword: String, limit: Int, offset: Int) async throws -> [Playlist]
+    @concurrent
     func searchMVs(keyword: String, limit: Int, offset: Int) async throws -> [MV]
 
     /// 目录页（主页/新发现/广播）的一个格子。**栏目结构照 Apple Music 写死在
     /// `CatalogPages` 里**，音源只按 slot 交数据；交不出来就返回`.empty`，
     /// 页面会把那一段整段省掉，不要为了填满而拿别的内容顶。
+    @concurrent
     func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult
 
     /// 分类浏览页（「探索更多」的落点）：某个歌单分类标签下的歌单。
     /// 标签本身来自 `catalogItems(.browseGroups)`，id 是音源自己的键。
+    @concurrent
     func playlists(tag: CatalogTagRef) async -> [Playlist]
 
+    @concurrent
     func playlistDetail(_ playlist: Playlist) async throws -> PlaylistDetail
+    @concurrent
     func albumDetail(_ album: Album) async throws -> AlbumDetail
+    @concurrent
     func artistDetail(_ artist: Artist) async throws -> ArtistDetail
 
     /// 相似艺人。音源交不出来（接口没有 / 未登录 / 出错）就返回空，
     /// 艺人页整段省掉——与 `catalogItems` 的`.empty` 同一个原则。
+    @concurrent
     func similarArtists(_ artist: Artist) async -> [Artist]
 
     /// 相似歌曲。自动连播（队列面板顶部那颗 ∞）用它续队列，**这是唯一的候选源**。
@@ -73,6 +90,7 @@ protocol MusicProvider: Sendable {
     /// 3. **「5 首放完就断」这个前提本身就不成立。** 种子跟着当前曲往前走
     ///    （`PlayerController.refillAutoplayIfNeeded`），每播一首新歌就再问一批 5 首，
     ///    这条路本来就是无限的——别再因为「量不够」把那两条加回来。
+    @concurrent
     func similarTracks(_ track: Track, limit: Int) async -> [Track]
 
     /// 这一首的流派（「显示简介 › 详细信息 › 类型」那一格）。
@@ -83,6 +101,7 @@ protocol MusicProvider: Sendable {
     ///
     /// 与 `similarArtists` 同一个口径：交不出来（没接口 / 没登录 / 出错）返回 nil，
     /// 面板那一格就留空——不编一个。
+    @concurrent
     func trackGenre(_ track: Track) async -> String?
 
     /// 这个音源能不能做自动连播（＝有没有 `similarTracks` 的接口）。
@@ -96,6 +115,7 @@ protocol MusicProvider: Sendable {
 
     /// 已登录账号在音源里的歌单（自建 + 收藏），进资料库的「播放列表」。
     /// 没登录、或这个音源在 Amber 里还没有登录能力时返回空。
+    @concurrent
     func accountPlaylists() async -> [Playlist]
 
     /// 解析可播放的流地址（匿名状态下 VIP/付费曲目会抛 unavailable）。
@@ -104,7 +124,9 @@ protocol MusicProvider: Sendable {
     /// 传了值就用这一档当**起点**，降级阶梯不变。下载要的是「下载」那一档
     /// （设置 › 播放 › 下载 + 下载杜比全景声，两者与流播放各夹各的），
     /// 所以下载那条 resolver 显式传档，见 `AppState.downloadQuality`。
+    @concurrent
     func trackStreamURL(track: Track, quality: StreamQuality?) async throws -> URL
+    @concurrent
     func lyrics(track: Track) async throws -> [LyricLine]
 
     /// MV 的可播地址。`maxHeight` 是画面高度上限（设置 › 播放 › 视频质量），
@@ -113,6 +135,7 @@ protocol MusicProvider: Sendable {
     /// 两家的降级脾气不一样，所以这条由各自实现，不做统一的阶梯：
     /// - QQ 一次把所有档位（`filetype`）连地址一起发回来，客户端自己挑（`MVVariant.pick`）；
     /// - 网易云跟它的取流一样**服务端自己降级**，问一次就够，回来的 `r` 才是真实档位。
+    @concurrent
     func mvStreamURL(mv: MV, maxHeight: Int?) async throws -> URL
 }
 

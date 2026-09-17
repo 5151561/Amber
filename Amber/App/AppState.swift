@@ -84,8 +84,15 @@ final class AppState: ObservableObject {
     private var toastTask: Task<Void, Never>?
     /// 「文件 › 导入…」。跑起来之后菜单项置灰（见 `AppDelegate.validateMenuItem`）：
     /// 一批还没导完又开一批，两批会抢同一个「媒体」文件夹里的落点。
-    private lazy var importService: ImportService = {
-        let service = ImportService(library: library, downloads: downloads)
+    ///
+    /// 装配挪进 `makeImportService()` 而不是写成 `= { … }()`：`lazy var` 的初始化式
+    /// 在隔离检查里算默认参数，而这段里接了标 `@concurrent` 的音源方法，
+    /// 于是被判成「既是主 actor 隔离又是 @concurrent」。挪成一次方法调用就没这问题。
+    private lazy var importService: ImportService = makeImportService()
+
+    private func makeImportService() -> ImportService {
+        let service = ImportService(library: library, downloads: downloads,
+                                    settings: AppSettings.shared)
         service.defaultKind = { [weak self] in
             self?.providerSettings.defaultProvider ?? .qq
         }
@@ -100,7 +107,7 @@ final class AppState: ObservableObject {
             return found?.first?.artworkURL
         }
         return service
-    }()
+    }
     @Published private(set) var isImporting = false
 
     /// `defaults` 一路传给四个偏好 store。默认是`.standard`，只有测试会换：
