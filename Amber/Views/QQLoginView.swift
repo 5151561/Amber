@@ -7,7 +7,7 @@ import SwiftUI
 /// 一个 `NSHostingController`。**`@Environment(\.dismiss)` 在这种 sheet 里是空操作**
 /// ——那扇窗不是 SwiftUI 呈现的，环境里没有对应的 action，所以关自己走 `onDismiss`。
 struct QQLoginView: View {
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     @Environment(QQLoginStore.self) private var qqLogin
 
     /// 关掉这扇面板。给了就用给的（AppKit 宿主传的是 `endSheet`）；

@@ -26,6 +26,7 @@ final class MainSplitViewController: NSSplitViewController {
     /// 待播清单换成 AppKit 之后它有滚动位置、选区、定时器，抽换 `rootView` 装不下。
     let inspectorContainer: InspectorContainerViewController
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
     /// 我们自己收合面板时置位，免得 `splitViewDidResizeSubviews` 把这一下回灌进模型。
     private var isSyncingInspector = false
 
@@ -83,13 +84,9 @@ final class MainSplitViewController: NSSplitViewController {
         // `isInspectorOpen` 是主窗这一扇「面板列开着没有」。任一变了都重推一次，
         // 开合走 animator、「减弱动态效果」时直接到位。
         //
-        // `@Published` 是在 **willSet** 里发的，同步读回属性拿到的是旧值——所以
-        // 先 `receive(on:)` 落到下一轮再读（与两个迷你播放器里的订阅同一条注意事项）。
-        appState.$inspectorMode.removeDuplicates().map { _ in () }
-            .merge(with: appState.$isInspectorOpen.removeDuplicates().map { _ in () })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.syncInspector() }
-            .store(in: &cancellables)
+        observers.observeAny({ [appState] in (appState.inspectorMode, appState.isInspectorOpen) }) {
+            [weak self] in self?.syncInspector()
+        }
     }
 
     // MARK: - 状态

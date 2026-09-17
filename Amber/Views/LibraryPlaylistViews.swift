@@ -24,7 +24,7 @@ struct LibraryPlaylistMenu: View {
     /// 详情页头的 ••• 里不重复摆播放键（旁边就是播放与随机播放）。
     var includesPlayback = true
 
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     @Environment(LibraryStore.self) private var library
 
     var body: some View {

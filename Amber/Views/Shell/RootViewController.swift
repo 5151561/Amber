@@ -26,6 +26,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
     private var miniPlayer: NSView?
     private let toast = ToastView()
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
     private var nameAlertShown = false
 
     init(appState: AppState) {
@@ -77,28 +78,21 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
             toast.topAnchor.constraint(equalTo: view.topAnchor, constant: 44),
         ])
 
-        appState.$toastMessage
-            .removeDuplicates()
-            .sink { [weak self] message in self?.toast.show(message) }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.toastMessage }) { [weak self] message in
+            self?.toast.show(message)
+        }
 
-        appState.$showingNowPlaying
-            .removeDuplicates()
-            .sink { [weak self] presented in
-                self?.nowPlayingController.setPresented(presented, animated: true)
-            }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.showingNowPlaying }) { [weak self] presented in
+            self?.nowPlayingController.setPresented(presented, animated: true)
+        }
 
         // 播放列表命名（改名 / 新建）：侧栏行、网格卡、详情页头、⌘N 都只登记意图，
         // 弹窗统一在这里。旧版是 MainView 上的 `.alert`（挂在菜单里弹不出来——
         // 菜单一关那棵子树就没了）。
-        appState.$playlistNamePrompt
-            .removeDuplicates()
-            .sink { [weak self] prompt in
-                guard let self, let prompt else { return }
-                self.presentPlaylistNameAlert(prompt)
-            }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.playlistNamePrompt }) { [weak self] prompt in
+            guard let self, let prompt else { return }
+            self.presentPlaylistNameAlert(prompt)
+        }
     }
 
     override func viewDidLayout() {

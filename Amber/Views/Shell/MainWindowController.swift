@@ -93,12 +93,12 @@ final class MainWindowController: NSWindowController {
             self?.refreshPageToolbar()
         }
         // 「播放中」展开时页面项全部让位（Music 那时工具栏是空的），红绿灯照旧。
-        // 用推来的值，不回读属性：`@Published` 在 willSet 发布，回读拿到的是上一次的值，
-        // 开合一次之后工具栏的显隐就整个反过来。
-        appState.$showingNowPlaying
-            .removeDuplicates()
-            .sink { [weak self] showing in self?.applyToolbarVisibility(hidden: showing) }
-            .store(in: &cancellables)
+        // 用推来的值而不是回读属性，这条习惯保留；但原来的理由（`@Published` 在 willSet
+        // 发布，回读拿到上一次的值、开合一次显隐就整个反过来）已经不成立了——
+        // `Observations` 在值落定之后才发。
+        observers.observe({ [appState] in appState.showingNowPlaying }) { [weak self] showing in
+            self?.applyToolbarVisibility(hidden: showing)
+        }
         rebuildToolbar()
     }
 

@@ -150,10 +150,9 @@ final class SidebarViewController: NSViewController {
         // **必须用推下来的值**：`@Published` 在 willSet 发布，这时回读
         // `appState.sidebarSelection` 拿到的还是上一项，高亮就会永远慢一拍
         // （点主页再点新发现，亮的是主页）。
-        appState.$sidebarSelection
-            .removeDuplicates()
-            .sink { [weak self] selection in self?.reloadEntries(selection: selection) }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.sidebarSelection }) { [weak self] selection in
+            self?.reloadEntries(selection: selection)
+        }
         // 账号那一行跟着登录态与账号资料翻（名字、头像）。
         // 两条都用 `observeNow`：原来没有 `dropFirst`，订阅当场就拿当前登录态刷一次账号行。
         observers.observeNow({ [weak appState] in appState?.qqLogin.credential }) { [weak self] _ in
@@ -541,7 +540,7 @@ final class SidebarOutlineController: NSObject, NSOutlineViewDataSource, NSOutli
     func rowMenu(atRow row: Int) -> NSMenu? {
         guard case .playlist(let playlist) = entry(atRow: row) else { return nil }
         return NSHostingMenu(rootView: LibraryPlaylistMenu(playlist: playlist)
-            .environmentObject(appState)
+            .environment(appState)
             .environment(appState.library))
     }
 

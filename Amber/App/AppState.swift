@@ -8,14 +8,15 @@ import SwiftUI
 
 /// 全局应用状态：provider 注册表、播放器、资料库、导航与提示。
 @MainActor
-final class AppState: ObservableObject {
+@Observable
+final class AppState {
 
-    @Published var sidebarSelection: SidebarItem? = .home
+    var sidebarSelection: SidebarItem? = .home
     // 侧栏的显示/隐藏不再由 AppState 持有。骨架换成 AppKit 之后，收起态是
     // `NSSplitViewItem.isCollapsed` 自己的事，⌃⌘S 直接落到分栏控制器的
     // `toggleSidebar(_:)`（AppKit 的标准动作，连折叠动画和 autosave 一起给）。
     // 再在这里放一份 @Published 只会变成两处真值，早晚对不上。
-    @Published var selectedProvider: ProviderKind
+    var selectedProvider: ProviderKind
     /// 面板（歌词 / 待播清单）显示**哪一档**。
     ///
     /// **全局一份、永不为 nil**：收起期间也记着上次那一档，下次在任何一个宿主里
@@ -25,27 +26,27 @@ final class AppState: ObservableObject {
     /// `PlayerInspector?` 里（nil = 收起），于是「收起」顺手把档位也抹掉，
     /// 而各宿主为了不互相掀开面板只好单向同步，长期对不上
     /// （design-ref/reactive-ui-review.md §2.1「多份真相」）。
-    @Published var inspectorMode: PlayerInspector = .lyrics
+    var inspectorMode: PlayerInspector = .lyrics
     /// **主窗**那条面板列开着没有。真正的收合是 `NSSplitViewItem.isCollapsed`，
     /// 这一位是它的模型侧对应物：胶囊上那两颗键的高亮、⌃⌘-那类命令都读它，
     /// 用户直接拖收分隔线时由 `MainSplitViewController` 回灌（AppKit 不为拖动通知模型）。
-    @Published var isInspectorOpen = false
-    @Published var showingNowPlaying = false
-    @Published var showingQQLogin = false
-    @Published var toastMessage: String?
+    var isInspectorOpen = false
+    var showingNowPlaying = false
+    var showingQQLogin = false
+    var toastMessage: String?
     /// 播放列表命名弹窗的待办。弹窗由 `RootViewController` 统一挂着——右键菜单一关，
     /// 菜单内容那棵子树就没了，alert 挂在菜单里弹不出来，所以这里只登记意图。
-    @Published var playlistNamePrompt: PlaylistNamePrompt?
+    var playlistNamePrompt: PlaylistNamePrompt?
     /// 菜单里的「前往专辑 / 前往艺人」要从任意位置推一层详情页，而导航栈由 MainView 持有；
     /// 这里只登记意图，MainView 收到后入栈并清空（Music 的 doGoToAlbum:/doGoToArtist:）。
-    @Published var pendingRoute: Route?
+    var pendingRoute: Route?
     /// 资料库「艺人」页的待选行（`Artist.libraryIDPrefix + 艺人名`）。
     ///
     /// 搜索的资料库范围点艺人时，Music 不是推一层艺人详情页，而是**直接跳回资料库的
     /// 「艺人」目录并选中那一行**（实测截图：左列表选中「告五人」、右侧是该艺人的专辑块）。
     /// 那一页的选中态是页面自己的 `@State`，跨页传不过去，所以在这里登记一次意图，
     /// `LibraryArtistsPage` 收到就选中并清空。
-    @Published var pendingLibraryArtistID: String?
+    var pendingLibraryArtistID: String?
     /// 启动参数 `-search <词>` 带进来的词条。搜索页建起来时取一次就清掉。
     /// 与 `-albums` / `-home` 那一批同类：搜索框在标题栏上，实机验收敲不进去。
     var launchSearchTerm: String?
@@ -94,7 +95,7 @@ final class AppState: ObservableObject {
     /// 装配挪进 `makeImportService()` 而不是写成 `= { … }()`：`lazy var` 的初始化式
     /// 在隔离检查里算默认参数，而这段里接了标 `@concurrent` 的音源方法，
     /// 于是被判成「既是主 actor 隔离又是 @concurrent」。挪成一次方法调用就没这问题。
-    private lazy var importService: ImportService = makeImportService()
+    @ObservationIgnored private lazy var importService: ImportService = makeImportService()
 
     private func makeImportService() -> ImportService {
         let service = ImportService(library: library, downloads: downloads,
@@ -114,7 +115,7 @@ final class AppState: ObservableObject {
         }
         return service
     }
-    @Published private(set) var isImporting = false
+    private(set) var isImporting = false
 
     /// `defaults` 一路传给四个偏好 store。默认是`.standard`，只有测试会换：
     /// 单元测试跑在 App 宿主进程里，`UserDefaults.standard` 就是`com.changlepan.Amber`

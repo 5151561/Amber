@@ -401,25 +401,18 @@ class CatalogPageViewController: ContentPageController {
             }
 
             // 别处改了音乐源（设置窗、另一页）→ 胶囊的选中段跟着走。
-            appState.$selectedProvider
-                .removeDuplicates()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] kind in
-                    guard let self, let control = self.providerControl else { return }
-                    let kinds = self.appState.providerSettings.orderedEnabled
-                    if let index = kinds.firstIndex(of: kind) { control.selectedSegment = index }
-                }
-                .store(in: &cancellables)
+            observers.observeNow({ [appState] in appState.selectedProvider }) { [weak self] kind in
+                guard let self, let control = self.providerControl else { return }
+                let kinds = self.appState.providerSettings.orderedEnabled
+                if let index = kinds.firstIndex(of: kind) { control.selectedSegment = index }
+            }
 
-            // 换音源就重拉。`@Published` 在 willSet 发布，所以一律先`receive(on:)` 落到
-            // 下一轮再读属性（否则 `appState.selectedProvider` 还是旧值）；
-            // 首值由下面那句 `reload()` 负责，订阅这边`dropFirst()` 掉。
-            appState.$selectedProvider
-                .removeDuplicates()
-                .dropFirst()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.model.reload() }
-                .store(in: &cancellables)
+            // 换音源就重拉。首值由下面那句 `reload()` 负责，所以用丢首值的 `observe`。
+            //（原先还要多挂一跳 `receive(on:)`，因为 `@Published` 在 willSet 发布、
+            // 当场回读 `appState.selectedProvider` 还是旧值；现在不需要了。）
+            observers.observe({ [appState] in appState.selectedProvider }) { [weak self] _ in
+                self?.model.reload()
+            }
         }
 
         // 听歌记账动了「最近播放」的台账 → 只重算本地那两段。根页是缓存的，

@@ -391,12 +391,9 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         // 一个快照：与原来等价，而与它们无关的写入不再把这一页叫醒。
         observers.observeAny({ [model] in (model.favoritesOnly, model.search, model.sort) }) { [weak self] in self?.setNeedsRefresh() }
 
-        appState.$pendingLibraryArtistID
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] pending in
-                if pending != nil { self?.consumePendingSelection() }
-            }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.pendingLibraryArtistID }) { [weak self] pending in
+            if pending != nil { self?.consumePendingSelection() }
+        }
 
         // 这一页真读的只有「哪首在播、播没播」，不是整台播放器。
         observers.observeAny({ [appState] in

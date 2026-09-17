@@ -540,7 +540,7 @@ struct PlaybackSettingsPane: View {
 /// 音源页（Amber 比 Music 多出来的那一张）：开关每个音源、选默认源、看各源的账号状态。
 struct ProviderSettingsPane: View {
     @Bindable var model: SettingsDraftModel
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     @Environment(PlayerController.self) private var player
     @Environment(LibraryStore.self) private var library
     @Environment(QQLoginStore.self) private var qqLogin
@@ -614,7 +614,7 @@ struct ProviderSettingsPane: View {
             switch which {
             case .qq:
                 QQLoginView(onDismiss: { loginSheet = nil })
-                    .environmentObject(appState)
+                    .environment(appState)
                     .environment(player)
                     .environment(library)
                     .environment(qqLogin)
@@ -904,7 +904,7 @@ private struct ImportSettingsView: View {
 /// 三颗还原键**按下即生效**，不等「好」——Music 那边也是当场就做。
 struct AdvancedSettingsPane: View {
     @Bindable var model: SettingsDraftModel
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     /// 遥控器（iOS「遥控」App）的配对与广播。单例：这一行要显示的配对数在设置窗里
     /// 就得能看见，而设置窗这棵树上只有 `AppState`——不为一行界面逼别人的文件先长属性。
     private let remote = RemoteControlServer.shared
