@@ -58,12 +58,12 @@ final class AppState: ObservableObject {
     let downloads: DownloadStore
     /// 默认输出设备的画像。「杜比全景声＝自动」要靠它决定这台输出该不该取沉浸声
     /// （见 `effectiveQuality`）。它自己盯着 CoreAudio 的默认设备与声道配置。
-    let audioOutput = AudioOutputMonitor()
+    let audioOutput: AudioOutputMonitor
     /// 每首歌量到的响度（设置 › 播放 ›「音量平衡」）。播放器边播边量，写回这里；
     /// 已下载的文件在落地时离线量。**不是** ObservableObject，见 `LoudnessStore` 的注释。
-    let loudness = LoudnessStore()
-    /// 「显示简介」面板的编辑结果（另存 `trackinfo.json`，理由见`TrackInfoStore`）。
-    let trackInfo = TrackInfoStore.shared
+    let loudness: LoudnessStore
+    /// 「显示简介」面板的编辑结果（主库的 `track_info` / `track_resume` 两张表）。
+    let trackInfo: TrackInfoStore
     let qqLogin: QQLoginStore
     let neteaseLogin: NeteaseLoginStore
     let providerSettings: ProviderSettingsStore
@@ -107,17 +107,28 @@ final class AppState: ObservableObject {
     /// 单元测试跑在 App 宿主进程里，`UserDefaults.standard` 就是`com.changlepan.Amber`
     /// 本人那份偏好，测试里随手改一下音质就会写进开发者真实的设置（见 `QQLoginStore`）。
     init(defaults: UserDefaults = .standard) {
-        // **必须在任何开库的 store 之前。** 四个 store 将来都开同一份 `library.sqlite`，
+        // **必须在任何开库的 store 之前。** 那几个 store 开的是同一份 `library.sqlite`，
         // 而「从旧 JSON 把库造出来」只有这一次机会——晚一步，第一个 store 就会先
-        // 建出一个空库，迁移器看见库在了就什么都不做，用户的资料库原地变空。
+        // 建出一个空库，迁移器看见库在了就什么都不做（`runIfNeeded` 的幂等判据只有
+        // 「库文件在，一切免谈」这一条），用户的 `library.json` 原封不动躺在那儿，
+        // 而 App 打开是一个**空资料库**。
         // 放在这里的第二个理由：只有这一处还有资格把失败**告诉用户**（见函数注释）。
         //
-        // ⚠️ **这里的「之前」只管得着 init 体里那几行。** `loudness` / `trackInfo` /
-        // `audioOutput` 是带默认值的存储属性，Swift 会在 init 体**跑起来之前**就把它们造好。
-        // 这一阶段它们还各自读各自的 JSON，碰不到主库，所以现在是对的；
-        // 等 `TrackInfoStore` / `LoudnessStore` 并进主库（阶段 4）那一天，
-        // 它们的默认值初始化必须一起挪进 init 体里、挪到这一行后面。
+        // ⚠️ **所以这个类里一个 store 都不许写成「带默认值的存储属性」。**
+        // Swift 会在 init 体**跑起来之前**就把那些默认值造好，也就是在这一行之前。
+        // 阶段 4 把 `TrackInfoStore` / `LoudnessStore` 并进主库那天，
+        // `loudness` / `trackInfo` / `audioOutput` 三行正是为这个从声明处挪进来的
+        //（`TrackInfoStore.shared` 是懒加载的单例，第一次**取**它才构造，所以挪的是
+        // 那次取值本身）。往这个类里加新 store 时照做：声明只写类型，构造写在下面。
+        //
+        // 这条顺序由 `AmberDatabaseMigrationTests` 的
+        // `testStoreConstructedBeforeMigrationStillEndsUpWithAFullDatabase` 钉着：
+        // 万一哪天又有人把某个 store 排到了前面，代价也只是少一次警告——
+        // 凡是开库的 store，`init` 自己都会先把迁移跑到，不会再有「资料库静默变空」。
         Self.prepareDatabase()
+        audioOutput = AudioOutputMonitor()
+        loudness = LoudnessStore()
+        trackInfo = TrackInfoStore.shared
         songsTable = SongsTableSettings(defaults: defaults)
         listViewSize = ListViewSizeStore(defaults: defaults)
         let neteaseAPI = NeteaseAPI()

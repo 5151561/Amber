@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 
 // MARK: - 面板字段
@@ -111,10 +110,16 @@ struct TrackInfo: Codable, Equatable, Sendable {
 
     init() {}
 
-    /// **手写 `init(from:)` 而不是用合成的**：合成的`Decodable` 对非可选属性缺键会直接
-    /// 抛错（`LibraryStore.Storage` 那一串`decodeIfPresent` 注释是同一个坑）。面板字段
-    /// 往后必然还要加，逐条 `decodeIfPresent` 回落默认值，旧存档才不会整份解不出来
-    /// ——整份解不出来 ＝ 用户手打的注释、自定义歌词一次全丢。
+    /// **只剩迁移器在用**：面板的存储格式已经是 `track_info` 那三十二列，这份 `Codable`
+    /// 现在唯一的消费者是 `AmberDatabaseMigration` 读那一次旧 `trackinfo.json`
+    /// （以及钉住它的那几条用例）。
+    ///
+    /// 手写 `init(from:)` 而不是用合成的：合成的 `Decodable` 对非可选属性缺键会直接抛错，
+    /// 而旧存档正是「上一版 Amber 写的、少几个后来才加的键」那种——整份解不出来
+    /// ＝ 用户手打的注释、自定义歌词在迁移那一刻一次全丢。所以这一串不能删。
+    ///
+    /// **但新加的面板字段不要再往这里加一行**：它们只会出现在升级链的 `ADD COLUMN` 里，
+    /// 旧 JSON 里永远不可能有（那份文件在迁移那天就停止生长了）。
     init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         /// `try?` 套在`decodeIfPresent` 外面会多一层可选（`String??`），逐个拆平。
@@ -278,15 +283,20 @@ struct PlaybackOverrides: Equatable, Sendable {
 
 // MARK: - 存档
 
-/// 「显示简介」面板的编辑结果。
+/// 「显示简介」面板的编辑结果，落在主库的 `track_info` 与 `track_resume` 两张表里。
 ///
-/// **另存一份 `trackinfo.json`，不并进`library.json`**：面板有三十多个字段、
-/// 注释与自定义歌词还能长到几 KB，塞进 `LibraryStore.Storage` 就意味着每一次
-/// 心水 / 评分 / 播放计数（这些都走同一个 `save()`）都要把整份简介重新编码写盘一遍。
-/// 两份表的改动频率差了两个数量级，分开写盘各自防抖才对得上。
+/// **从前另存一份 `trackinfo.json`**，理由是「面板三十多个字段、注释与自定义歌词
+/// 能长到几 KB，塞进 `library.json` 就意味着每一次心水 / 评分 / 播放计数都要把整份
+/// 简介重新编码写盘一遍」——那是**整份重写**时代的账：两份表改动频率差两个数量级，
+/// 只能靠分成两个文件、各自防抖来隔开。
 ///
-/// 落盘照抄 `LibraryStore.save()` / `LoudnessStore`：500 ms 防抖 + 串行写盘队列 +
-/// 退出前同步兜底。
+/// 并进主库之后这条理由自然消失：写的粒度是**那一行**，改一首歌的 bpm 只重写那一行，
+/// 别人的注释、别人的自定义歌词一个字节都不碰，连同一首歌的那几 KB 歌词也只在
+/// 它自己被改时才重写。三十多个字段因此**逐列展开、不存整块 JSON**——存整块的话
+/// 「改一个 bpm」又变回「把这一首的几 KB 歌词重写一遍」，等于把刚拆掉的那笔写放大
+/// 按首搬了回来。
+///
+/// 断点（`track_resume`）单开一张表，理由见 schema 里那段：那张是设置，这张是状态。
 @MainActor
 final class TrackInfoStore: ObservableObject {
 
@@ -295,61 +305,124 @@ final class TrackInfoStore: ObservableObject {
     /// 编辑过的那些曲目。键是 `track.id`。
     /// 面板一次只开一首，改完要让歌曲表跟着重画——所以这一份是 `@Published`
     /// （与 `LibraryStore.ratings` 同性质，不是逐行热查的那一类）。
+    ///
+    /// **内存这一份与 `track_info` 那一行逐字相同**：`title` / `artist` / `album` /
+    /// `trackNumber` / `discNumber` 五项在两边都是空的，由 `info(for:)` 每次从 `Track`
+    /// 现取（见 `stored(_:)`）。留在内存里就是第二份真值，而且是注定会发霉的那一份。
     @Published private(set) var infos: [String: TrackInfo] = [:]
 
     /// 「记住播放位置」记下的断点。**不进 `TrackInfo` 本体**：那是设置，这是状态——
     /// 混在一起的话，面板每次比对「有没有改」都会被播放进度搅成「改了」。
     private(set) var resumePositions: [String: TimeInterval] = [:]
-    /// 上一次真落盘时各首的断点。播放中每 0.1 s 来一次，挪得不够远就不排写盘。
+    /// 上一次真写进 `track_resume` 的各首断点。播放中每 0.1 s 来一次，挪得不够远就不写。
     private var persistedResumePositions: [String: TimeInterval] = [:]
-    /// 断点挪过这么多秒才值得再写一次盘。[推]
+    /// 断点挪过这么多秒才值得再写一次库。[推]
     private static let resumeSaveStep: TimeInterval = 5
 
-    private let fileURL: URL
-    private var pendingSave: Task<Void, Never>?
-    private var terminationObserver: (any NSObjectProtocol)?
+    /// 主库连接。**nil ＝ 开库这一步就失败了**（磁盘满、目录没权限）：内存这一份照常能用，
+    /// 只是这一程的改动落不了盘。与 `LibraryStore.database` 同解。
+    private let database: AmberDatabase?
 
-    private static let saveDebounce: UInt64 = 500_000_000
-    private static let writeQueue = DispatchQueue(label: "Amber.TrackInfoStore.write", qos: .utility)
-
-    private struct Storage: Codable {
-        var infos: [String: TrackInfo] = [:]
-        var resumePositions: [String: TimeInterval]?
-    }
-
-    /// `directory` 供测试注入临时目录；默认落`~/Library/Application Support/Amber/`
-    /// （与 `library.json` 同一个目录，定位方式照抄`LibraryStore.init`）。
+    /// `directory` 供测试注入临时目录；默认落`~/Library/Application Support/Amber/`。
+    /// 解析规则由 `AmberDatabase.shared(directory:)` 一处管着——同一个目录拿到同一条连接，
+    /// 四个 store 因此共用同一份 `library.sqlite`。
     init(directory: URL? = nil) {
-        let support = directory
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                .first!.appendingPathComponent("Amber", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        fileURL = support.appendingPathComponent("trackinfo.json")
+        // 开库之前先把迁移跑到。生产路径上 `AppState` 已经先跑过一次（那一次才有窗口
+        // 可以弹错，见 `AppState.prepareDatabase`），所以这里永远撞上「库已存在」那条
+        // 幂等分支；留着这一行是为了**谁先开库谁负责迁移**——哪天有人又把某个 store
+        // 排到了 `prepareDatabase()` 前面，代价也只是少一次警告，而不是用户的资料库
+        // 被一个空库顶掉。`mediaFolder` 原样跟着 `directory` 走，理由见 `LibraryStore.init`。
+        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                renameLegacyOnSuccess: true)
+        database = try? AmberDatabase.shared(directory: directory)
         load()
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.flushNow() }
-        }
+        // **没有自己的 willTerminate 观察者了**（全 App 只剩 `AmberDatabase` 那一个）。
+        // 每一次改动当场落库，退出前唯一还欠着的是被 5 秒台阶闸拦下的那点断点。
+        database?.addTerminationTask { [weak self] in self?.writePendingResumePositions() }
     }
 
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
-    }
+    // MARK: - 载入
+
+    /// 载入成功了没有。**没成功就一个字都不许往回写**——与 `LibraryStore.isLoaded` 同解：
+    /// 读不出来的时候往回写，等于拿空的覆盖掉好的。
+    private var isLoaded = false
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        let decoder = JSONDecoder()
-        if let storage = try? decoder.decode(Storage.self, from: data) {
-            infos = storage.infos
-            resumePositions = storage.resumePositions ?? [:]
-        } else if let bare = try? decoder.decode([String: TrackInfo].self, from: data) {
-            // 裸字典格式的存档（契约文档里写的那一版）。读得进来就认，下次写成带壳的。
-            infos = bare
+        guard let db = database?.sqlite else { return }
+        do {
+            try loadFromDatabase(db)
+        } catch {
+            NSLog("[TrackInfoStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
+                  String(describing: error))
         }
-        persistedResumePositions = resumePositions
+    }
+
+    /// **先全读进局部变量，最后一次性赋值**：读到一半抛错时一个属性都不许动过。
+    private func loadFromDatabase(_ db: SQLiteDatabase) throws {
+        var loadedInfos: [String: TrackInfo] = [:]
+        for row in try db.query(Self.infoSelect, [], { Self.decodeInfo($0) }) {
+            loadedInfos[row.id] = row.info
+        }
+        var loadedResume: [String: TimeInterval] = [:]
+        for row in try db.query("SELECT track_id, position FROM track_resume", [],
+                                { (id: $0.text(0), position: $0.double(1)) }) {
+            loadedResume[row.id] = row.position
+        }
+        infos = loadedInfos
+        resumePositions = loadedResume
+        persistedResumePositions = loadedResume
+        isLoaded = true
+    }
+
+    /// 列序与 `Self.infoUpsert` 逐列对齐，改一处必须改另一处（`Row` 是按序号取的）。
+    private static let infoSelect = """
+        SELECT track_id, album_artist, composer, show_composer_in_all_views, grouping, genre,
+               year, track_count, disc_count, is_compilation, bpm, comments,
+               use_work_and_movement, work_name, movement_name, movement_number, movement_count,
+               media_kind, start_time_enabled, start_time, stop_time_enabled, stop_time,
+               remember_playback_position, skip_when_shuffling, volume_adjustment, equalizer_preset,
+               sort_title, sort_album, sort_album_artist, sort_artist, sort_composer, custom_lyrics
+        FROM track_info
+        """
+
+    private static func decodeInfo(_ row: Row) -> (id: String, info: TrackInfo) {
+        var info = TrackInfo()
+        // title / artist / album / trackNumber / discNumber 五项表里**没有列**，
+        // 这里也就不填——`info(for:)` 每次从 `Track` 现取（见 schema 注释）。
+        info.albumArtist = row.text(1)
+        info.composer = row.text(2)
+        info.showComposerInAllViews = row.bool(3)
+        info.grouping = row.text(4)
+        info.genre = row.text(5)
+        info.year = row.optInt(6).map(Int.init)
+        info.trackCount = row.optInt(7).map(Int.init)
+        info.discCount = row.optInt(8).map(Int.init)
+        info.isCompilation = row.bool(9)
+        info.bpm = row.optInt(10).map(Int.init)
+        info.comments = row.text(11)
+        info.useWorkAndMovement = row.bool(12)
+        info.workName = row.text(13)
+        info.movementName = row.text(14)
+        info.movementNumber = row.optInt(15).map(Int.init)
+        info.movementCount = row.optInt(16).map(Int.init)
+        info.mediaKind = TrackInfo.MediaKind(rawValue: row.text(17)) ?? .music
+        info.startTimeEnabled = row.bool(18)
+        info.startTime = row.double(19)
+        info.stopTimeEnabled = row.bool(20)
+        // 三态：NULL ＝ 用曲目原时长，不是 0 秒。
+        info.stopTime = row.optDouble(21)
+        info.rememberPlaybackPosition = row.bool(22)
+        info.skipWhenShuffling = row.bool(23)
+        info.volumeAdjustment = Int(row.int(24))
+        // 同上：NULL ＝「无」。
+        info.equalizerPreset = row.optText(25)
+        info.sortTitle = row.text(26)
+        info.sortAlbum = row.text(27)
+        info.sortAlbumArtist = row.text(28)
+        info.sortArtist = row.text(29)
+        info.sortComposer = row.text(30)
+        info.customLyrics = row.optText(31)
+        return (row.text(0), info)
     }
 
     // MARK: - 读
@@ -387,19 +460,34 @@ final class TrackInfoStore: ObservableObject {
     /// 提交面板的编辑。写两处：
     /// ① Track 本体有的字段（title/artistName/albumName/trackNumber/discNumber）
     ///    走 `LibraryStore.updateTrack(id:transform:)` 改资料库里那份（四处数组 + 播放列表）；
-    /// ② 其余落进自己这份存档。与 `info(for:)` 完全一致时什么都不做。
+    /// ② 其余落进 `track_info` 里**那一行**。与 `info(for:)` 完全一致时什么都不做。
     func update(_ info: TrackInfo, for track: Track, library: LibraryStore) {
         guard info != self.info(for: track) else { return }
         library.updateTrack(id: track.id) { info.apply(to: &$0) }
-        infos[track.id] = info
-        save()
+        let stored = Self.stored(info)
+        infos[track.id] = stored
+        persist("简介") { db in try db.run(Self.infoUpsert, Self.binds(stored, id: track.id)) }
     }
 
     /// 面板上按「恢复」/ 清空这一首的全部编辑（Track 本体那五项不动——它们已经写进
     /// 资料库了，撤不回来）。
     func clear(for id: String) {
         guard infos.removeValue(forKey: id) != nil else { return }
-        save()
+        persist("清空简介") { db in
+            try db.run("DELETE FROM track_info WHERE track_id = ?", [id])
+        }
+    }
+
+    /// 面板交上来的那一份里，Track 本体那五项抹掉之后的样子——也就是 `track_info`
+    /// 那一行的样子。它们的权威在资料库里（`apply(to:)` 刚写回去），存第二份只会发霉。
+    private static func stored(_ info: TrackInfo) -> TrackInfo {
+        var stored = info
+        stored.title = ""
+        stored.artist = ""
+        stored.album = ""
+        stored.trackNumber = nil
+        stored.discNumber = nil
+        return stored
     }
 
     // MARK: - 记住播放位置
@@ -407,53 +495,123 @@ final class TrackInfoStore: ObservableObject {
     func resumePosition(for id: String) -> TimeInterval? { resumePositions[id] }
 
     /// 记 / 清一首的断点。播放器每 0.1 s 来一次，所以这里自己把写盘拦下来：
-    /// 内存里随时是新的，只有挪过 `resumeSaveStep` 秒或者被清掉时才排一次落盘。
-    /// （退出前 `flushNow` 会把最后那一点补上，见`init` 里的 willTerminate。）
+    /// 内存里随时是新的，只有挪过 `resumeSaveStep` 秒或者被清掉时才写一次。
+    /// （退出前那道台阶闸拦下的最后一点由 `writePendingResumePositions` 补上，
+    /// 见 `init` 里登记的收尾。）
+    ///
+    /// **这道闸一个字没改**：从 JSON 换到 SQL 只换了「写」——从前是排一次整份重写，
+    /// 现在是一条单行 UPSERT。
     func setResumePosition(_ seconds: TimeInterval?, for id: String) {
         guard let seconds, seconds.isFinite, seconds > 0 else {
             guard resumePositions.removeValue(forKey: id) != nil else { return }
             persistedResumePositions.removeValue(forKey: id)
-            save()
+            persist("清断点") { db in
+                try db.run("DELETE FROM track_resume WHERE track_id = ?", [id])
+            }
             return
         }
         resumePositions[id] = seconds
         let persisted = persistedResumePositions[id]
         guard persisted == nil || abs(seconds - persisted!) >= Self.resumeSaveStep else { return }
         persistedResumePositions[id] = seconds
-        save()
+        persist("断点") { db in try Self.writeResume(seconds, id: id, in: db) }
     }
 
-    // MARK: - 落盘
+    /// 台阶闸拦下的那一点（内存比表新的全部断点）补写下去。
+    ///
+    /// 退出前跑一次（见 `init`），于是「放到 2:03 退出、再打开」恢复到的是 2:03 而不是
+    /// 上一格台阶的 1:58——这与从前 `flushNow` 在 `willTerminate` 里整份写下去是同一件事，
+    /// 只是现在只写真的动过的那几行。
+    private func writePendingResumePositions() {
+        let pending = resumePositions.filter { persistedResumePositions[$0.key] != $0.value }
+        guard !pending.isEmpty else { return }
+        persist("补断点") { db in
+            for (id, seconds) in pending { try Self.writeResume(seconds, id: id, in: db) }
+        }
+        persistedResumePositions = resumePositions
+    }
 
-    private func save() {
-        pendingSave?.cancel()
-        pendingSave = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.saveDebounce)
-            guard !Task.isCancelled, let self else { return }
-            self.pendingSave = nil
-            let storage = self.snapshot()
-            let url = self.fileURL
-            Self.writeQueue.async { Self.write(storage, to: url) }
+    private static func writeResume(_ seconds: TimeInterval, id: String,
+                                    in db: SQLiteDatabase) throws {
+        try db.run("""
+            INSERT INTO track_resume (track_id, position) VALUES (?,?)
+            ON CONFLICT(track_id) DO UPDATE SET position = excluded.position
+            """, [id, seconds])
+    }
+
+    // MARK: - 落库
+
+    /// 写库的唯一出口：一个事务 + 出错只记一笔。与 `LibraryStore.persist` 同解——
+    /// 改简介是「用户点了一下」的路径，磁盘满的时候抛个异常出去，界面层没有有意义的处置；
+    /// 下面每一处都是「按内存现值整行写」，下一次成功的写自会补齐。
+    private func persist(_ label: String, _ body: (SQLiteDatabase) throws -> Void) {
+        guard isLoaded, let db = database?.sqlite else { return }
+        do {
+            try db.transaction { try body(db) }
+        } catch {
+            NSLog("[TrackInfoStore] %@ 落库失败：%@", label, String(describing: error))
         }
     }
 
-    /// 立刻同步落盘。退出前兜底与测试断言磁盘内容时用。
+    /// 列序与 `Self.infoSelect` 逐列对齐。
+    ///
+    /// 面板是**整份**交上来的（点一次「好」提交全部字段），所以写的单位是**那一行**，
+    /// 不去逐字段比出「只有 bpm 变了」再拼一条窄 UPDATE：那要另存一份「表里现在是什么」
+    /// 的影子副本，而省下的是同一行里的几个格子——SQLite 本来就是整页写。
+    /// 真正拆掉的那笔写放大是「整份存档」→「一行」，在这里就已经拿到了。
+    private static let infoUpsert = """
+        INSERT INTO track_info (
+          track_id, album_artist, composer, show_composer_in_all_views, grouping, genre,
+          year, track_count, disc_count, is_compilation, bpm, comments,
+          use_work_and_movement, work_name, movement_name, movement_number, movement_count,
+          media_kind, start_time_enabled, start_time, stop_time_enabled, stop_time,
+          remember_playback_position, skip_when_shuffling, volume_adjustment, equalizer_preset,
+          sort_title, sort_album, sort_album_artist, sort_artist, sort_composer, custom_lyrics)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(track_id) DO UPDATE SET
+          album_artist = excluded.album_artist, composer = excluded.composer,
+          show_composer_in_all_views = excluded.show_composer_in_all_views,
+          grouping = excluded.grouping, genre = excluded.genre, year = excluded.year,
+          track_count = excluded.track_count, disc_count = excluded.disc_count,
+          is_compilation = excluded.is_compilation, bpm = excluded.bpm,
+          comments = excluded.comments,
+          use_work_and_movement = excluded.use_work_and_movement,
+          work_name = excluded.work_name, movement_name = excluded.movement_name,
+          movement_number = excluded.movement_number, movement_count = excluded.movement_count,
+          media_kind = excluded.media_kind,
+          start_time_enabled = excluded.start_time_enabled, start_time = excluded.start_time,
+          stop_time_enabled = excluded.stop_time_enabled, stop_time = excluded.stop_time,
+          remember_playback_position = excluded.remember_playback_position,
+          skip_when_shuffling = excluded.skip_when_shuffling,
+          volume_adjustment = excluded.volume_adjustment,
+          equalizer_preset = excluded.equalizer_preset,
+          sort_title = excluded.sort_title, sort_album = excluded.sort_album,
+          sort_album_artist = excluded.sort_album_artist, sort_artist = excluded.sort_artist,
+          sort_composer = excluded.sort_composer, custom_lyrics = excluded.custom_lyrics
+        """
+
+    private static func binds(_ info: TrackInfo, id: String) -> [any SQLBindable] {
+        [
+            id, info.albumArtist, info.composer, info.showComposerInAllViews, info.grouping,
+            info.genre, info.year, info.trackCount, info.discCount, info.isCompilation,
+            info.bpm, info.comments, info.useWorkAndMovement, info.workName,
+            info.movementName, info.movementNumber, info.movementCount,
+            info.mediaKind.rawValue, info.startTimeEnabled, info.startTime,
+            info.stopTimeEnabled, info.stopTime, info.rememberPlaybackPosition,
+            info.skipWhenShuffling, info.volumeAdjustment, info.equalizerPreset,
+            info.sortTitle, info.sortAlbum, info.sortAlbumArtist, info.sortArtist,
+            info.sortComposer, info.customLyrics,
+        ]
+    }
+
+    /// 退出前把 wal 并回主库。
+    ///
+    /// **名字与全部调用点保留。** 从前它是「立刻把防抖中的那份 JSON 同步写下去」；
+    /// 现在每一次改动当场落库，只剩两件事：把台阶闸拦下的最后一点断点补上，
+    /// 再收掉 WAL 旁文件（见 `AmberDatabase.checkpoint()`）。
     func flushNow() {
-        pendingSave?.cancel()
-        pendingSave = nil
-        persistedResumePositions = resumePositions
-        let storage = snapshot()
-        let url = fileURL
-        Self.writeQueue.sync { Self.write(storage, to: url) }
-    }
-
-    private func snapshot() -> Storage {
-        Storage(infos: infos, resumePositions: resumePositions)
-    }
-
-    private nonisolated static func write(_ storage: Storage, to url: URL) {
-        guard let data = try? JSONEncoder().encode(storage) else { return }
-        try? data.write(to: url, options: .atomic)
+        writePendingResumePositions()
+        database?.checkpoint()
     }
 }
 

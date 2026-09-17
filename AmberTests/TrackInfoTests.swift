@@ -336,19 +336,45 @@ final class TrackInfoTests: XCTestCase {
         XCTAssertEqual(reopened.resumePosition(for: track.id), 88)
     }
 
-    /// 存档另开一份 `trackinfo.json`，不塞进`library.json`。
-    func testArchiveIsItsOwnFile() {
+    /// 断点在两格台阶之间退出：补写那一下让它恢复到**退出时那一秒**，而不是上一格台阶。
+    ///
+    /// 5 秒台阶闸拦的是「播放中每 0.1 s 来一次」那条热路径（一个字没改），
+    /// 退出前的补写是它的另一半——从前由 `flushNow` 在 `willTerminate` 里整份写下去，
+    /// 现在由 `AmberDatabase` 那个唯一的观察者调同一段（见 `TrackInfoStore.init`）。
+    func testResumePositionSurvivesQuittingBetweenSteps() {
+        let store = TrackInfoStore(directory: directory)
+        store.setResumePosition(10, for: "ne:1")     // 第一次：直接落库
+        store.setResumePosition(12, for: "ne:1")     // 只挪了 2 秒，台阶闸拦下
+        store.flushNow()                             // 退出那一下
+
+        let reopened = TrackInfoStore(directory: directory)
+        XCTAssertEqual(reopened.resumePosition(for: "ne:1"), 12)
+    }
+
+    /// 存档并进主库：不再另开 `trackinfo.json`，而且三十多个字段是**逐列**落下去的
+    ///（不是整块 JSON——那样改一个 bpm 会把同一首的几 KB 歌词一起重写）。
+    func testArchiveLivesInTheMainDatabaseAsColumns() throws {
         let store = TrackInfoStore(directory: directory)
         let library = LibraryStore(directory: directory)
         let track = makeTrack()
         library.addToLibrary(track)
         var edited = store.info(for: track)
         edited.comments = "落盘"
+        edited.bpm = 128
         store.update(edited, for: track, library: library)
         store.flushNow()
 
-        XCTAssertTrue(FileManager.default
-            .fileExists(atPath: directory.appendingPathComponent("trackinfo.json").path))
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: directory.appendingPathComponent("trackinfo.json").path),
+                       "并进主库之后不该再写这份文件")
+        XCTAssertTrue(fm.fileExists(atPath: directory.appendingPathComponent("library.sqlite").path))
+
+        let database = try AmberDatabase.shared(directory: directory)
+        let row = try database.sqlite.value(
+            "SELECT comments, bpm FROM track_info WHERE track_id = ?", [track.id],
+            { (comments: $0.text(0), bpm: $0.optInt(1)) })
+        XCTAssertEqual(row?.comments, "落盘")
+        XCTAssertEqual(row?.bpm, 128)
     }
 
     // MARK: - 均衡器预设名

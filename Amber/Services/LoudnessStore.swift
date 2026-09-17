@@ -1,4 +1,3 @@
-import AppKit
 import AVFoundation
 import Foundation
 import Synchronization
@@ -9,15 +8,19 @@ import Synchronization
 /// 界面上没有任何东西显示它。做成 `@Published` 只会让整个界面跟着换歌重画一次
 /// （`LibraryStore` 那几本字典的教训）。
 ///
-/// 落盘照抄 `LibraryStore.save()`：500 ms 防抖 + 串行写盘队列 + 退出前同步兜底。
+/// 落在主库的 `loudness` 表里（从前是 `loudness.json` 整份重写 + 500 ms 防抖）：
+/// 量完一首写一条单行 UPSERT。离线扫描一首接一首地出结果，正是「每次改一条、
+/// 却要把整份重写一遍」最吃亏的那种负载。
 @MainActor
 final class LoudnessStore {
 
     private(set) var entries: [String: LoudnessEntry] = [:]
 
-    private let fileURL: URL
-    private var pendingSave: Task<Void, Never>?
-    private var terminationObserver: (any NSObjectProtocol)?
+    /// 主库连接。**nil ＝ 开库这一步就失败了**：内存这一份照常能用，只是这一程量出来的
+    /// 落不了盘。与 `LibraryStore.database` 同解。
+    private let database: AmberDatabase?
+    /// 载入成功了没有。没成功就一个字都不许往回写（见 `LibraryStore.isLoaded`）。
+    private var isLoaded = false
 
     /// 等着量的曲目。队里只放 `(id, url)` 这两件轻的——启动时
     /// `AppState.measureDownloadedTracks()` 会把整个资料库里已下载的曲目一次性丢进来，
@@ -33,8 +36,6 @@ final class LoudnessStore {
     /// 正在量的那首 + 它的取消旗标。
     private var current: (id: String, cancel: LoudnessScanCancellation)?
 
-    private static let saveDebounce: UInt64 = 500_000_000
-    private static let writeQueue = DispatchQueue(label: "Amber.LoudnessStore.write", qos: .utility)
     /// 离线扫描的并发度：1。扫描是纯 IO + 定点运算，开多路只会和取流抢带宽。
     ///
     /// 每份 store 一条，不是全类共用一条：App 里本来就只有一份 store（并发度还是 1），
@@ -45,30 +46,37 @@ final class LoudnessStore {
     private static let trackGap: UInt64 = 250_000_000
 
     /// `directory` 供测试注入临时目录；默认落 `~/Library/Application Support/Amber/`。
+    /// 解析规则由 `AmberDatabase.shared(directory:)` 一处管着——同一个目录拿到同一条连接。
     init(directory: URL? = nil) {
-        let support = directory
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                .first!.appendingPathComponent("Amber", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        fileURL = support.appendingPathComponent("loudness.json")
-        if let data = try? Data(contentsOf: fileURL),
-           let decoded = try? JSONDecoder().decode([String: LoudnessEntry].self, from: data) {
-            entries = decoded
-        }
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                // 先叫停扫描再落盘：不然退出时还有一条线程在读文件、算 DSP。
-                self?.cancelAllMeasurements()
-                self?.flushNow()
-            }
-        }
+        // 开库之前先把迁移跑到，理由与 `TrackInfoStore.init` 逐字相同：
+        // **谁先开库谁负责迁移**，一个都不许在旧 JSON 还没搬完之前把空库建出来。
+        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                renameLegacyOnSuccess: true)
+        database = try? AmberDatabase.shared(directory: directory)
+        load()
+        // **没有自己的 willTerminate 观察者了**（全 App 只剩 `AmberDatabase` 那一个）。
+        // 量出来的当场落库，没有「还没写的」；退出前剩下的只有「先叫停扫描」这一件——
+        // 不然还有一条线程在读文件、算 DSP，而它算完那一下正好落在 checkpoint 之后。
+        database?.addTerminationTask { [weak self] in self?.cancelAllMeasurements() }
     }
 
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
+    private func load() {
+        guard let db = database?.sqlite else { return }
+        do {
+            var loaded: [String: LoudnessEntry] = [:]
+            for row in try db.query(
+                "SELECT track_id, lufs, peak_db, measured_at FROM loudness", [],
+                { (id: $0.text(0),
+                   entry: LoudnessEntry(lufs: $0.double(1), peakDB: $0.double(2),
+                                        measuredAt: Date(timeIntervalSinceReferenceDate: $0.double(3)))) }
+            ) {
+                loaded[row.id] = row.entry
+            }
+            entries = loaded
+            isLoaded = true
+        } catch {
+            NSLog("[LoudnessStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
+                  String(describing: error))
         }
     }
 
@@ -78,7 +86,7 @@ final class LoudnessStore {
 
     func record(_ entry: LoudnessEntry, for track: Track) {
         entries[track.id] = entry
-        save()
+        persist(entry, for: track.id)
     }
 
     // MARK: - 离线扫描（已下载的文件）
@@ -139,7 +147,7 @@ final class LoudnessStore {
                 self.current = nil
                 if let entry {
                     self.entries[next.id] = entry
-                    self.save()
+                    self.persist(entry, for: next.id)
                 }
                 // 两首之间再空一手：连着量几百首时，这一下让主线程有整段的空窗，
                 // 也给磁盘缓存喘口气。
@@ -212,32 +220,33 @@ final class LoudnessStore {
         return accumulator.entry
     }
 
-    // MARK: - 落盘
+    // MARK: - 落库
 
-    private func save() {
-        pendingSave?.cancel()
-        pendingSave = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.saveDebounce)
-            guard !Task.isCancelled, let self else { return }
-            self.pendingSave = nil
-            let snapshot = self.entries
-            let url = self.fileURL
-            Self.writeQueue.async { Self.write(snapshot, to: url) }
+    /// 一首一条 UPSERT。出错只记一笔：量响度是后台尽力而为的活，磁盘满的时候没有
+    /// 任何界面处置可言，内存那份照常能用，下一次量到同一首自会把它补上。
+    ///
+    /// `gainDB` 不落列（它是按目标 −16 LUFS、+6 上限、峰值留 1 dB 现算的派生量，
+    /// 存下来就等着改参数那天全变陈旧值），见 schema 注释。
+    private func persist(_ entry: LoudnessEntry, for id: String) {
+        guard isLoaded, let db = database?.sqlite else { return }
+        do {
+            try db.run("""
+                INSERT INTO loudness (track_id, lufs, peak_db, measured_at) VALUES (?,?,?,?)
+                ON CONFLICT(track_id) DO UPDATE SET
+                  lufs = excluded.lufs, peak_db = excluded.peak_db,
+                  measured_at = excluded.measured_at
+                """, [id, entry.lufs, entry.peakDB, entry.measuredAt])
+        } catch {
+            NSLog("[LoudnessStore] 响度落库失败：%@", String(describing: error))
         }
     }
 
-    func flushNow() {
-        pendingSave?.cancel()
-        pendingSave = nil
-        let snapshot = entries
-        let url = fileURL
-        Self.writeQueue.sync { Self.write(snapshot, to: url) }
-    }
-
-    private nonisolated static func write(_ entries: [String: LoudnessEntry], to url: URL) {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
-        try? data.write(to: url, options: .atomic)
-    }
+    /// 退出前把 wal 并回主库。
+    ///
+    /// **名字与全部调用点保留。** 从前它是「立刻把防抖中的那份 JSON 同步写下去」；
+    /// 现在量完一首当场落库，没有「还没写的」，剩下要收的只有 WAL 旁文件
+    /// （见 `AmberDatabase.checkpoint()`）。
+    func flushNow() { database?.checkpoint() }
 }
 
 /// 离线扫描的占空比。`busy` 算完就歇 `idle`，两者之比就是这条线程最多占一个核的几成。
