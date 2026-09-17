@@ -270,8 +270,8 @@ final class PlaylistDetailViewController: TrackTableViewController {
         invalidateFooter()
     }
 
-    /// 搜索框那一件要的是个 `@Published`（`SearchFieldBinder` 双向同步用），
-    /// 这一页没有别的页模型，就给它一个只装一个词的小模型。
+    /// 搜索框那一件要的是一个**可观察**的词条来源（`SearchFieldBinder` 拿它做双向同步，
+    /// 见 `ContentToolbar`），这一页没有别的页模型，就给它一个只装一个词的小模型。
     private let pageModel = PlaylistPageModel()
     private lazy var searchBinder = SearchFieldBinder(text: { [pageModel] in pageModel.search }) { [weak self] text in
         guard let self, filterText != text else { return }
@@ -406,6 +406,12 @@ final class PlaylistDetailViewController: TrackTableViewController {
 
     // MARK: - 加载
 
+    /// **本地那两条不打菊花**（审查单 §2.6-2，与 `AlbumDetailViewController` 同一条）：
+    /// 心水歌曲与自建列表（`playlist.source == nil`）的曲目就在资料库里，整条路同步，
+    /// 直接上屏；只有真要问音源的两条（目录歌单、镜像歌单）才先 `apply(state: .loading)`。
+    /// 镜像歌单（`.added`/`.account`）本地**没有**曲目可先摆——`LibraryPlaylist.tracks`
+    /// 按定义只有 `.local` 用（`Models.swift:257`），本地留的只是一个引用，
+    /// 所以那一条的菊花是实打实要等的。
     private func reload() {
         loadTask?.cancel()
         switch source {

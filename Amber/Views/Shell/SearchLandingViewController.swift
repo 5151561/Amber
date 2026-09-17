@@ -92,7 +92,14 @@ final class SearchLandingViewController: ContentPageController {
 
         collectionView.collectionViewLayout = makeLayout()
         collectionView.backgroundColors = [.clear]
-        collectionView.isSelectable = false
+        // 对键盘开放（审查单 §2.5-1，与目录页 / 房间页同一条）：方向键选、回车发起搜索。
+        // 鼠标行为一个字不变——两种卡的根视图 `SearchClickableView` 自己接了 `mouseDown`
+        //（空实现、不调 super），事件到不了 `NSCollectionView.mouseDown`，
+        // 单击仍旧是「直接以这个词搜索」。多选保持关着，免得空白处一拖就画出框选矩形。
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = false
+        collectionView.delegate = self
+        collectionView.onActivateSelection = { [weak self] in self?.activateSelection() }
         collectionView.register(SearchRecentCardItem.self,
                                 forItemWithIdentifier: SearchRecentCardItem.identifier)
         collectionView.register(SearchBrickItem.self,
@@ -318,6 +325,32 @@ final class SearchLandingViewController: ContentPageController {
                 heightDimension: .absolute(topGap + Self.headingHeight + Self.headingToContent)),
             elementKind: NSCollectionView.elementKindSectionHeader, alignment: .top)
     }
+
+    // MARK: - 键盘（审查单 §2.5-1）
+
+    /// 回车 = 以选中那一件的词条发起搜索。落点不在这里另写一份，一律调那一件视图自己的
+    /// `accessibilityPerformPress()`——`SearchClickableView` 已经把它接到`onClick` 上，
+    /// 与鼠标单击**同一条**（理由与目录页那份逐字相同）。
+    private func activateSelection() {
+        guard let indexPath = collectionView.selectionIndexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.accessibilityPerformPress()
+    }
+}
+
+// MARK: - 键盘选择
+
+extension SearchLandingViewController: NSCollectionViewDelegate {
+
+    /// 选中挪到一件上就把它滚进可视区。「最近搜索」那一段是横滚货架，卡片挂在组合布局
+    /// 内部那个横向 scroll view 里，外层滚不动它；`NSView.scrollToVisible` 找的是
+    /// **最近的**那层 clip view，两种段一句话都覆盖（同目录页那份）。
+    func collectionView(_ collectionView: NSCollectionView,
+                        didSelectItemsAt indexPaths: Set<IndexPath>) {
+        guard let indexPath = indexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.scrollToVisible(item.view.bounds)
+    }
 }
 
 // MARK: - 收货架的 collection view
@@ -326,6 +359,29 @@ final class SearchLandingViewController: ContentPageController {
 /// 自带横向滚动条与背景，Music 的货架两样都没有；它每次布局都会把自己那两样打开，
 /// 所以挂进来时与每次布局都要按一遍（与目录页 `CatalogShelfCollectionView` 同一处理）。
 private final class SearchLandingCollectionView: NSCollectionView {
+
+    /// 回车 / Enter（以及没在播时的空格）落在选中那一件上：以它的词条发起搜索。
+    var onActivateSelection: (() -> Void)?
+
+    /// 与目录页 `CatalogShelfCollectionView.keyDown` 同一份（键码、空格那一档的
+    /// 判据与理由都在那边写全了）。
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76:                                    // Return / Enter
+            if activateSelection() { return }
+        case 49:                                        // Space
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.isDisjoint(with: [.command, .option, .control]), activateSelection() { return }
+        default: break
+        }
+        super.keyDown(with: event)
+    }
+
+    private func activateSelection() -> Bool {
+        guard !selectionIndexPaths.isEmpty, let onActivateSelection else { return false }
+        onActivateSelection()
+        return true
+    }
 
     override func didAddSubview(_ subview: NSView) {
         super.didAddSubview(subview)
