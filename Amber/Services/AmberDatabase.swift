@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 /// 主库：`~/Library/Application Support/Amber/library.sqlite`。
 ///
@@ -13,6 +14,10 @@ import Foundation
 ///
 /// **线程**：`@MainActor`，和四个 store 同一条线。`SQLiteDatabase` 不是 `Sendable`，
 /// 后台要干活的正确切法是后台只做文件 IO 与解析，解析出的值类型回主 actor 再写库。
+///
+/// 这一条不是「还没来得及改」，是查过之后留下的：为什么它没有变成 `actor`、
+/// 要变得先拆掉什么，全写在 `SQLiteDatabase` 那段「为什么它没有被收进 actor」里。
+/// 启动那一趟到底值多少毫秒，写在 `LibraryStore.load()` 上（有基准与曲线）。
 @MainActor
 final class AmberDatabase {
 
@@ -21,6 +26,10 @@ final class AmberDatabase {
 
     /// 库文件本身（`-wal` / `-shm` 是它的旁文件，见 `checkpoint()`）。
     let fileURL: URL
+
+    /// 见 `AmberDiagnostics`：这一层只有「升级前备份失败」一条日志，仍要有 category——
+    /// 它是唯一一条「照常继续、但用户以后可能会想知道」的记录。
+    private static let log = AmberDiagnostics.logger("database")
 
     private var terminationObserver: (any NSObjectProtocol)?
 
@@ -315,7 +324,7 @@ final class AmberDatabase {
             try? FileManager.default.removeItem(at: backup)
             try FileManager.default.copyItem(at: fileURL, to: backup)
         } catch {
-            NSLog("[AmberDatabase] 升级前备份失败（照常升级）：%@", String(describing: error))
+            log.error("升级前备份失败（照常升级）：\(String(describing: error), privacy: .public)")
         }
     }
 
