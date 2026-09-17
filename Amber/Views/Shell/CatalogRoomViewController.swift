@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // MARK: - 网格类目录二级页（房间页）—— 计划阶段 5 批 B
