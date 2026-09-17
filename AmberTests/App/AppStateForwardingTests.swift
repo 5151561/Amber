@@ -115,13 +115,18 @@ final class AppStateForwardingTests: XCTestCase {
 
     /// 设置里关掉正在浏览的源时要自动换源，否则页面会一直请求一个已关闭的源
     @MainActor
-    func testDisablingSelectedProviderFallsBackToAnEnabledOne() {
+    /// **纠正是异步的**：以前 `$enabled.sink` 在写入那一刻同步回调，下一行就已经纠正好；
+    /// 换成 `Observations` 之后要过一跳。也就是说切换与纠正之间有一个 tick 的窗口，
+    /// `selectedProvider` 仍指向刚被禁用的源。界面上看不出来（同一轮 runloop 内补齐），
+    /// 但读这个值的代码不能假设它在 `setEnabled` 返回时就已经合法。
+    func testDisablingSelectedProviderFallsBackToAnEnabledOne() async {
         let state = makeState()
         state.providerSettings.setEnabled(true, for: .netease)
         state.providerSettings.setEnabled(true, for: .qq)
         state.selectedProvider = .netease
 
         state.providerSettings.setEnabled(false, for: .netease)
+        await settle()
 
         XCTAssertEqual(state.selectedProvider, .qq)
         XCTAssertEqual(state.enabledProviders, [.qq])
@@ -147,17 +152,34 @@ final class AppStateForwardingTests: XCTestCase {
         cancellable.cancel()
     }
 
-    /// 子 store 仍然各自发自己的通知（视图靠这个刷新）
+    /// 子 store 仍然各自发自己的通知（视图靠这个刷新）。
+    ///
+    /// `QQLoginStore` 已经是 `@Observable`，没有 `objectWillChange` 了，改用
+    /// `Observations` 观察具体属性——这也正是迁移后视图侧的真实形态。
     @MainActor
-    func testSubStoresStillPublishOnTheirOwn() {
+    func testSubStoresStillPublishOnTheirOwn() async {
         let state = makeState()
-        let published = expectation(description: "qqLogin 自己要发")
-        let cancellable = state.qqLogin.objectWillChange.sink { _ in published.fulfill() }
+        // 取一个与当前值不同的档位：`Observations` 对 Equatable 自带相邻去重，
+        // 写一个和现在一样的值不会发。
+        let target = StreamQuality.allCases.first { $0 != state.qqLogin.quality }
+        let next = try! XCTUnwrap(target)
 
-        state.qqLogin.quality = .high
+        var seen: [StreamQuality] = []
+        let bag = TaskBag()
+        bag.observe({ state.qqLogin.quality }) { seen.append($0) }
+        await settle()
 
-        wait(for: [published], timeout: 2)
-        cancellable.cancel()
+        state.qqLogin.quality = next
+        await settle()
+
+        XCTAssertEqual(seen, [next], "qqLogin 自己要发")
+    }
+
+    /// 让订阅任务挂上／把值送到。
+    @MainActor
+    private func settle() async {
+        for _ in 0..<6 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(40))
     }
 
     /// 播放进度**不能**走 AppState。

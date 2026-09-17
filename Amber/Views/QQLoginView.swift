@@ -8,7 +8,7 @@ import SwiftUI
 /// ——那扇窗不是 SwiftUI 呈现的，环境里没有对应的 action，所以关自己走 `onDismiss`。
 struct QQLoginView: View {
     @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var qqLogin: QQLoginStore
+    @Environment(QQLoginStore.self) private var qqLogin
 
     /// 关掉这扇面板。给了就用给的（AppKit 宿主传的是 `endSheet`）；
     /// 没给就走 `AuxiliaryWindows`——旧壳那条 `.sheet(isPresented:)` 也认它，

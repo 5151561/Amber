@@ -63,9 +63,9 @@ extension AppState {
             .environmentObject(player)
             .environmentObject(library)
             .environmentObject(downloads)
-            .environmentObject(qqLogin)
-            .environmentObject(neteaseLogin)
-            .environmentObject(providerSettings)
+            .environment(qqLogin)
+            .environment(neteaseLogin)
+            .environment(providerSettings)
             .environmentObject(player.clock)
             .environmentObject(songsTable)
             .environmentObject(listViewSize)
@@ -148,6 +148,8 @@ class ContentPageController: NSViewController, ContentPageToolbarProviding {
     /// 内容页要给底部迷你播放器留白；二级页、空态页同样要（胶囊一直都在）。
     private let bottomReserve: Bool
     var cancellables = Set<AnyCancellable>()
+    /// 已迁到 `@Observable` 的 store 走这里；还是 `@Published` 的仍走 `cancellables`。
+    let observers = TaskBag()
 
     init(appState: AppState, bottomReserve: Bool = true,
          @ViewBuilder content: @escaping () -> some View) {

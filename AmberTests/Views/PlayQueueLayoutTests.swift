@@ -62,7 +62,7 @@ final class PlayQueueLayoutTests: XCTestCase {
         let controller = makeLoadedController()
         XCTAssertEqual(controller.theTable.numberOfRows, 2,
                        "空队列应当只有「继续播放」分区头 + 一条空状态行")
-        let delegate = controller as NSTableViewDelegate
+        let delegate = controller as any NSTableViewDelegate
         // 第 0 行是分区头（没有「来自…」→ 44），第 1 行是空状态行（撑满剩余高）。
         XCTAssertEqual(delegate.tableView?(controller.theTable, heightOfRow: 0),
                        MusicMetrics.PlayQueue.headerHeight)

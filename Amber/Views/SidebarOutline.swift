@@ -32,6 +32,7 @@ final class SidebarViewController: NSViewController {
     /// 头像当前贴的是哪个地址：异步取图回来时对一下，换号后不会把上一个人的头像贴上去。
     private var accountAvatarURL: String?
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     init(appState: AppState) {
         self.appState = appState
@@ -158,14 +159,13 @@ final class SidebarViewController: NSViewController {
             .sink { [weak self] selection in self?.reloadEntries(selection: selection) }
             .store(in: &cancellables)
         // 账号那一行跟着登录态与账号资料翻（名字、头像）。
-        appState.qqLogin.$credential
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateAccount() }
-            .store(in: &cancellables)
-        appState.qqLogin.$profile
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateAccount() }
-            .store(in: &cancellables)
+        // 两条都用 `observeNow`：原来没有 `dropFirst`，订阅当场就拿当前登录态刷一次账号行。
+        observers.observeNow({ [weak appState] in appState?.qqLogin.credential }) { [weak self] _ in
+            self?.updateAccount()
+        }
+        observers.observeNow({ [weak appState] in appState?.qqLogin.profile }) { [weak self] _ in
+            self?.updateAccount()
+        }
     }
 
     private func reloadEntries(selection: SidebarItem? = nil) {

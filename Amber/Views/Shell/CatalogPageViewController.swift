@@ -396,11 +396,9 @@ class CatalogPageViewController: ContentPageController {
             // 根页都是缓存着的、永远活着，也不判自己是不是栈顶：一次开关就把整条工具栏
             // 拆光重建三遍；栈顶要是歌曲页、用户正在标题栏搜索框里打字，
             // 搜索框会被拔出来重插、焦点当场丢。那条订阅已经收到窗口去了（一份、判栈顶）。
-            appState.providerSettings.$enabled
-                .dropFirst()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.refreshProviderControl() }
-                .store(in: &cancellables)
+            observers.observe({ [weak appState] in appState?.providerSettings.enabled ?? [] }) { [weak self] _ in
+                self?.refreshProviderControl()
+            }
 
             // 别处改了音乐源（设置窗、另一页）→ 胶囊的选中段跟着走。
             appState.$selectedProvider

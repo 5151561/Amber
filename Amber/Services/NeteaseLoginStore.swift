@@ -67,23 +67,24 @@ enum NeteaseCookieLoginState: Equatable {
 /// 安全风险」。参考实现 [chaunsin/netease-cloud-music] 的 README 里，短信与密码两条同样被
 /// 划掉、注着「存在风控问题」，它文档中推荐的正是现在留下的这两条。
 @MainActor
-final class NeteaseLoginStore: ObservableObject {
+@Observable
+final class NeteaseLoginStore {
 
-    @Published private(set) var credential: NeteaseCredential?
-    @Published private(set) var qrState: QRLoginState = .idle
-    @Published private(set) var qrImageData: Data?
+    private(set) var credential: NeteaseCredential?
+    private(set) var qrState: QRLoginState = .idle
+    private(set) var qrImageData: Data?
     /// 扫码被风控拦下、且服务端给了验证页时的那份挑战。
     ///
     /// 单独一个字段而不是往 `QRLoginState` 里加一个 case：那个枚举是与 QQ 共用的，
     /// 为网易云一条分支去改它，QQ 那边就得凭空多一个永远不会出现的态。
     /// 界面拿它多显示一颗「去完成验证」，`qrState` 那边照旧是 `.failed`。
-    @Published private(set) var qrChallenge: NeteaseLoginChallenge?
+    private(set) var qrChallenge: NeteaseLoginChallenge?
 
     /// Cookie 导入状态。与 `qrState` 并列，两条路谁也不碰谁的字段。
-    @Published private(set) var cookieState: NeteaseCookieLoginState = .idle
+    private(set) var cookieState: NeteaseCookieLoginState = .idle
 
     /// 由 AppState 注入的 API 实例（扫码登录用）
-    var qrAPI: NeteaseAPI?
+    @ObservationIgnored var qrAPI: NeteaseAPI?
 
     private var qrTask: Task<Void, Never>?
     private var cookieTask: Task<Void, Never>?

@@ -74,9 +74,10 @@ enum AudioOutputRules {
 /// 回调统一回到主线程，值真的变了才发一次 `objectWillChange`——
 /// CoreAudio 的属性监听会在插拔时连发好几遍同样的值。
 @MainActor
-final class AudioOutputMonitor: ObservableObject {
+@Observable
+final class AudioOutputMonitor {
 
-    @Published private(set) var output = AudioOutput()
+    private(set) var output = AudioOutput()
 
     private var defaultDeviceListener: AudioObjectPropertyListenerBlock?
     private var deviceListener: AudioObjectPropertyListenerBlock?

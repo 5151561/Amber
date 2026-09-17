@@ -208,22 +208,23 @@ struct QQAccountProfile: Equatable, Sendable {
 /// 跑一次 `xcodebuild test` 就会把用户真实的音质偏好覆盖成默认档（曾经的实况：
 /// 每次跑完测试，下次开 App 音质就回到 128k）。
 @MainActor
-final class QQLoginStore: ObservableObject {
+@Observable
+final class QQLoginStore {
 
-    @Published private(set) var credential: QQCredential?
-    @Published var quality: StreamQuality {
+    private(set) var credential: QQCredential?
+    var quality: StreamQuality {
         didSet {
             defaults.set(quality.rawValue, forKey: Self.qualityKey)
         }
     }
-    @Published private(set) var qrState: QRLoginState = .idle
-    @Published private(set) var qrImageData: Data?
+    private(set) var qrState: QRLoginState = .idle
+    private(set) var qrImageData: Data?
 
     /// 已登录账号的昵称与头像。没登录、或这一趟没取到就是 nil。
-    @Published private(set) var profile: QQAccountProfile?
+    private(set) var profile: QQAccountProfile?
 
     /// 由 AppState 注入的 API 实例（扫码登录、取账号资料都走它，是同一份 `QQAPI`）
-    var qrAPI: QQAPI?
+    @ObservationIgnored var qrAPI: QQAPI?
 
     private var qrTask: Task<Void, Never>?
     private var profileTask: Task<Void, Never>?
