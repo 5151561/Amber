@@ -114,6 +114,42 @@ enum LibraryDeleteAlert {
         }
     }
 
+    /// 「删除播放列表」的确认框。
+    ///
+    /// 文案 `[RES]`：从 Music.app 的 zh_CN `Localizable.strings` 实测（基线
+    /// macOS 27 / Music 1.7，key `uyyjpdr4r9` 与 `79w3c3gdcg`）：
+    ///
+    /// | key | 文案 |
+    /// | --- | --- |
+    /// | uyyjpdr4r9 | 确定要删除播放列表“%S”吗？ |
+    /// | 79w3c3gdcg | 删除播放列表 |
+    ///
+    /// **为什么不取另外那一对。** 同一张表里还并排摆着「确定要从资料库删除播放列表“%S”
+    /// 和所有内容吗？」+「删除播放列表和内容」（key `ahk8y4qr5j` / `u8qj6adpex`），
+    /// 那是**连内容一起删**的那一档。Amber 的 `LibraryStore.deletePlaylist` 只删
+    /// `playlist` 那一行，`playlist_track` 由 `ON DELETE CASCADE` 跟着走——摘掉的是
+    /// **关系**，曲目本身原样留在资料库里。所以取前一对。
+    ///
+    /// **为什么有了撤销还留这一张。** HIG 对可撤销的操作确实倾向不弹框，而
+    /// `deletePlaylist` 现在是注册了撤销的。但 ⌘Z 只在主窗有效、且关掉 App 撤销栈就没了，
+    /// 而 Music 自己是弹的——「复刻 Apple Music」这条优先。
+    static func confirmPlaylistDeletion(named name: String, in window: NSWindow? = nil,
+                                        delete: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "确定要删除播放列表“\(name)”吗？"
+        alert.addButton(withTitle: "删除播放列表")
+        alert.addButton(withTitle: "取消")
+        // 与上面两张同一条：防误触与警示外观交给系统，默认键留在破坏性按钮上，
+        // esc 手绑给「取消」（NSAlert 只认英文 "Cancel"）。
+        alert.buttons[0].hasDestructiveAction = true
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+        run(alert, in: window ?? hostWindow()) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            delete()
+        }
+    }
+
     /// 菜单那类入口手上没有宿主窗，自己去问一次（与 `MissingFileLocator` 同一条）。
     private static func hostWindow() -> NSWindow? { NSApp.keyWindow ?? NSApp.mainWindow }
 

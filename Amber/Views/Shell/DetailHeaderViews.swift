@@ -677,8 +677,10 @@ final class PlaylistHeaderView: DetailHeaderView {
             if appState.library.isPlaylistInLibrary(playlist) {
                 actions.deleteFromLibrary = { [weak self] in
                     guard let self else { return }
-                    deletePlaylistFromLibrary(id: playlist.id)
-                    refreshLibraryState()
+                    // 刷新挪进确认之后：取消时页头不该跟着重算。
+                    deletePlaylistFromLibrary(id: playlist.id, named: playlist.name) { [weak self] in
+                        self?.refreshLibraryState()
+                    }
                 }
             } else {
                 actions.addToLibrary = { [weak self] in self?.trailingTapped() }
@@ -699,7 +701,7 @@ final class PlaylistHeaderView: DetailHeaderView {
                 actions.syncAccount = { Task { await appState.syncAccountPlaylists(manual: true) } }
             }
             actions.deleteFromLibrary = { [weak self] in
-                self?.deletePlaylistFromLibrary(id: playlist.id)
+                self?.deletePlaylistFromLibrary(id: playlist.id, named: playlist.name)
             }
         case .download:
             // 心水歌曲：改不了名、删不掉、也没有音源网页版那一页可分享，所以这一路
@@ -710,12 +712,18 @@ final class PlaylistHeaderView: DetailHeaderView {
         return actions
     }
 
-    /// 删之前若侧栏正停在这一项，先切回「所有播放列表」，否则删完侧栏指着一份不存在的列表。
-    private func deletePlaylistFromLibrary(id: String) {
-        if appState.sidebarSelection == .playlist(id: id) {
-            appState.sidebarSelection = .allPlaylists
+    /// 删之前先确认（`LibraryDeleteAlert.confirmPlaylistDeletion`，文案 `[RES]`）；
+    /// 确认之后若侧栏正停在这一项，先切回「所有播放列表」，否则删完侧栏指着一份不存在的列表。
+    private func deletePlaylistFromLibrary(id: String, named name: String,
+                                           then: (() -> Void)? = nil) {
+        LibraryDeleteAlert.confirmPlaylistDeletion(named: name, in: amberWindow) { [weak self] in
+            guard let self else { return }
+            if appState.sidebarSelection == .playlist(id: id) {
+                appState.sidebarSelection = .allPlaylists
+            }
+            appState.library.deletePlaylist(id: id)
+            then?()
         }
-        appState.library.deletePlaylist(id: id)
     }
 
     // MARK: 动作
