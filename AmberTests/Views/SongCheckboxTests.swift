@@ -12,14 +12,14 @@ final class SongCheckboxTests: XCTestCase {
     private var directory: URL!
     private var savedValues: SettingsValues!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SongCheckboxTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         savedValues = AppSettings.shared.values
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         AppSettings.shared.values = savedValues
         try? FileManager.default.removeItem(at: directory)
     }

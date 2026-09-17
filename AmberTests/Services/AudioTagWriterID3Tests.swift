@@ -10,16 +10,16 @@ final class AudioTagWriterID3Tests: XCTestCase {
 
     private var directory = URL(fileURLWithPath: "/tmp")
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("AudioTagWriterID3Tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: directory)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - 写

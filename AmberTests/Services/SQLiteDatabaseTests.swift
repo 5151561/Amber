@@ -8,14 +8,14 @@ final class SQLiteDatabaseTests: XCTestCase {
     private var directory: URL!
     private var db: SQLiteDatabase!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SQLiteDatabaseTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         db = try SQLiteDatabase(path: directory.appendingPathComponent("test.sqlite"))
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         db = nil
         try? FileManager.default.removeItem(at: directory)
     }

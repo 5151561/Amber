@@ -11,17 +11,17 @@ final class TrackInfoTests: XCTestCase {
 
     private var directory: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("TrackInfoTests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeTrack(id: String = "ne:1", title: String = "标题",
