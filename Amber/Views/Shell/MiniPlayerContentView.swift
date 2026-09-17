@@ -806,7 +806,9 @@ final class MiniPlayerContentView: NSView {
             // 换形态一律先把浮层露出来（Music 长大的过程里控件是在的，安定之后才淡）。
             self.updateRollover(interested: self.pointerInside)
         } completionHandler: { [weak self] in
-            self?.needsLayout = true
+            // 完成回调的类型是 `@Sendable`，而这里动的是主线程隔离的视图。
+            // `NSAnimationContext` 明文保证回调在主线程，所以用 `assumeIsolated` 接回来。
+            MainActor.assumeIsolated { self?.needsLayout = true }
         }
     }
 
@@ -932,8 +934,12 @@ final class MiniPlayerContentView: NSView {
             context.duration = M.rolloverFadeDuration
             view.animator().alphaValue = target
         } completionHandler: {
-            // 淡到 0 之后彻底摘掉：`alphaValue == 0` 的视图在 AppKit 里照样吃点击。
-            view.isHidden = view.alphaValue <= 0
+            // 完成回调是 `@Sendable`，`NSAnimationContext` 保证它在主线程跑，
+            // 所以把主线程隔离的视图属性用 `assumeIsolated` 接回来。
+            MainActor.assumeIsolated {
+                // 淡到 0 之后彻底摘掉：`alphaValue == 0` 的视图在 AppKit 里照样吃点击。
+                view.isHidden = view.alphaValue <= 0
+            }
         }
     }
 
@@ -985,23 +991,29 @@ final class MiniPlayerContentView: NSView {
             inspectorController.queue.panelDidBecomeHidden()
             return
         }
+        // 块式观察者的闭包是 `@Sendable`；`queue: .main` 已经把投递线程钉死在主线程，
+        // 所以用 `assumeIsolated` 接回主线程隔离的自己。
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification] {
             focusObservers.append(center.addObserver(forName: name, object: window,
                                                      queue: .main) { [weak self] _ in
-                guard let self else { return }
-                self.updateRollover(interested: self.pointerInside)
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.updateRollover(interested: self.pointerInside)
+                }
             })
         }
         for name in [NSWindow.didResignKeyNotification, NSWindow.didResignMainNotification] {
             focusObservers.append(center.addObserver(forName: name, object: window,
                                                      queue: .main) { [weak self] _ in
-                self?.updateRollover(interested: false)
+                MainActor.assumeIsolated { self?.updateRollover(interested: false) }
             })
         }
         updateRollover(interested: pointerInside)
     }
 
-    deinit {
+    /// 计时器与观察者令牌都不是 `Sendable`，非隔离的 `deinit` 取不到它们。
+    /// 标 `isolated`：主线程上释放时照旧同步跑完，注销时机不变。
+    isolated deinit {
         mouseInterestTimer?.invalidate()
         mouseStartingInterestTimer?.invalidate()
         let center = NotificationCenter.default
@@ -1029,10 +1041,13 @@ final class MiniPlayerContentView: NSView {
         guard mouseStartingInterestTimer == nil else { return }
         mouseStartingInterestTimer = Timer.scheduledTimer(
             withTimeInterval: M.delayBeforeStartingRolloverMin, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            self.mouseStartingInterestTimer = nil
-            self.setRollState(true)
-            self.scheduleRolloverHide(after: M.mouseInterestTimeout)
+            // 表挂在主 runloop 上，回调必在主线程；闭包类型是 `@Sendable`，接回来。
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.mouseStartingInterestTimer = nil
+                self.setRollState(true)
+                self.scheduleRolloverHide(after: M.mouseInterestTimeout)
+            }
         }
     }
 
@@ -1043,7 +1058,7 @@ final class MiniPlayerContentView: NSView {
         guard rolloverApplies else { setRollState(true); return }
         mouseInterestTimer = Timer.scheduledTimer(withTimeInterval: delay,
                                                   repeats: false) { [weak self] _ in
-            self?.setRollState(false)
+            MainActor.assumeIsolated { self?.setRollState(false) }
         }
     }
 

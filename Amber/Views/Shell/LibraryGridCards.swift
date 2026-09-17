@@ -86,9 +86,11 @@ final class LibraryGridCollectionView: NSCollectionView {
         super.viewDidMoveToWindow()
         guard window != nil, let clipView = enclosingScrollView?.contentView else { return }
         clipView.postsBoundsChangedNotifications = true
+        // 块式观察者的闭包是 `@Sendable`；`queue: .main` 已经把投递线程钉死在主线程，
+        // 所以用 `assumeIsolated` 接回主线程隔离的自己。
         boundsObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
-        ) { [weak self] _ in self?.refreshHover() }
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.refreshHover() } }
     }
 
     override func mouseMoved(with event: NSEvent) {

@@ -1002,9 +1002,13 @@ private final class MiniArtworkView: NSView {
             dim.animator().alphaValue = hovering ? 1 : 0
             expandGlyph.animator().alphaValue = hovering ? 1 : 0
         } completionHandler: { [weak self] in
-            guard let self, !hovering else { return }
-            self.dim.isHidden = true
-            self.expandGlyph.isHidden = true
+            // 完成回调的类型是 `@Sendable`，而这里动的是主线程隔离的视图。
+            // `NSAnimationContext` 明文保证回调在主线程，所以用 `assumeIsolated` 接回来。
+            MainActor.assumeIsolated {
+                guard let self, !hovering else { return }
+                self.dim.isHidden = true
+                self.expandGlyph.isHidden = true
+            }
         }
     }
 

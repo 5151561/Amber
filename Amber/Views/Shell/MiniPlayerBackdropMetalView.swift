@@ -155,7 +155,9 @@ final class MiniPlayerBackdropMetalView: MTKView {
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit {
+    /// 观察者令牌不是 `Sendable`，非隔离的 `deinit` 取不到它们。标`isolated`：
+    /// 主线程上释放时照旧同步跑完，注销时机不变。
+    isolated deinit {
         for token in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
         if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
     }
