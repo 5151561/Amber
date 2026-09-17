@@ -17,7 +17,25 @@ final class LayerPropertyAnimator: NSObject, CAAnimationDelegate {
     var state: State = .idle                          // +24
     var animationCurve: AnimationCurve                // +32
     var layers: [CALayer] = []                        // +88
-    var animations: [CAAnimation] = []                // +104
+    /// **只弱持有正在跑的那些**。`CAAnimation.delegate` 是**强**引用（文档原话是
+    /// 「the animation object retains its delegate」，AppKit 里少见的一条），
+    /// 下发时 `anim.delegate = self` 之后再把动画强持有回来就成了环：
+    /// animator → animations → delegate → animator，两头谁也放不了谁。
+    ///
+    /// [实测 leaks 2026-09-17] 一次十来分钟的播放，`leaks` 报出 **1536 个
+    /// `ROOT CYCLE: LayerPropertyAnimator`**；每个环还顺手把 `layers` 里的
+    /// `SyncedLyricsLineLayer` → `SBS_TextContentLayer` → 每音节两个 `CATextLayer`
+    /// → CoreText 的 `CTTypesetter`/`CTRun`/`NSCTFont` 整串拖住，合计 78543 个对象、
+    /// 6.2 MB，播多久涨多久。`pruneFinishedAnimators` 摘的只是
+    /// `currentAnimators` 那份登记，环本身摘不掉。
+    ///
+    /// 弱持有之后生命周期正好合上：动画挂在层上时**层**强持有它、它强持有 delegate，
+    /// 动画器活着、`animationDidStop` 照收；最后一条动画落位被摘掉，动画器随之释放，
+    /// `layers` 攥着的那串层一起放掉。已经跑完的动画自动从这张表里消失——
+    /// `cancelRunningAnimations` 要的本来就只是「还在跑的那些」的 keyPath，语义不变。
+    private struct WeakAnimation { weak var value: CAAnimation? }
+    private var liveAnimations: [WeakAnimation] = []   // +104
+    var animations: [CAAnimation] { liveAnimations.compactMap(\.value) }
     /// 未接线：原版字段，Amber 的下发路径按 keyPath 逐条 `addAnimation`，用不到它。
     var extraKeyPaths: [String] = []                  // +112
     var completionHandlers: [() -> Void] = []         // +120
@@ -126,7 +144,7 @@ extension LayerPropertyAnimator {
         anim.isRemovedOnCompletion = true                          //(w2 = 1)
         layer.add(anim, forKey: keyPath)
 
-        animations.append(anim)
+        liveAnimations.append(WeakAnimation(value: anim))
         totalAnimations += 1
         return anim
     }
@@ -191,7 +209,7 @@ extension LayerPropertyAnimator {
         anim.isRemovedOnCompletion = true
         layer.add(anim, forKey: keyPath)
 
-        animations.append(anim)
+        liveAnimations.append(WeakAnimation(value: anim))
         totalAnimations += 1
         return anim
     }
