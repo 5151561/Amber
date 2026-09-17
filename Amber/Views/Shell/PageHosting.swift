@@ -60,13 +60,13 @@ extension AppState {
         }
         return AnyView(base
             .environmentObject(self)
-            .environmentObject(player)
+            .environment(player)
             .environmentObject(library)
             .environment(downloads)
             .environment(qqLogin)
             .environment(neteaseLogin)
             .environment(providerSettings)
-            .environmentObject(player.clock)
+            .environment(player.clock)
             .environment(songsTable)
             .environment(listViewSize)
             .environment(AppSettings.shared))

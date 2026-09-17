@@ -577,11 +577,9 @@ final class InspectorLyricsViewController: NSViewController {
     private func bind() {
         // 换歌：`currentIndex` 与`queue` 分别发一次，中间那一拍两者还不同步，
         // 同一跳之后直接读 `currentTrack` 才是两者都落定的值（同 `MiniPlayerView.bind`）。
-        player.$currentIndex.map { _ in () }
-            .merge(with: player.$queue.map { _ in () })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.reload() }
-            .store(in: &cancellables)
+        observers.observeAny({ [player] in (player.currentIndex, player.queue) }) { [weak self] in
+            self?.reload()
+        }
 
         // 在「显示简介 › 歌词」里改完自定义歌词要立刻反映到面板上。
         // 键是 `LyricsStore.displayToken(for:trackInfo:)`——换歌要重取，改完自定义词也要重取。

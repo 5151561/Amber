@@ -56,7 +56,8 @@ struct PlayQueueItem: Hashable, Identifiable {
 }
 
 @MainActor
-final class PlayQueueModel: ObservableObject {
+@Observable
+final class PlayQueueModel {
 
     /// 四个分区一次算出来的结果。分区推导是纯函数（见 `sections`），
     /// 这样面板的取数逻辑不用起 App 就能单测。
@@ -74,10 +75,10 @@ final class PlayQueueModel: ObservableObject {
 
     /// 四个分区。任何一个为空，面板就不 append 那个分区
     /// （[实测] playqueue spec §3.4：四对 `(tag, 数组)` 逐对判空，空的不进快照）。
-    @Published private(set) var historyItems: [PlayQueueItem] = []
-    @Published private(set) var upNextItems: [PlayQueueItem] = []
-    @Published private(set) var continuePlayingItems: [PlayQueueItem] = []
-    @Published private(set) var autoplayItems: [PlayQueueItem] = []
+    private(set) var historyItems: [PlayQueueItem] = []
+    private(set) var upNextItems: [PlayQueueItem] = []
+    private(set) var continuePlayingItems: [PlayQueueItem] = []
+    private(set) var autoplayItems: [PlayQueueItem] = []
 
     // MARK: 两条独立的变更通知（[实测] playqueue spec §3.3 末）
 
@@ -85,7 +86,7 @@ final class PlayQueueModel: ObservableObject {
     /// 四个分区数组、循环信息行、顶部两颗按钮的状态变了，面板**只重建快照并 apply**，
     /// 不碰任何一行的高度（行高由 delegate 的 `tableView:heightOfRow:` 在 apply 过程中
     /// 逐行问，不需要额外通知）。
-    let dataDidChange = PassthroughSubject<Void, Never>()
+    let dataDidChange = EventChannel<Void>()
 
     /// 「来源变了」——对位 Music 的 `kViewModelSourceObservationContext`：
     /// `continuePlayingSource`（「来自《某专辑》」）变了，面板**只**对「继续播放」那一条
@@ -96,7 +97,7 @@ final class PlayQueueModel: ObservableObject {
     /// 就只能每次 apply 完对全部行重问高度；而 `noteHeightOfRows` 内部会走一遍
     /// `endUpdates`，`endUpdates` 又把`apply` 的 completion 再打一遍——自己喂自己，
     /// 实机必然栈溢出（crash `Amber-2026-09-09-042558.ips`）。
-    let sourceDidChange = PassthroughSubject<Void, Never>()
+    let sourceDidChange = EventChannel<Void>()
 
     init(appState: AppState) {
         self.appState = appState
@@ -105,44 +106,25 @@ final class PlayQueueModel: ObservableObject {
         // 面板会频繁问这四个数组（每次快照、每次行高、每次选区都要），所以订阅着重算一次存下来，
         // 不在 getter 里每次现推。`@Published` 是 willSet 语义（订阅到的是**改之前**的值），
         // 所以统一 `receive(on: DispatchQueue.main)` 推到下一跳再读，与仓库里其它订阅口径一致。
-        Publishers.Merge3(
-            player.$queue.map { _ in () },
-            player.$queueOrigins.map { _ in () },
-            player.$currentIndex.map { _ in () }
-        )
-        .receive(on: DispatchQueue.main)
-        .sink { [weak self] in self?.recompute() }
-        .store(in: &cancellables)
+        observers.observeAny({ [player] in (player.queue, player.queueOrigins, player.currentIndex) }) {
+            [weak self] in self?.recompute()
+        }
 
         // 循环模式**改的是快照内容**（§3.4：`continuePlayingIsRepeating` 决定分区末尾
         // 追不追那条循环信息行），所以它走「数据」这一条，不走「来源」。
-        player.$repeatMode
-            .map { _ in () }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                guard let self else { return }
-                self.objectWillChange.send()
-                self.dataDidChange.send()
-            }
-            .store(in: &cancellables)
+        observers.observe({ [player] in player.repeatMode }) { [weak self] _ in
+            self?.dataDidChange.send(())
+        }
 
         // [实测] §3.3 末：`continuePlayingSource` 单独一条——它不改分区内容，
         // 只改「继续播放」分区头那一行的高度与文案。
-        player.$queueSource
-            .map { _ in () }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                guard let self else { return }
-                self.objectWillChange.send()
-                self.sourceDidChange.send()
-            }
-            .store(in: &cancellables)
+        observers.observe({ [player] in player.queueSource }) { [weak self] _ in
+            self?.sourceDidChange.send(())
+        }
 
         // 顶部两颗按钮读的是设置（见 `mixingEnabled` / `autoplayEnabled`）——属于「数据」。
         observers.observe({ AppSettings.shared.values }) { [weak self] _ in
-            guard let self else { return }
-            self.objectWillChange.send()
-            self.dataDidChange.send()
+            self?.dataDidChange.send(())
         }
 
         recompute()
@@ -157,7 +139,7 @@ final class PlayQueueModel: ObservableObject {
         autoplayItems = result.autoplay
         // [实测] §3.3 末：四个数组落定之后才发「数据变了」——`@Published` 是 willSet 语义，
         // 订阅方直接读 `historyItems` 会读到旧值，所以通知放在赋值之后自己发。
-        dataDidChange.send()
+        dataDidChange.send(())
     }
 
     // MARK: - 分区推导（纯函数）

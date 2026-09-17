@@ -31,6 +31,7 @@ final class MiniPlayerView: NSView {
     private var player: PlayerController { appState.player }
     private var library: LibraryStore { appState.library }
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     // MARK: 视图
 
@@ -473,61 +474,48 @@ final class MiniPlayerView: NSView {
         //
         // 当前曲目：`currentIndex` 与`queue` 分别发一次，中间那一拍两者还不同步，
         // 同一跳之后直接读 `currentTrack` 才是两者都落定的值。
-        player.$currentIndex.map { _ in () }
-            .merge(with: player.$queue.map { _ in () })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                guard let self else { return }
-                self.updateTrack(self.player.currentTrack)
-            }
-            .store(in: &cancellables)
+        observers.observeAny({ [player] in (player.currentIndex, player.queue) }) { [weak self] in
+            guard let self else { return }
+            self.updateTrack(self.player.currentTrack)
 
-        player.$isPlaying.removeDuplicates()
-            .merge(with: player.$isLoading.removeDuplicates())
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updatePlayButton() }
-            .store(in: &cancellables)
+        }
 
-        player.$isShuffled.removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateShuffle() }
-            .store(in: &cancellables)
+        observers.observeAny({ [player] in (player.isPlaying, player.isLoading) }) { [weak self] in
+            self?.updatePlayButton()
+        }
 
-        player.$repeatMode.removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateRepeat() }
-            .store(in: &cancellables)
+        observers.observe({ [player] in player.isShuffled }) { [weak self] _ in
+            self?.updateShuffle()
+        }
 
-        player.$volume.removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateVolume() }
-            .store(in: &cancellables)
+        observers.observe({ [player] in player.repeatMode }) { [weak self] _ in
+            self?.updateRepeat()
+        }
 
-        player.$duration.removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.updateTime(self.player.currentTime)
-            }
-            .store(in: &cancellables)
+        observers.observe({ [player] in player.volume }) { [weak self] _ in
+            self?.updateVolume()
+        }
+
+        observers.observe({ [player] in player.duration }) { [weak self] _ in
+            guard let self else { return }
+            self.updateTime(self.player.currentTime)
+
+        }
 
         // 进度 10 Hz 一跳，只让进度条与两枚时间标签跟着跳（见 `PlaybackClock`）。
-        player.clock.$time
-            .sink { [weak self] time in self?.updateTime(time) }
-            .store(in: &cancellables)
+        observers.observe({ [clock = player.clock] in clock.time }) { [weak self] time in
+            self?.updateTime(time)
+        }
 
         // 高亮 = 「主窗面板开着」且「开的正是这一档」。两位分开之后这两颗键才与
         // 迷你窗抽屉的档位说同一件事（reactive-ui-review §2.1「多份真相」）。
-        appState.$inspectorMode.removeDuplicates().map { _ in () }
-            .merge(with: appState.$isInspectorOpen.removeDuplicates().map { _ in () })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.updateInspectorButtons() }
-            .store(in: &cancellables)
+        observers.observeAny({ [appState] in (appState.inspectorMode, appState.isInspectorOpen) }) { [weak self] in
+            self?.updateInspectorButtons()
+        }
 
-        library.$favoriteTracks
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateStar() }
-            .store(in: &cancellables)
+        observers.observe({ [library] in library.favoriteTracks }) { [weak self] _ in
+            self?.updateStar()
+        }
     }
 
     // MARK: - 各件的刷新

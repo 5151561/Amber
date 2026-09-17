@@ -26,11 +26,13 @@ final class VolumePersistenceTests: XCTestCase {
 
     /// 没存过就是满格；调过一次之后，下一次「启动」还是那一格。
     @MainActor
-    func testVolumeSurvivesRelaunch() {
+    func testVolumeSurvivesRelaunch() async {
         let first = makeState()
         XCTAssertEqual(first.player.volume, 1.0, accuracy: 0.0001)
 
         first.player.volume = 0.42
+        // 落盘那条订阅换成 Observations 之后要过一跳（以前 .sink 是同步回调）。
+        await settleObservations()
 
         let second = makeState()
         XCTAssertEqual(second.player.volume, 0.42, accuracy: 0.0001)
@@ -38,9 +40,10 @@ final class VolumePersistenceTests: XCTestCase {
 
     /// 静音（0）也照存：退出时是静音的，打开还是静音的。
     @MainActor
-    func testMutedStateSurvivesRelaunch() {
+    func testMutedStateSurvivesRelaunch() async {
         let first = makeState()
         first.player.volume = 0
+        await settleObservations()
 
         XCTAssertEqual(makeState().player.volume, 0, accuracy: 0.0001)
         _ = first

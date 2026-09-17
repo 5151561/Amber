@@ -170,11 +170,9 @@ final class AppState: ObservableObject {
         if let stored = defaults.object(forKey: Self.volumeKey) as? Double {
             player.volume = min(max(stored, 0), 1)
         }
-        player.$volume
-            .dropFirst()
-            .removeDuplicates()
-            .sink { [defaults] volume in defaults.set(volume, forKey: Self.volumeKey) }
-            .store(in: &cancellables)
+        observers.observe({ [weak player] in player?.volume ?? 1 }) { [defaults] volume in
+            defaults.set(volume, forKey: Self.volumeKey)
+        }
         // 听歌记账全部由播放器发起：从前只在视图层的点击入口记，播放器自动连播那几首
         // 一次都不算，一张专辑放完只有双击的那首 +1。
         player.onSkip = { [weak self] track in self?.library.recordSkip(track) }
@@ -403,10 +401,10 @@ final class AppState: ObservableObject {
 
         // 取流失败（VIP／网络）以前只写进 player.lastError，界面上一点提示都没有，
         // 表现就是「点了没反应」。统一弹到顶部 toast。
-        player.$lastError.compactMap { $0 }.sink { [weak self] message in
+        observers.observe({ [weak player] in player?.lastError }) { [weak self] message in
+            guard let message else { return }
             self?.showToast(message)
         }
-        .store(in: &cancellables)
 
         // 子 store 的变化**不再**转发到 AppState：转发会让每次播放进度、每次资料库改动
         // 都把所有 `@EnvironmentObject var appState` 的视图重画一遍。

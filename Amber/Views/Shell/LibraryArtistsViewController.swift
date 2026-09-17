@@ -395,12 +395,12 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
             }
             .store(in: &cancellables)
 
-        appState.player.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.refreshTrackStates()
-            }
-            .store(in: &cancellables)
+        // 这一页真读的只有「哪首在播、播没播」，不是整台播放器。
+        observers.observeAny({ [appState] in
+            (appState.player.currentIndex, appState.player.queue, appState.player.isPlaying)
+        }) { [weak self] in
+            self?.refreshTrackStates()
+        }
 
         // 下载列要跟着进度走：`DownloadStore.states` 每整百分点发一次
         observers.observe({ [appState] in appState.downloads.states }) { [weak self] _ in

@@ -226,13 +226,13 @@ extension View {
     @MainActor
     func auxiliaryEnvironment(_ appState: AppState) -> some View {
         environmentObject(appState)
-            .environmentObject(appState.player)
+            .environment(appState.player)
             .environmentObject(appState.library)
             .environment(appState.downloads)
             .environment(appState.qqLogin)
             .environment(appState.neteaseLogin)
             .environment(appState.providerSettings)
-            .environmentObject(appState.player.clock)
+            .environment(appState.player.clock)
             .environment(appState.songsTable)
             .environment(appState.listViewSize)
             .environment(AppSettings.shared)

@@ -76,7 +76,7 @@ private struct MacContentView: View {
     let onCycleTimeAccessory: () -> Void
     let onGoToArtist: (Track) -> Void
 
-    @EnvironmentObject private var player: PlayerController
+    @Environment(PlayerController.self) private var player
 
     private typealias M = MusicMetrics.NowPlaying
 
@@ -299,7 +299,7 @@ private struct MacTimeControlView: View {
     let timeAccessory: NowPlayingTimeAccessory
     let onCycleTimeAccessory: () -> Void
 
-    @EnvironmentObject private var player: PlayerController
+    @Environment(PlayerController.self) private var player
 
     @State private var showQuality = false
 
@@ -440,7 +440,7 @@ private struct MacTimeControlView: View {
 private struct ControlsAndFooterButtonsView: View {
     let state: PlayerControlsState
 
-    @EnvironmentObject private var player: PlayerController
+    @Environment(PlayerController.self) private var player
 
     private typealias M = MusicMetrics.NowPlaying
 

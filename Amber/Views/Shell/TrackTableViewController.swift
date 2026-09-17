@@ -589,10 +589,12 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         let player = appState.player
         let library = appState.library
 
+        // 播放器那三项已经是 @Observable；资料库还没（批 8），所以暂时两条路。
+        observers.observeAny({ [player] in (player.currentIndex, player.queue, player.isPlaying) }) {
+            [weak self] in self?.refreshVisibleRows()
+        }
+
         let triggers: [AnyPublisher<Void, Never>] = [
-            player.$currentIndex.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
-            player.$queue.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
-            player.$isPlaying.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
             library.$favoriteTracks.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
             library.$libraryTracks.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
             library.$ratings.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
