@@ -166,8 +166,44 @@ AmberApp (NSApplicationDelegate)                       主菜单在这里用 NSM
 | **6 整窗播放器** | AppKit 壳：背景换现成的 `MiniPlayerBackdropMetalView`、位移动画（已在 `NowPlayingHostController`）、rollover 计时、四角胶囊 `NSGlassEffectView`、右半区抽屉复用 `InspectorContainerViewController`（沉浸档）、歌词 VC 直接当子控制器；封面 / 元数据 / 传输键那一块**留 SwiftUI**、装进定尺寸槽（Music 同构）。三处决定见下面那条补记 | `NSAnimationContext`、`NSGlassEffectView`、`NSTrackingArea` | 收起后 CPU ≈ 0；展开位移与 Music 的 `transitionResponse/Damping` 一致；`-dumpviews` 迁移前后内容列 frame 一个不差 | **已完成（待用户看外观）** 2026-09-17 |
 | **7 附属窗** | 设置窗 `NSTabViewController(tabStyle: .toolbar)`，五个 pane 是`NSHostingController`；QQ 登录 sheet、显示选项面板（`NSPanel`）同法 | — | 设置窗 AX 树与`settings 规格 ` 对位 | **已完成**：三扇都归`Shell/AuxiliaryWindows`；旧 SwiftUI`Settings` 场景连同`SettingsView` 壳、`AppState.settingsTab` 已于 2026-09-07 删净 |
 | **8 清场** | ~~删 `PerfFlags / PerfScrollHarness / PerfWindowConfigurator`~~（已于 2026-09-07 单独清掉）、`ContentColumnBoundsKey`、`SidebarTrackDrop`、所有`*Host`/`*Representable`、~~`environmentObject` 注入链~~（归并进**阶段 9**）；README 架构段改写；AGENTS.md 写入 §2 的铁律 | — |`grep -rn Representable Amber` 为 0 | 未开始 |
-| **9 状态层** | 剥离 Combine：23 个 `ObservableObject` → `@Observable`，167 个 `@Published` 去壳；AppKit 侧 112 处 `.sink` → `Observations` + `TaskBag`；`PassthroughSubject`/`CurrentValueSubject` → `AsyncChannel`；`.receive(on:)` 64 处整类删掉；`SearchFieldBinder` 与 `RemoteControlServer.remoteChanges` 两个 Combine 形状的公共 API 先行改造；连同阶段 8 的 `environmentObject` 注入链一起清 | `Observation.Observations`、`swift-async-algorithms` 1.1.5（`debounce`/`removeDuplicates`/`merge`）、`AsyncChannel` | `grep -rn "import Combine" Amber` 为 0；`AmberTests` 全绿；每批 `./Tools/run.sh` 实机 | 未开始 |
+| **9 状态层** | 剥离 Combine：23 个 `ObservableObject` → `@Observable`，167 个 `@Published` 去壳；AppKit 侧 112 处 `.sink` → `Observations` + `TaskBag`；`PassthroughSubject`/`CurrentValueSubject` → `AsyncChannel`；`.receive(on:)` 64 处整类删掉；`SearchFieldBinder` 与 `RemoteControlServer.remoteChanges` 两个 Combine 形状的公共 API 先行改造；连同阶段 8 的 `environmentObject` 注入链一起清 | `Observation.Observations`、`swift-async-algorithms` 1.1.5（`debounce`/`removeDuplicates`/`merge`）、`AsyncChannel` | `grep -rn "import Combine" Amber` 为 0；`AmberTests` 全绿；每批 `./Tools/run.sh` 实机 | **已完成** 2026-09-17：分 12 批落地，`import Combine` 全仓为 0，1102 项全绿。三处与计划不同的做法见下面那条补记 |
 
+
+> **阶段 9 的补记（2026-09-17）**：分 12 批做完，每批一个提交（`git log --grep 观察：批`）。
+> 批 1–2 先改两个 Combine 形状的公共 API 与四个登录/设置 store，批 3–8 按扇出从小到大换
+> `@Observable`（最后是 `LibraryStore`），批 9 是 `AppState`，批 10–12 收尾：
+> `NotificationCenter` 六处、最后两个 `CurrentValueSubject`、清扫 45 个 import 与 15 个空
+> `Set<AnyCancellable>`。批 10/11/12 是三个子会话按文件所有权并行做的。
+>
+> **与计划正文不同的三处**（正文写于开工前，这里是落地后的事实）：
+>
+> 1. **事件流没有换 `AsyncChannel`，换了自己写的 `EventChannel`**（`Amber/Observation/EventChannel.swift`）。
+>    AsyncAlgorithms 的 `AsyncChannel` 的 `send` 是 `async`、带背压，而 `LibraryStore.notify(_:)`
+>    是被几十处同步调用的同步方法，换过去等于把 `await` 传染进整条写入路径；`AsyncStream` 又是
+>    单消费者，而 `changes(affecting:)` 的设计就是每页各订各的。`swift-async-algorithms` 仍在依赖里，
+>    真正用到的是 `debounce`（遥控器长轮询）与 `removeDuplicates(by:)`（非 Equatable 的那几处）。
+> 2. **两个 `CurrentValueSubject` 里只有一个变成了通道**。标题栏那一位（「最近添加」的段名）
+>    写方与读方是同一台控制器，换成基类上一个带 `didSet` 的普通属性就够了——判据是
+>    §1.4 那条「关心『发生了一次』还是『现在的值是什么』」，再加一问「中间有没有跨对象边界」。
+> 3. **`TaskBag.observe` 不能是简单的 `Observations(...).dropFirst()`**。订阅登记之后、`Task`
+>    第一次跑起来之前的那段窗口里如果值就变了，首个元素已经是**新值**，`dropFirst()` 会把这条改动
+>    整个吞掉、而且等多久都不来（批 6 实测：改媒体夹那两条测试全红，很容易误判成时序不够）。
+>    现在是在调用点同步取一份基线，首元素与基线不同就照发。Combine 的 `.sink` 同步登记，没有这段窗口。
+>
+> **四条留给以后的实测结论**：
+>
+> - **`@Observable` 是「所有存储属性都可观察」**，私有缓存/索引/回调也在内。镜像公开数组的索引要
+>   逐个标 `@ObservationIgnored`，否则同一次改动会重复发一轮（批 8：`LibraryStore` 标了 8 个）。
+> - **时序从 willSet 翻成「值落定之后」**，`.receive(on:)` 整类消失（全仓 64 处）。凡是按
+>   「回读拿到的是旧值」写过的代码都要重核——`AppState.pendingRoute` 清空失效那个老 bug
+>   （reactive-ui-review.md §2.1）正是 willSet 的产物，换过去从根上没了。
+> - **每帧发的通知不要换 `for await`**：clip view 的 bounds、表格的 frame 那几条，多绕一跳 await
+>   就是「悬浮态慢一帧」。块式 `addObserver(forName:object:queue:.main)` 在通知就是主线程发时
+>   [实测] 同步跑（在 `post` 返回之前），与 `.sink` 时序一致。
+> - **类型化通知（`addObserver(of:for:)`）现在还用不上**：整族 AppKit message 是
+>   `@available(macOS 27.0, *)`，而部署目标是 macOS 26；`UserDefaults.DidChangeMessage` 虽然
+>   macOS 26 就有，却是 `AsyncMessage` 而非 `MainActorMessage`，回调 `@Sendable … async`
+>   碰不到主 actor 隔离的自己。部署目标抬到 27 之后回来收这一笔。
 
 > **阶段 4 的一处更正（2026-09-06）**：计划原写「歌单/专辑/**艺人**详情 = 一张 `NSTableView`」，
 > 艺人页这一条错了。Music 的目录艺人页**不是详情表格，是一张目录页**：容器

@@ -14,7 +14,7 @@
 
 1. **不再新增 `NSViewRepresentable` / `NSViewControllerRepresentable`。** 方向只能是 AppKit 里挂`NSHostingView`。
 2. `NSHostingView` 只能挂在**定尺寸**的槽里，且`sizingOptions = []`（Apple 文档原话：减少布局测量、提升性能；帧比内容小时内容居中）。滚动容器里的单元格不许用`NSHostingView`，除非里面真有 SwiftUI 才能做的控件（先例：`SongsRichCellView`）。
-3. 悬浮态、选中态、当前播放指示由 AppKit 视图自己持有并 `needsDisplay`，不许经过`@Published` 绕一圈。
+3. 悬浮态、选中态、当前播放指示由 AppKit 视图自己持有并 `needsDisplay`，不许经过共享的可观察状态绕一圈。（这条原来写的是「不许经过`@Published`」——剥离 Combine 之后换成了 `@Observable` 的属性，要守的东西一个字没变：界面自己的显示态不上广播。）
 4. 菜单命令走响应链 target-action + `validateMenuItem`；导航意图（前往专辑/艺人）走响应链冒泡，删掉`pendingRoute`。
 5. 像素规格照旧取 `MusicMetrics` / `MusicColors`，迁移「换骨架，像素一个不改」（与歌曲表、侧栏两次迁移同一原则）。新增度量要标出处：`[实测]` = 对着 Music 量出来的定值，`[资源]` = 取自 Music 的资源包，`[AX]` = 辅助功能树，`[PX]` = 截图逐像素量，`[推]` = 没有依据、按惯例推的。
 6. **先用系统默认值，AX 量到的常量只当验收标尺。** 每条度量落地前先问三问：(a) 系统 API 能不能直接给这个数（`NSFont.systemFontSize`、`NSTableView.RowSizeStyle`、`NSSplitViewItem` 默认厚度、`NSToolbar` 标准高、`NSCollectionLayoutSpacing`……）——能就用系统的，实测值只写进注释当验收值，不在`MusicMetrics` 里立常量；(b) 是不是 Music 自己的设计常量（有`[实测]`/`[资源]` 出处）——留在`MusicMetrics` 当 token；(c) 是不是补 SwiftUI 内建偏移的`[推]`——随框架切换一起删，AppKit 里没有那层偏移，留着只会把偏移补到反方向去。只有默认值与实测确实对不上时才写死，且注释写明「系统默认 X，实测 Y」。
