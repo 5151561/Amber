@@ -318,6 +318,6 @@ A/B/C/D 四批按文件所有权并行落地，各自一个 worktree。主会话
 
 | 项 | 情况 |
 | --- | --- |
-| **「删除播放列表」的确认框** | 批 C **没加**并把决定交回来：三个调用点（`LibraryPlaylistViews` / `LibraryGridCards` / `DetailHeaderViews`）都不归它，而把 `NSAlert` 塞进 `LibraryStore` 会让这个 Foundation-only 的服务类长出 UI、变成异步，还会改掉三处现有用例的语义。**而且撤销已经补上了这条路的回头路**——HIG 对可撤销的操作更倾向不弹确认框，Music 自己却是弹的。两条路都说得通，等定夺 |
+| **「删除播放列表」的确认框** | **已定：加，照 Music 的做法**（用户 2026-09-17 定）。做成接缝三，等批 E 合并后一次改完四个文件——形状照 `Components/LibraryDeleteAlert.swift:37-67`（`hasDestructiveAction` 引了 HIG 原文；中文「取消」拿不到系统替补的 esc，要手绑 `\u{1b}`；默认键留在破坏性按钮上的取舍那里也写清了）。落点：新增一支 `confirmPlaylistDeletion`，调用点 `Views/LibraryPlaylistViews.swift:56-61`、`Shell/LibraryGridCards.swift:500-505`（**归批 E，要等**）、`Shell/DetailHeaderViews.swift:676-680 / 699-701 → :712-717`。原委：批 C **没加**并把决定交回来：三个调用点（`LibraryPlaylistViews` / `LibraryGridCards` / `DetailHeaderViews`）都不归它，而把 `NSAlert` 塞进 `LibraryStore` 会让这个 Foundation-only 的服务类长出 UI、变成异步，还会改掉三处现有用例的语义。**而且撤销已经补上了这条路的回头路**——HIG 对可撤销的操作更倾向不弹确认框，Music 自己却是弹的。两条路都说得通，等定夺 |
 | **没有 `.lproj` 会不会让系统串退成英文** | 撤销项的完整标题由 Foundation 拼（zh_CN 的格式串是「撤销%@」，**没有空格**），全屏标题由 AppKit 提供。Amber 的 bundle 里没有任何 `.lproj`（§3-1），这两条离线验证不了，实机看一眼就知道。若真退成 "Undo 删除播放列表" / "Enter Full Screen"，§3-1 的优先级要往上提 |
 | **艺人页曲目行的第一响应者** | 批 B 指出：该页曲目行 `mouseDown` 不调 `super`（`LibraryArtistsViewController.swift:1940`），只点右侧曲目行、从没点过左列时 ⌘I 可能仍灰。属于交互修，不在任何批范围内 |
