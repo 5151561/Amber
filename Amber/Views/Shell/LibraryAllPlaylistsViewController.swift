@@ -103,15 +103,18 @@ final class LibraryAllPlaylistsViewController: LibraryPageController,
     private func refresh() {
         let keyword = model.search.trimmingCharacters(in: .whitespaces)
         var result: [Entry] = []
+        // 「心水歌曲」是**合成**的一张卡，库里没有它的行，索引也就没有它的 id——
+        // 这条特判只能留在内存里按字面匹配。代价是它与下面那批走的不是同一套规则
+        //（比如拼音 `xinshui` 搜得到别的歌单、搜不到这张卡），但给一张合成卡
+        // 在索引里塞一个假 id 更糟：那个 id 会从搜索结果里漏到别处去。
         if keyword.isEmpty || "心水歌曲".localizedCaseInsensitiveContains(keyword) {
             result.append(.favorites)
         }
         if !model.favoritesOnly {
-            let playlists = keyword.isEmpty ? appState.library.playlists
-                : appState.library.playlists.filter {
-                    $0.name.localizedCaseInsensitiveContains(keyword)
-                        || ($0.source?.creatorName ?? "").localizedCaseInsensitiveContains(keyword)
-                }
+            let matches = appState.library.searchFilter(keyword, kind: .playlist)
+            let playlists = appState.library.playlists.filter {
+                matches.keeps($0.id, [$0.name, $0.source?.creatorName ?? ""])
+            }
             result.append(contentsOf: playlists.map { Entry.playlist($0) })
         }
         entries = result

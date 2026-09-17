@@ -158,8 +158,8 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
     private func refresh() {
         var albums = appState.library.libraryAlbums
         if model.favoritesOnly { albums = albums.filter { appState.library.isFavoriteAlbum($0) } }
-        let q = model.search.trimmingCharacters(in: .whitespaces)
-        if !q.isEmpty { albums = albums.filter { $0.name.localizedCaseInsensitiveContains(q) || $0.artistName.localizedCaseInsensitiveContains(q) } }
+        let matches = appState.library.searchFilter(model.search, kind: .album)
+        albums = albums.filter { matches.keeps($0.id, [$0.name, $0.artistName]) }
         let grouped = Dictionary(grouping: albums) { album -> String in
             guard let date = appState.library.albumAddedDate(for: album) else { return "更早" }
             switch RecentAddedBucket.bucket(of: date) { case .today: return "今天"; case .yesterday: return "昨天"; case .thisWeek: return "本周"; case .lastWeek: return "上周"; case .thisMonth: return "本月"; case .thisYear: return "今年"; case .earlier: return "更早" }

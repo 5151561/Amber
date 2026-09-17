@@ -176,7 +176,28 @@ final class AmberDatabase {
     ///
     /// 非加法的升级（改列类型、拆表、**删列**）把 `backup` 标成 true：跑之前先
     /// `cp library.sqlite library.sqlite.bak-v<当前版本>`（落点见`backUpBeforeUpgrade`）。
-    private static let migrations: [(to: Int32, sql: String, backup: Bool)] = [
+    private struct Step {
+        let to: Int32
+        /// 这一步的 DDL。纯 Swift 的那一步给空串。
+        let sql: String
+        let backup: Bool
+        /// SQL 表达不了的那一步。**与 `sql` 在同一个事务里，`sql` 先跑**，
+        /// 所以它看得见这一步刚改完的 schema，失败了也跟着一起回滚、版本号不会往前走。
+        ///
+        /// 加这一格是为了 v4：重建搜索索引要跑分词与 `CFStringTransform`，
+        /// 没有任何一条 SQL 能表达。除此之外的升级仍然应该是纯 SQL。
+        let work: ((SQLiteDatabase) throws -> Void)?
+
+        init(to: Int32, sql: String = "", backup: Bool = false,
+             work: ((SQLiteDatabase) throws -> Void)? = nil) {
+            self.to = to
+            self.sql = sql
+            self.backup = backup
+            self.work = work
+        }
+    }
+
+    private static let migrations: [Step] = [
         // ── v2：`track.local_path`，一根**说好了要拆的**临时桥（v3 已拆）────────────
         //
         // 那一程「文件 › 导入…」进来的曲目，路径记在 `Track.localPath` 上，取流直接用它、
@@ -190,7 +211,7 @@ final class AmberDatabase {
         //
         // 单开一步 v2 而不是改 v1 的建表语句：v1 已经在用户机器上跑过一次
         // （阶段 2 的实弹演习），改它等于让那份已经存在的库永远拿不到这一列。
-        (to: 2, sql: "ALTER TABLE track ADD COLUMN local_path TEXT", backup: false),
+        Step(to: 2, sql: "ALTER TABLE track ADD COLUMN local_path TEXT"),
 
         // ── v3：那根桥拆了 ─────────────────────────────────────────────────────
         //
@@ -203,7 +224,28 @@ final class AmberDatabase {
         // **这是升级链里第一条非加法的语句**，所以 `backup: true`。
         // `ALTER TABLE … DROP COLUMN` 要 SQLite 3.35+（本机 SDK 报 3.54，命令行 3.50），
         // 且这一列没有索引、没有视图 / 触发器 / CHECK 引用它，满足 DROP 的全部前提。
-        (to: 3, sql: "ALTER TABLE track DROP COLUMN local_path", backup: true),
+        Step(to: 3, sql: "ALTER TABLE track DROP COLUMN local_path", backup: true),
+
+        // ── v4：搜索索引全量重建一次 ────────────────────────────────────────────
+        //
+        // `search_index` 是建库那一刻（迁移器的 `insertSearchIndex`）灌满的，此后
+        // **一直没人维护**：入库、退库、改名、删列表全都不动它，所以它是陈旧的。
+        // 接上维护（`LibrarySearchIndex` 挂在 `LibraryStore` 的几个写入漏斗上）之后，
+        // 还欠一次把陈旧那份推平重来。
+        //
+        // **为什么走升级链，而不是开库时「索引行数与源表对不上就重建」。**
+        // 行数相等**不等于**内容对得上：改过名的行、把一首歌从 A 碟挪到 B 碟，
+        // 行数一个不差而正文全是旧的——而「搜旧名字搜得到、搜新名字搜不到」这种错，
+        // 用户只会当成「搜索不好使」，没人会报。版本号是**确定**的闸：这条修复
+        // 对每个库精确跑一次，跑没跑过由库头里的数说了算，不靠猜。
+        // 顺带还便宜：正常开库不用为了一次性的修复多查两张表的计数。
+        //
+        // 重建本身是幂等的（先清空再从 `track` / `library_album` / `playlist` 与
+        // 派生艺人重灌），所以哪天要再修一次，加一条 v5 调同一个函数即可。
+        //
+        // `backup: false`：这一步不动 schema，索引整张都是可从源表重算的派生物，
+        // 重建错了再重建一次就是了，没有可丢的原始数据。
+        Step(to: 4, work: { try LibrarySearchIndex.rebuild(in: $0) }),
     ]
 
     /// 当前库的 `user_version`。
@@ -239,7 +281,8 @@ final class AmberDatabase {
                 backUpBeforeUpgrade(db, fileURL: fileURL, from: version)
             }
             try db.transaction {
-                try db.execute(step.sql)
+                if !step.sql.isEmpty { try db.execute(step.sql) }
+                try step.work?(db)
                 try db.execute("PRAGMA user_version = \(step.to)")
             }
             version = step.to

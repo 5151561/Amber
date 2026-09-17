@@ -193,6 +193,10 @@ final class LibraryStore: ObservableObject {
     /// App 里走不到这里：`AppState` 先一步跑迁移，失败会弹阻塞式警告并且不以空库启动。
     private let database: AmberDatabase?
 
+    /// `search_index` 那张表的维护者。曲目 / 专辑 / 歌单的增删改都从下面那十来个
+    /// 落库助手里顺手带它一把，艺人那一档由 `persist` 末尾的对账带（见 `artistIndexDirty`）。
+    private let searchIndex = LibrarySearchIndex()
+
     /// `directory` 供测试注入临时目录；默认落`~/Library/Application Support/Amber/`。
     init(directory: URL? = nil) {
         // 开库之前先把迁移跑到：库不在就从旧 JSON 造一份，JSON 也不在就是一个空库。
@@ -444,8 +448,13 @@ final class LibraryStore: ObservableObject {
         guard !trimmed.isEmpty, let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
         playlists[index].name = trimmed
+        let renamed = playlists[index]
         persist("列表改名") { db in
             try db.run("UPDATE playlist SET name = ? WHERE id = ?", [trimmed, id])
+            // 这一路没走 `persistPlaylistRow`（改名只该动一列，不该把 position 之类
+            // 一起重写），所以索引要在这儿自己补一下。
+            try self.searchIndex.upsert(.playlist, id: id, name: trimmed,
+                                        artist: renamed.source?.creatorName ?? "", in: db)
         }
         notify(.playlists)
     }
@@ -463,8 +472,9 @@ final class LibraryStore: ObservableObject {
                 try self.persistIDSet("dismissed_account_playlist", adding: [id], removing: [],
                                       in: db)
             }
-            // `playlist_track` 那边由 `ON DELETE CASCADE` 跟着走。
+            // `playlist_track` 那边由 `ON DELETE CASCADE` 跟着走。索引没有外键，要自己撤。
             try db.run("DELETE FROM playlist WHERE id = ?", [id])
+            try self.searchIndex.delete(.playlist, id: id, in: db)
         }
         notify(.playlists)
     }
@@ -853,7 +863,12 @@ final class LibraryStore: ObservableObject {
             return false
         }
         let change = relationMask(of: id)
-        persist("改曲目") { try self.persistTracks([canonical], in: $0) }
+        persist("改曲目") { db in
+            // 改的可能正是艺人名（「显示简介」面板里那一栏），而资料库曲目的艺人名
+            // 是艺人那一档的来源之一。改完之后老艺人可能整个没人引用了，要对一遍账。
+            self.artistIndexDirty = true
+            try self.persistTracks([canonical], in: db)
+        }
         notify(change)
         return true
     }
@@ -1338,6 +1353,10 @@ final class LibraryStore: ObservableObject {
         let loadedSuggestLessArtists = try idSet("suggest_less_artist")
         let loadedDismissed = try idSet("dismissed_account_playlist")
 
+        // 搜索索引那份正文指纹。放在读的这一段里：它自己也是「读完了才赋值」，
+        // 而且必须在下面那次 `persist("清理幽灵碟")` 之前就绪——那一次写会去删索引行。
+        try searchIndex.load(from: db)
+
         // ── 到这里一条 SQL 都不会再抛了，才开始动内存 ──────────────────────────────
         libraryTracks = loadedLibraryTracks
         favoriteTracks = loadedFavoriteTracks
@@ -1521,8 +1540,19 @@ final class LibraryStore: ObservableObject {
     /// `isLoaded` 那道闸见它自己的注释：**读不出来的时候一个字都不许往回写。**
     private func persist(_ label: String, _ body: (SQLiteDatabase) throws -> Void) {
         guard isLoaded, let db = database?.sqlite else { return }
+        artistIndexDirty = false
         do {
-            try db.transaction { try body(db) }
+            try db.transaction {
+                try body(db)
+                // 艺人是**派生**的，没有自己的增删改调用点，只能在动过它那两个来源
+                //（`library_album` / `library_track` 的艺人名）之后对一遍账。
+                // 与那次写在同一个事务里：对账写了一半失败要跟着一起回滚，
+                // 否则表里留下的是「专辑回滚掉了、艺人却留着」这种半边账。
+                if artistIndexDirty {
+                    try searchIndex.reconcileArtists(
+                        LibrarySearchIndex.derivedArtists(in: db), in: db)
+                }
+            }
         } catch {
             // 这一刻起表可能与内存对不上了。读路径里读表的那几条派生查询要知道
             // 这件事，否则界面当场就是错的（见 `mirrorIsStale`）。
@@ -1559,6 +1589,14 @@ final class LibraryStore: ObservableObject {
     ///
     /// 于是这一步之后的口径与这一步之前逐字相同：**写库失败只丢持久化，不丢当场的正确性。**
     private(set) var mirrorIsStale = false
+
+    /// 这一次写动没动到艺人那一档的来源（`library_album` / `library_track` 的艺人名）。
+    ///
+    /// 由几个落库助手自己举手（`moveToFront`/`remove` 的 `.library` 那一路、三个专辑助手、
+    /// 改曲目），`persist` 在事务末尾看它决定要不要对账。**不在每一次写之后都对账**：
+    /// 起播记账、播放记账、星级、勾选这些一秒钟能来好几次的路径与艺人毫无关系，
+    /// 让它们每次都去扫两张表算一遍候选，是白花钱。
+    private var artistIndexDirty = false
 
     /// 派生查询走 SQL 那条路的唯一入口：走得通答结果，走不通答 nil。
     ///
@@ -1607,6 +1645,11 @@ final class LibraryStore: ObservableObject {
                 // 与 Swift 算的不是一个东西，专辑归位会静默错）。
                 Self.fallbackKey(for: track),
             ])
+            // 搜索索引跟着走。挂在这儿而不是各个调用点上，理由与上面那段一样：
+            // 这是曲目行写入的**唯一**漏斗，挂在漏斗上就不可能漏掉某一条路。
+            // 正文没变时 `upsert` 一条语句都不发，所以起播、列表重写这些常路是白走。
+            try searchIndex.upsert(.track, id: track.id, name: track.title,
+                                   artist: track.artistName, album: track.albumName, in: db)
         }
     }
 
@@ -1626,6 +1669,8 @@ final class LibraryStore: ObservableObject {
     private func moveToFront(_ tracks: [Track], of relation: TrackRelation,
                              in db: SQLiteDatabase) throws {
         guard !tracks.isEmpty else { return }
+        // 资料库曲目是艺人的第二个来源（第一个是入库专辑），动了它就要对一遍艺人的账。
+        if relation == .library { artistIndexDirty = true }
         try persistTracks(tracks, in: db)
         let deleteSQL = "DELETE FROM \(relation.rawValue) WHERE track_id = ?"
         for track in tracks { try db.run(deleteSQL, [track.id]) }
@@ -1636,8 +1681,12 @@ final class LibraryStore: ObservableObject {
 
     private func remove(_ ids: some Sequence<String>, from relation: TrackRelation,
                         in db: SQLiteDatabase) throws {
+        if relation == .library { artistIndexDirty = true }
         let sql = "DELETE FROM \(relation.rawValue) WHERE track_id = ?"
         for id in ids { try db.run(sql, [id]) }
+        // 索引里那条曲目**不删**：`track` 表故意不做 GC，退库只是把它从 `library_track`
+        // 里摘掉，行还在。索引与 `track` 表一一对应，跟着摘反而对不上了——
+        // 而多出来的 id 不会凭空多出一行，七处搜索筛的是各自手里那份数组。
     }
 
     /// 截顶：只留最前面 `limit` 条。
@@ -1670,6 +1719,7 @@ final class LibraryStore: ObservableObject {
 
     /// 新入库的一张碟：整表让一格，再插一行。
     private func prependAlbum(_ album: Album, in db: SQLiteDatabase) throws {
+        artistIndexDirty = true
         try db.run("UPDATE library_album SET position = position + 1")
         try db.run("""
             INSERT INTO library_album (id, kind, name, artist_name, artist_id, artwork_url,
@@ -1677,13 +1727,18 @@ final class LibraryStore: ObservableObject {
                                        added_at, album_key, position)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
             """, [album.id] + albumBinds(album))
+        try searchIndex.upsert(.album, id: album.id, name: album.name,
+                               artist: album.artistName, in: db)
     }
 
     /// 已经在库里那张：只按内存现值改字段，**position 一格不动**
     ///（用户改过的评分、喜爱都挂在原条目上，位置也是原来的位置）。
     private func updateAlbum(_ album: Album, in db: SQLiteDatabase) throws {
+        artistIndexDirty = true
         try db.run("UPDATE library_album SET \(Self.albumColumns) WHERE id = ?",
                    albumBinds(album) + [album.id])
+        try searchIndex.upsert(.album, id: album.id, name: album.name,
+                               artist: album.artistName, in: db)
     }
 
     /// 把表里已经不在 `libraryAlbums` 里的行删掉（退库、清空碟、载入时清幽灵碟共用）。
@@ -1691,10 +1746,14 @@ final class LibraryStore: ObservableObject {
     /// 不写成 `DELETE … WHERE id NOT IN (…)`：那个 IN 列表的长度是资料库里碟的张数。
     /// 先读一遍 id（只有一列、张数级别）再逐条删，删的条数才是真正变了的那几条。
     private func pruneAlbumRows(in db: SQLiteDatabase) throws {
+        artistIndexDirty = true
         let alive = Set(libraryAlbums.map(\.id))
         for id in try db.query("SELECT id FROM library_album", [], { $0.text(0) })
         where !alive.contains(id) {
             try db.run("DELETE FROM library_album WHERE id = ?", [id])
+            // 专辑与索引里那一行是一一对应的，摘掉一张碟就要撤掉它那一条
+            //（曲目那边不是这样，见 `remove(_:from:in:)`）。
+            try searchIndex.delete(.album, id: id, in: db)
         }
     }
 
@@ -1722,6 +1781,10 @@ final class LibraryStore: ObservableObject {
             playlist.coverURL, playlist.description, playlist.createdAt, playlist.addedAt,
             position,
         ])
+        // 索引里歌单那一行的 `artist` 列放的是**创建者**（本地自建列表没有，写空串）——
+        // 与「歌单页搜索匹配歌单名与创建者名」那条既有规则一致。
+        try searchIndex.upsert(.playlist, id: playlist.id, name: playlist.name,
+                               artist: playlist.source?.creatorName ?? "", in: db)
     }
 
     /// 一份列表的曲目，整份重写。
@@ -1768,7 +1831,9 @@ final class LibraryStore: ObservableObject {
         for id in try db.query("SELECT id FROM playlist", [], { $0.text(0) })
         where !alive.contains(id) {
             // `playlist_track` 那边由 `ON DELETE CASCADE` 跟着走（`foreign_keys` 是开着的）。
+            // 索引没有外键，要自己撤。
             try db.run("DELETE FROM playlist WHERE id = ?", [id])
+            try searchIndex.delete(.playlist, id: id, in: db)
         }
         for (position, playlist) in playlists.enumerated() {
             try persistPlaylistRow(playlist, position: position, in: db)
@@ -1877,6 +1942,39 @@ final class LibraryStore: ObservableObject {
         }
     }
 
+    // MARK: - 搜索
+
+    /// **七处搜索的唯一入口**：一个词在这一类对象里命中了哪些 id。
+    ///
+    /// 从前歌曲页、专辑页、最近添加、歌单页、艺人页、列表详情、搜索页的资料库范围
+    /// 各写各的 `localizedCaseInsensitiveContains`，七份规则各自漂。现在一份：
+    /// 切词、拼音、查询串全在 `LibrarySearch`，表在 `LibrarySearchIndex`，
+    /// 调用方拿回的是 `LibraryTextFilter`——**筛的还是自己手里那份数组**，
+    /// 各自的排序、分组、与别的筛选条件的先后一个字不用动。
+    ///
+    /// 三条守住的行为：
+    ///
+    /// 1. **空 / 纯空白查询返回 `.all`**，压根不进 MATCH（实测裸空串报
+    ///    `fts5: syntax error near ""`）。这一判由 `ftsQuery` 返回 nil 表达。
+    /// 2. **库开不了 / 查询抛错 / `mirrorIsStale` 竖着 → 退回内存子串筛选**，
+    ///    也就是这次改造之前那套。与阶段 7 同一个理由：表只是加速器、内存数组仍是真值，
+    ///    绝不能让一次故障表现成「搜什么都没有」。
+    /// 3. **拉丁文字从「任意子串」收窄为「词前缀」**：`aylor` 不再命中 `Taylor`
+    ///    （`taylor` 命中）。这是**有意的**变化，Apple Music 自己就是词前缀匹配，
+    ///    别当 bug 改回去——`LibrarySearchTests.testLatinMatchesWordPrefixNotArbitrarySubstring`
+    ///    专门钉住它。退路那一条走的仍是子串，所以故障时召回只会更宽、不会更窄。
+    func searchFilter(_ raw: String, kind: LibrarySearchIndex.Kind) -> LibraryTextFilter {
+        let keyword = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let query = LibrarySearch.ftsQuery(keyword) else { return .all }
+        guard !mirrorIsStale, let db = database?.sqlite else { return .substring(keyword) }
+        do {
+            return .ids(try LibrarySearchIndex.matchedIDs(kind, query: query, in: db))
+        } catch {
+            NSLog("[LibraryStore] 搜索查询失败，这一次退回内存筛选：%@", String(describing: error))
+            return .substring(keyword)
+        }
+    }
+
     // MARK: - 资料库派生（艺人页）
 
     /// 专辑的添加时间。没有记录（从未记过时间）就是 nil。
@@ -1950,7 +2048,11 @@ final class LibraryStore: ObservableObject {
     ///
     /// 空艺人名不在 SQL 里筛掉——`artists(from:)` 本来就跳过它们，
     /// 筛在哪一头是个选择，而**让两条路吃同一份规则**比省几行扫描重要。
-    private static let artistCandidatesSelect = """
+    ///
+    /// **不是 `private`**：`LibrarySearchIndex` 维护索引里艺人那一档时要按同一份规则
+    /// 派生同一批 id。抄一份过去的话，哪天改了去重口径就会出现「艺人页上有这个人、
+    /// 搜他的名字却搜不到」这种查无可查的不一致。
+    static let artistCandidatesSelect = """
         SELECT name, kind FROM (
             SELECT artist_name AS name, kind, 0 AS tier, position AS ord FROM library_album
             UNION ALL
@@ -1964,7 +2066,11 @@ final class LibraryStore: ObservableObject {
     /// **SQL 那条路与内存那条路共用这一段**，两条路的差别只剩「候选从哪儿来」。
     /// 抄成两份的话，哪天改了去重口径（比如改成大小写无关）就会出现「表里那份艺人页
     /// 与写失败之后那份艺人页不一样」这种查无可查的不一致。
-    private static func artists(from candidates: [(name: String, kind: ProviderKind)]) -> [Artist] {
+    ///
+    /// 第三位用户是 `LibrarySearchIndex.derivedArtists`：索引里艺人那一档的 id
+    /// 必须与这里派生出来的一模一样，否则就是「艺人页上有这个人、搜他的名字却搜不到」。
+    /// 它也是这个函数不是 `private` 的原因。
+    static func artists(from candidates: [(name: String, kind: ProviderKind)]) -> [Artist] {
         var kinds: [String: ProviderKind] = [:]
         var names: [String] = []
         for candidate in candidates {

@@ -72,7 +72,7 @@ final class AmberDatabaseTests: XCTestCase {
     @MainActor
     func testUserVersionIsCurrent() throws {
         let database = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try database.userVersion(), 3)
+        XCTAssertEqual(try database.userVersion(), 4)
     }
 
     /// v3 那一步：`track.local_path` **拆了**。
@@ -109,7 +109,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let upgraded = try AmberDatabase(fileURL: file)
-        XCTAssertEqual(try upgraded.userVersion(), 3)
+        XCTAssertEqual(try upgraded.userVersion(), 4)
         let columns = Set(try upgraded.sqlite.query(
             "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
         XCTAssertFalse(columns.contains("local_path"))
@@ -124,6 +124,41 @@ final class AmberDatabaseTests: XCTestCase {
         let backedUpColumns = Set(try old.query(
             "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
         XCTAssertTrue(backedUpColumns.contains("local_path"))
+    }
+
+    /// v4 那一步：停在 v3 的库（用户手上那份）开起来时，搜索索引被**全量重建**一次。
+    ///
+    /// `search_index` 从阶段 3 起就没人维护了——建库那一刻灌满，此后入库、退库、改名、
+    /// 删列表全都不动它。这条用例造的正是那种库：曲目行在、索引行是陈旧的（这里直接清空，
+    /// 实机上更常见的是「名字对不上」）。升级链跑完索引要与 `track` 表一一对应。
+    ///
+    /// 顺带钉住这一步**在事务里**：版本号与索引行是一起提交的，不会出现
+    /// 「版本号到了 4、索引还是空的」这种从此再也不会自愈的中间态。
+    @MainActor
+    func testUpgradeToV4RebuildsStaleSearchIndex() throws {
+        let file = directory.appendingPathComponent("library.sqlite")
+        do {
+            let database = try AmberDatabase(directory: directory)
+            try database.sqlite.run("""
+                INSERT INTO track (id, kind, title, artist_name, album_name, duration, album_key)
+                VALUES (?,?,?,?,?,?,?)
+                """, ["qq:1", "qq", "七里香", "周杰倫", "葉惠美", 1.0, "葉惠美|周杰倫"])
+            // 陈旧成什么样都行，这里清空是最好断言的一种。
+            try database.sqlite.run("DELETE FROM search_index")
+            try database.sqlite.execute("PRAGMA user_version = 3")
+            database.checkpoint()
+        }
+
+        let upgraded = try AmberDatabase(fileURL: file)
+        XCTAssertEqual(try upgraded.userVersion(), 4)
+        XCTAssertEqual(try count(upgraded, "search_index"), 1)
+        // 重建用的是 `LibrarySearch.indexRow`，所以中文子串与拼音两条路都该通。
+        for word in ["里香", "qlx"] {
+            let query = try XCTUnwrap(LibrarySearch.ftsQuery(word))
+            let hits = try LibrarySearchIndex.matchedIDs(.track, query: query,
+                                                         in: upgraded.sqlite)
+            XCTAssertEqual(hits, ["qq:1"], "重建之后「\(word)」该命中")
+        }
     }
 
     /// 全新的空库不留备份：那一份拷出来也是 0 行，只是在每个临时目录里多一个文件。
@@ -147,7 +182,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let second = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 3)
+        XCTAssertEqual(try second.userVersion(), 4)
         let value = try second.sqlite.value(
             "SELECT value FROM rating WHERE id = ?", ["qq:1"]) { $0.int(0) }
         XCTAssertEqual(value, 5)
@@ -195,7 +230,7 @@ final class AmberDatabaseTests: XCTestCase {
 
         // 空壳条目不会挡住下一次开库。
         let second = try AmberDatabase.shared(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 3)
+        XCTAssertEqual(try second.userVersion(), 4)
     }
 
     // MARK: - 外键：该级联的级联
