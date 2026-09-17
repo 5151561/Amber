@@ -907,7 +907,7 @@ struct AdvancedSettingsPane: View {
     @EnvironmentObject private var appState: AppState
     /// 遥控器（iOS「遥控」App）的配对与广播。单例：这一行要显示的配对数在设置窗里
     /// 就得能看见，而设置窗这棵树上只有 `AppState`——不为一行界面逼别人的文件先长属性。
-    @ObservedObject private var remote = RemoteControlServer.shared
+    private let remote = RemoteControlServer.shared
     @State private var cacheCleared = false
     @State private var warningsRestored = false
     @State private var showingPairing = false
@@ -978,7 +978,7 @@ struct AdvancedSettingsPane: View {
 /// 流程：浏览 `_touch-remote._tcp` → 选一台 → 输它屏幕上显示的 4 位数字 →
 /// 我们把 `MD5(Pair ‖ PIN)` 送到手机上那个 HTTP 服务，对得上就回一份配对 GUID。
 private struct RemotePairingSheet: View {
-    @ObservedObject var remote: RemoteControlServer
+    let remote: RemoteControlServer
     @Environment(\.dismiss) private var dismiss
 
     @State private var selection: DiscoveredRemote.ID?

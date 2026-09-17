@@ -84,18 +84,19 @@ struct RemotePlayState: Equatable {
 /// service），三个都指向同一份 HTTP 处理：
 /// `_touch-able._tcp`（遥控 App 找资料库靠它）、`_dacp._tcp`、`_daap._tcp`。
 @MainActor
-final class RemoteControlServer: ObservableObject {
+@Observable
+final class RemoteControlServer {
 
     /// 设置窗那一行要能观察到它，而设置窗那棵树里只有 `AppState`；
     /// 为了不逼着别人的文件先长出一个属性来，本体做成单例，
     /// `AppState` 只负责`configure(target:)` + `start()`（见文件末尾的「接线」注释）。
     static let shared = RemoteControlServer()
 
-    @Published private(set) var isListening = false
-    @Published private(set) var pairedDevices: [PairedRemote] = []
-    @Published private(set) var discovered: [DiscoveredRemote] = []
+    private(set) var isListening = false
+    private(set) var pairedDevices: [PairedRemote] = []
+    private(set) var discovered: [DiscoveredRemote] = []
     /// 配对失败的原因，配对表单显示它。
-    @Published var lastError: String?
+    var lastError: String?
 
     static let log = Logger(subsystem: "com.changlepan.Amber", category: "remote")
 
