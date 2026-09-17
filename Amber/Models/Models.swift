@@ -712,11 +712,74 @@ extension String {
     }
 }
 
+// MARK: 数字成串
+
+// `String(format:)` 是 C 那套变参格式化，Swift 里它是 `@unsafe` 的：格式串与实参个数、
+// 类型都没人对，写错了不报错、跑起来读到的是栈上别的东西。开了 strict memory safety
+//（`SWIFT_STRICT_MEMORY_SAFETY`，SE-0458）之后每用一次报一条。
+//
+// 全仓的用法其实只有三种形状：定宽补零的整数、字节转十六进制、定小数位的浮点。
+// 前两种有**逐字符等价**的纯 Swift 写法，直接换掉（`zeroPadded` / `hexString`）；
+// 第三种没有，于是只收成一个 `@safe` 外壳（`fixed`），见它自己的注释。
+//
+// 为什么要收成一份而不是各处照抄：`String(_:radix:)` 不像 `%02x` 那样自带宽度，
+// 补零得手写，而这几处的输出是 MD5/SHA 签名、eapi 密文串、配对码、缓存文件名——
+// 少补一个零就是另一个值，且不会当场报错，只会在服务端验签或缓存串图时才发作。
+// 这种「写七遍就有七次写错的机会」的活只留一份。
+//
+// 等价性不是推的：改前改后各自编成倾倒程序做过差分——`%02d`/`%03d`/`%04d` 走遍
+// −2000…2000、`%02x`/`%02X` 走遍 256 个字节值、`%04x` 走遍 0…0xFFFF、
+// `hexString` 拿 2000 组随机字节串（0–64 字节）大小写各一遍，全部逐字符一致。
+
+extension BinaryInteger {
+    /// 定宽、左侧补零的数字串：`String(format: "%0\(width)d")`（以及 `%0Nx` / `%0NX`）的安全替代。
+    ///
+    /// 与 `printf` 的宽度语义一致：`width` 是**最小**宽度，够长就原样不截断；
+    /// 负号算进宽度里、零补在负号后面（`(-5).zeroPadded(to: 3)` → `-05`）。
+    func zeroPadded(to width: Int, radix: Int = 10, uppercase: Bool = false) -> String {
+        let digits = String(magnitude, radix: radix, uppercase: uppercase)
+        let sign = self < 0 ? "-" : ""
+        let short = width - sign.count - digits.count
+        guard short > 0 else { return sign + digits }
+        return sign + String(repeating: "0", count: short) + digits
+    }
+}
+
+extension BinaryFloatingPoint {
+    /// 定小数位的数字串，等同 `String(format: "%.\(places)f", self)`。
+    ///
+    /// 这一个**没有**安全替代，所以是外壳不是替换。`Double.formatted(.number.precision(
+    /// .fractionLength(n)))` 看着对得上（默认进位规则同样是 round-half-even，钉住
+    /// `en_US_POSIX` 也能挡掉区域差异），但两者进位的**对象**不同：`%f` 拿二进制真值去凑，
+    /// `FormatStyle` 走 ICU，拿的是那个 Double 的最短十进制表示。落到平局上就分家——
+    /// 60 万个样本的差分里 `%.1f` 差 49 条、`%.2f` 差 570 条、`%.3f` 差 5998 条，
+    /// 例：`145140.45` 的 `%.1f`，printf 给 `145140.5`（真值略大于 .45），FormatStyle 给 `145140.4`。
+    /// 播放量这类「整十整百」的数正好最容易踩上平局，所以不换。
+    ///
+    /// 不安全在哪：`String(format:)` 是 C 变参，格式串与实参没人对，写错不报错、
+    /// 跑起来读的是栈上别的东西。谁保证它安全：格式串在这一行里拼死成 `%.<整数>f`、
+    /// 实参也拼死成一个 `Double`，两者成对出现在同一个表达式里，调用方够不着；
+    /// 唯一的变量 `places` 只影响小数位数，进不了「有几个实参、是什么类型」这件事。
+    @safe func fixed(_ places: Int) -> String {
+        unsafe String(format: "%.\(places)f", Double(self))
+    }
+}
+
+extension Sequence<UInt8> {
+    /// 字节序列的十六进制串，**每字节固定两位**：`map { String(format: "%02x", $0) }.joined()` 的安全替代。
+    ///
+    /// 大小写不是无所谓的，调用点各自按协议要求传：网易 `encSecKey` 要小写、
+    /// eapi `params` 与 DAAP 的配对 GUID 要大写，写反了对面直接不认。
+    func hexString(uppercase: Bool = false) -> String {
+        reduce(into: "") { $0 += $1.zeroPadded(to: 2, radix: 16, uppercase: uppercase) }
+    }
+}
+
 extension TimeInterval {
     /// mm:ss 展示
     var mmss: String {
         let total = Int(self.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
+        return "\(total / 60):\((total % 60).zeroPadded(to: 2))"
     }
 }
 
@@ -724,10 +787,10 @@ extension Int {
     /// 播放量等大数的短格式（12.3万 / 1.2亿）
     var shortCount: String {
         if self >= 100_000_000 {
-            return String(format: "%.1f亿", Double(self) / 100_000_000)
+            return "\((Double(self) / 100_000_000).fixed(1))亿"
         }
         if self >= 10_000 {
-            return String(format: "%.1f万", Double(self) / 10_000)
+            return "\((Double(self) / 10_000).fixed(1))万"
         }
         return "\(self)"
     }
