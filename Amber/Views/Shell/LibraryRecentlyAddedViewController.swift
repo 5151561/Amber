@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 /// 阶段 5：资料库「最近添加」的 AppKit 分段网格。
 /// 与专辑页共用同一套 cell（`LibraryAlbumCollectionItem`）与列宽换算（`LibraryGridSizing`），
@@ -22,14 +21,6 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
     /// [推] 刚进页面时第一段头还完整可见，这时标题该还是页名「最近添加」——
     /// 旧 SwiftUI 版同样留了 8pt（`displayTitle` 那段注释）。
     private static let titleHysteresis: CGFloat = 8
-    /// 标题栏标题跟着滚动联动的当前段名（nil = 用页名「最近添加」）。
-    ///
-    /// **这一位属于这一页**，不再挂在四页共用的 `LibraryPageModel` 上：它是一次性显示态，
-    /// 摆在共享模型里迟早又会被谁接成整页刷新（§5「滚过段头 = 整页重灌」）。
-    /// 消费方只有标题件那一条链（`LibraryPageController.displayTitleSource`）。
-    private let sectionTitle = CurrentValueSubject<String?, Never>(nil)
-
-    override var displayTitleSource: CurrentValueSubject<String?, Never>? { sectionTitle }
 
     init(appState: AppState, model: LibraryPageModel) {
         super.init(nativePage: appState, model: model,
@@ -82,12 +73,12 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
                 self?.setNeedsRefresh()
             }
         })
-        // **只订这一页真读的那两项**，不要 `model.objectWillChange`：
-        // 标题栏标题跟着滚动联动是靠 `updateDisplayTitle()` 写`sectionTitle`，
+        // **只订这一页真读的那两项**，不要把整个 `model` 装进一次 `observeAny`：
+        // 标题栏标题跟着滚动联动是靠 `updateDisplayTitle()` 写基类的 `displayTitle`，
         // 那一位从前也长在这个共用模型上（`@Published displayTitle`），
-        // 接整个 `objectWillChange` 就成了自激——滚过一个段头 = 整页重分组 +
-        // `reloadData()` 一次。现在那一位已经搬回这一页自己身上，标题那条链
-        // 工具栏直接订 `displayTitleSource`（`ContentToolbar`），页面这条本来就是多余的。
+        // 接「模型随便哪项变了」就成了自激——滚过一个段头 = 整页重分组 +
+        // `reloadData()` 一次。现在那一位已经搬回页控制器自己身上，标题件由基类就地改
+        // （`ContentToolbar`），中间不经任何广播，页面这条订阅本来就是多余的。
         // 这一页没有排序菜单（`hasSort: false`），所以 `sort` 也不订。
         observers.observeNow({ [model] in model.search }) { [weak self] _ in self?.setNeedsRefresh() }
         observers.observeNow({ [model] in model.favoritesOnly }) { [weak self] _ in self?.setNeedsRefresh() }
@@ -131,6 +122,11 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
     /// 滚动联动标题栏标题：显示最后一个「段头已经滚过内容列顶」的段名，
     /// 一段都没滚过时交 nil（基类拿它回落到页名）。Music 同（`recents 规格` §2.1），
     /// 旧 SwiftUI 版是 preference key 收各段头 minY 再挑，这里直接问布局要段头的 frame。
+    ///
+    /// 写的是**基类页控制器自己的** `displayTitle`，不是四页共用的 `LibraryPageModel`：
+    /// 这一位是这一页的一次性显示态，摆进共享模型里迟早又会被谁接成整页刷新
+    /// （§5「滚过段头 = 整页重灌」）。滚动每帧都会来一次，只在段名真的换了时才动标题件
+    /// ——去重在基类那一处（`displayTitle` 的 `didSet`）。
     private func updateDisplayTitle() {
         guard let collectionView, let layout = collectionView.collectionViewLayout else { return }
         let top = collectionView.visibleRect.minY
@@ -143,9 +139,7 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
             guard header.frame.minY - top <= Self.titleHysteresis else { break }
             title = sections[index].0
         }
-        // 滚动每帧都会来一次，只在段名真的换了时才发。
-        guard title != sectionTitle.value else { return }
-        sectionTitle.value = title
+        displayTitle = title
     }
 
     /// 切走：导航容器只把视图 `isHidden` 掉，鼠标不会再发 exited。

@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - 标识符
@@ -190,13 +189,26 @@ class LibraryPageController: ContentPageController {
     /// 造出来的标题件。「最近添加」的标题会跟着滚动联动当前段名，得留着改它。
     private weak var titleItem: NSToolbarItem?
 
-    /// 标题栏标题的覆盖流（nil = 这一页不覆盖，一直用页名）。默认不覆盖，
-    /// 只有「最近添加」覆写成自己那条（段名跟着滚动走）。
+    /// 标题栏标题的覆盖值（nil = 这一页不覆盖，一直用页名）。默认不覆盖，
+    /// 只有「最近添加」写它（段名跟着滚动走）。
     ///
-    /// 用 `CurrentValueSubject` 而不是共用模型上的 `@Published`：这一位是**那一页
-    /// 自己的一次性显示态**，不该混进四页共用的 `LibraryPageModel`（原委见那边的注释）；
-    /// 而 subject 带着当前值，下面建标题件时直接问它就行，不用再存一份镜像。
-    var displayTitleSource: CurrentValueSubject<String?, Never>? { nil }
+    /// **这一位属于写它的那一页**，不许挂回四页共用的 `LibraryPageModel`（原委见那边的
+    /// 注释）：它是一次性显示态，摆进那份共享模型里，迟早又会被谁接成整页刷新
+    /// （「滚过一个段头 = 整页重灌」）。所以它长在页控制器自己身上。
+    ///
+    /// 不是事件流，所以不走 `EventChannel`——计划 §1.4 那条判据问的是「消费方关心
+    /// 『发生了一次』还是『现在的值是什么』」：建标题件那一刻得有个字摆上去，要的是
+    /// **当前值**。而这个状态的写方与读方是同一台控制器，连订阅都省了：当前值由
+    /// `makePageToolbarItem` 直接读，后续变化由 `didSet` 直接改攥在手里的那一件
+    /// （同计划 §2 铁律 3 的口径：界面自己的显示态不绕广播）。
+    ///
+    /// 去重留在这里——它就是从前那句 `.removeDuplicates()`：滚动时每帧都会写一次。
+    var displayTitle: String? {
+        didSet {
+            guard displayTitle != oldValue else { return }
+            ContentToolbarItems.setTitle(displayTitle ?? pageTitle, on: titleItem)
+        }
+    }
 
     init(appState: AppState, model: LibraryPageModel, title: String, allItemsTitle: String,
          placeholder: String, hasSort: Bool,
@@ -229,7 +241,10 @@ class LibraryPageController: ContentPageController {
     override func makePageToolbarItem(_ identifier: NSToolbarItem.Identifier) -> NSToolbarItem? {
         switch identifier {
         case .amberPageTitle:
-            let item = ContentToolbarItems.title(displayTitleSource?.value ?? pageTitle)
+            // 「当前值」那一路。切页回来时这一件会被重造（`MainWindowController`
+            // 的 `replacePageOwnedItems`），所以标题得当场问 `displayTitle` 要，
+            // 不能指望订阅补——「最近添加」滚到半截切走再切回来，靠的就是这一句。
+            let item = ContentToolbarItems.title(displayTitle ?? pageTitle)
             titleItem = item
             return item
         case .amberFilter:
@@ -239,19 +254,6 @@ class LibraryPageController: ContentPageController {
         default:
             return nil
         }
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        // 「最近添加」的标题跟着滚动联动当前段名（Music 同）：那一页把当前段名发上来，
-        // 标题件在这里跟着改。别的页面不给这条流，标题就一直是 `pageTitle`。
-        displayTitleSource?
-            .removeDuplicates()
-            .sink { [weak self] title in
-                guard let self else { return }
-                ContentToolbarItems.setTitle(title ?? self.pageTitle, on: self.titleItem)
-            }
-            .store(in: &cancellables)
     }
 }
 
@@ -359,7 +361,6 @@ final class SearchPageFieldBinder: NSObject, NSSearchFieldDelegate {
     let field = SearchPageSearchField(frame: .zero)
     private let model: SearchPageModel
     private let appState: AppState
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     init(model: SearchPageModel, appState: AppState) {
