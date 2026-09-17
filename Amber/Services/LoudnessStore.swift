@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Synchronization
+import os
 
 /// 每首歌量到的响度（音量平衡 / Sound Check 用）。
 ///
@@ -13,6 +14,9 @@ import Synchronization
 /// 却要把整份重写一遍」最吃亏的那种负载。
 @MainActor
 final class LoudnessStore {
+
+    /// 读库失败与落库失败两条。与 `LibraryStore.log` 同解（都是降级路径，不弹界面）。
+    private static let log = AmberDiagnostics.logger("loudness")
 
     private(set) var entries: [String: LoudnessEntry] = [:]
 
@@ -75,8 +79,10 @@ final class LoudnessStore {
             entries = loaded
             isLoaded = true
         } catch {
-            NSLog("[LoudnessStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
-                  String(describing: error))
+            Self.log.error("""
+                读库失败，这一程只读不写（库里那份一个字没动）：\
+                \(String(describing: error), privacy: .public)
+                """)
         }
     }
 
@@ -243,7 +249,7 @@ final class LoudnessStore {
                   measured_at = excluded.measured_at
                 """, [id, entry.lufs, entry.peakDB, entry.measuredAt])
         } catch {
-            NSLog("[LoudnessStore] 响度落库失败：%@", String(describing: error))
+            Self.log.error("响度落库失败：\(String(describing: error), privacy: .public)")
         }
     }
 
