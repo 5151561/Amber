@@ -31,6 +31,10 @@ final class LoudnessStoreTests: XCTestCase {
         let reloaded = LoudnessStore(directory: directory)
         XCTAssertEqual(reloaded.entry(for: track("qq:1"))?.lufs, -22)
         XCTAssertNil(reloaded.entry(for: track("qq:2")))
+        // 并进主库之后不再另开 loudness.json。
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: directory.appendingPathComponent("loudness.json").path))
+        XCTAssertTrue(fm.fileExists(atPath: directory.appendingPathComponent("library.sqlite").path))
     }
 
     /// 缓存里的条目直接给出该用的增益（−16 目标、+6 上限、峰值留 1 dB）。

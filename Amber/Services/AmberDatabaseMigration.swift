@@ -130,11 +130,12 @@ struct LegacyLibraryArchive: Codable {
     var recentContainers: [RecentContainer]?
 }
 
-/// 旧 `trackinfo.json` 的形状：`TrackInfoStore.Storage` 的快照。
+/// 旧 `trackinfo.json` 的形状（`TrackInfoStore` 从前那个 `Storage` 壳子的快照）。
 ///
 /// `TrackInfo` 与 `LoudnessEntry` 都**原样复用现役类型**：它们不像 `Track` 那样有字段要退场，
 /// 而且 `TrackInfo` 自己手写了 `init(from:)` 逐条 `decodeIfPresent`，本来就是照「旧文件缺键」
-/// 设计的，再抄一份只会多一处会发霉的副本。
+/// 设计的，再抄一份只会多一处会发霉的副本。并进主库之后那份 `Codable` 只剩这里在用
+/// （见 `TrackInfo.init(from:)` 的注释）。
 private struct LegacyTrackInfoArchive: Codable {
     var infos: [String: TrackInfo] = [:]
     var resumePositions: [String: TimeInterval]?
@@ -161,9 +162,10 @@ private struct LegacyDownloadEntry: Codable {
 /// 自校验，全过了才 `rename` 成 `library.sqlite`。中途任何一步崩了 / 抛了，磁盘上只剩一个
 /// 孤儿 `.new`（下次启动照样重来）和**一个字没动的旧 JSON**。没有「写了一半的库」这种状态。
 ///
-/// **这一轮 JSON 一律不改名**（`renameLegacyOnSuccess` 默认 false）：JSON 仍是唯一真值源，
-/// 建出来的库没有任何人读。这就是「零风险实弹演习」的含义——拿真库跑一遍、手工核对计数，
-/// 核不对就把 `library.sqlite` 删了当无事发生。
+/// **改名只跟着 store 走**（见 `runIfNeeded` 的 `renameLegacyOnSuccess`）：一份存档改名
+/// ＝ 宣布「它已经没人读了」。阶段 1、2 那两轮一份都不改（JSON 仍是唯一真值源，
+/// 建出来的库没有任何人读，核不对就把 `library.sqlite` 删了当无事发生）；阶段 3 起
+/// `library.json`、阶段 4 起 `trackinfo.json` / `loudness.json` 各自跟着自己的 store 退场。
 ///
 /// ## 失败策略：「读不出来」永远不能变成「写空的」
 ///
@@ -265,10 +267,10 @@ enum AmberDatabaseMigration {
     ///     nil ＝ 设置 › 文件 ›「媒体」文件夹。
     ///   - renameLegacyOnSuccess: 成功之后把**已经没人读的**那些旧存档改名
     ///     `*.json.migrated-<yyyyMMdd>`。默认关着（阶段 1、2 那两轮 JSON 仍是唯一真值源）。
-    ///     打开之后改哪几份**跟着 store 一份一份来**：阶段 3 只有 `library.json`，
-    ///     `trackinfo.json` / `loudness.json` 要等阶段 4 它们各自的 store 并进主库
-    ///     （理由见下面那段实测）。媒体夹的 `index.json` 任何时候都不改名——
-    ///     它是媒体文件夹的自解释**清单**，不是 Amber 的存档。
+    ///     打开之后改哪几份**跟着 store 一份一份来**：阶段 3 是 `library.json`，
+    ///     阶段 4 `trackinfo.json` / `loudness.json` 跟上（理由见下面那段实测）。
+    ///     媒体夹的 `index.json` 任何时候都不改名——它是媒体文件夹的自解释**清单**，
+    ///     不是 Amber 的存档。
     @discardableResult
     static func runIfNeeded(directory: URL? = nil,
                             mediaFolder: URL? = nil,
@@ -324,20 +326,21 @@ enum AmberDatabaseMigration {
         }
 
         if renameLegacyOnSuccess {
-            // **只改名 `library.json` 这一份。**
+            // **Application Support 里这三份存档，现在一份都没人读了。**
             //
-            // 改名的含义是「这份存档已经没人读了」，所以它只能跟着**对应的 store 真的
-            // 改读 SQL** 那一刻走，一份都不能提前。阶段 3 只搬了 `LibraryStore`；
-            // `TrackInfoStore` 与 `LoudnessStore` 仍各自读 `trackinfo.json` /
-            // `loudness.json`（见两者 `init` 里的 `fileURL`），这时候把它们改名，
-            // 两个 store 下次启动就读不到自己的存档、当成空的从头开始，
-            // 然后把空的写回去——正是这次改造要堵的那条「读不出来变成写空的」，
-            // 只不过换了个地方发生。
+            // 改名的含义就是这个，所以它只能跟着**对应的 store 真的改读 SQL** 那一刻走，
+            // 一份都不能提前：阶段 3 只搬了 `LibraryStore`，那一轮就只改名 `library.json`；
+            // 阶段 4 `TrackInfoStore` 与 `LoudnessStore` 也并进了主库（见两者 `init`——
+            // 开的是 `AmberDatabase`，没有 `fileURL` 了），这两份才跟上来。
             //
-            // [实测 2026-09-17] 三份一起改名之后跑了一次实机：`loudness.json` 从 15 条
-            // 变成 6 条（当场重新量出来的那几首），原来那 15 条只剩留底和主库里还有。
-            // 阶段 4 把这两个 store 并进主库时，把它们的 URL 加回这个数组。
-            renameLegacy(archiveURL)
+            // [实测 2026-09-17] 提前改名什么后果，阶段 3 那天试过一次：三份一起改名跑实机，
+            // `loudness.json` 从 15 条变成 6 条——`LoudnessStore` 那时还在读
+            // `loudness.json`，被改名之后它当成空的从头开始，又把空的写了回去。
+            // 正是这次改造要堵的那条「读不出来变成写空的」，只不过换了个地方发生。
+            //
+            // 媒体夹的 `index.json` 永远不进这个数组：它是媒体文件夹的自解释**清单**，
+            // 不是 Amber 的存档，搬完之后照样有人读、有人写。
+            for url in [archiveURL, infoURL, loudnessURL] { renameLegacy(url) }
         }
 
         return Report(didRun: true, databaseURL: databaseURL, counts: counts, warnings: warnings)

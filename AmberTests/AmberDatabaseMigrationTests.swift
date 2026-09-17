@@ -773,32 +773,77 @@ final class AmberDatabaseMigrationTests: XCTestCase {
     }
     // MARK: - 改名只能跟着 store 走
 
-    /// 打开改名开关之后，**只有 `library.json` 改名**；`trackinfo.json` 与 `loudness.json`
-    /// 原地不动。
+    /// 打开改名开关之后，Application Support 里那**三份**存档全部改名留底。
     ///
-    /// 改名的含义是「这份存档已经没人读了」。阶段 3 只有 `LibraryStore` 改读了 SQL，
-    /// 另外两个 store 仍各自读自己那份 JSON（`TrackInfoStore.init` / `LoudnessStore.init`
-    /// 里的 `fileURL`）——提前给它们改名，它们下次启动就读不到存档、当成空的从头开始，
-    /// 再把空的写回去。那正是这次改造要堵的「读不出来变成写空的」，只是换了个地方发生。
+    /// 改名的含义是「这份存档已经没人读了」，所以它只能跟着对应的 store 真的改读 SQL
+    /// 那一刻走：阶段 3 只有 `library.json`（那一轮这条用例断言另外两份必须原地不动），
+    /// 阶段 4 `TrackInfoStore` / `LoudnessStore` 也并进主库，两份才跟上来。
     ///
-    /// [实测 2026-09-17] 三份一起改名跑过一次实机：`loudness.json` 从 15 条变成 6 条。
-    /// 所以这条断言钉的不是洁癖，是一次真的数据回退。阶段 4 把那两个 store 并进主库时，
-    /// 连同这条用例一起改。
+    /// [实测 2026-09-17] 提前改名跑过一次实机：`loudness.json` 从 15 条变成 6 条——
+    /// 那时 `LoudnessStore` 还在读它，被改名之后当成空的从头开始，又把空的写了回去。
+    /// 所以这条用例钉的不是洁癖，是一次真的数据回退：**下一次再加存档，也要等它的 store
+    /// 真的搬完了才许进那个数组。**
     func testRenameOnlyTouchesArchivesWhoseStoreHasMoved() throws {
         try write(LegacyLibraryArchive(), to: archiveURL)
         try write(TrackInfoArchiveFixture(), to: trackInfoURL)
         try write(["qq:1": LoudnessEntry(lufs: -14.2, peakDB: -1.0, measuredAt: Date())],
                   to: loudnessURL)
+        try write([String: DownloadEntryFixture](), to: indexURL)
 
         _ = try AmberDatabaseMigration.runIfNeeded(
             directory: support, mediaFolder: media, renameLegacyOnSuccess: true)
 
         let fm = FileManager.default
         XCTAssertFalse(fm.fileExists(atPath: archiveURL.path), "library.json 该改名了")
-        XCTAssertTrue(fm.fileExists(atPath: trackInfoURL.path),
-                      "trackinfo.json 必须原地不动——TrackInfoStore 还在读它")
-        XCTAssertTrue(fm.fileExists(atPath: loudnessURL.path),
-                      "loudness.json 必须原地不动——LoudnessStore 还在读它")
+        XCTAssertFalse(fm.fileExists(atPath: trackInfoURL.path),
+                       "trackinfo.json 该改名了——TrackInfoStore 已经改读主库")
+        XCTAssertFalse(fm.fileExists(atPath: loudnessURL.path),
+                       "loudness.json 该改名了——LoudnessStore 已经改读主库")
+        XCTAssertTrue(fm.fileExists(atPath: indexURL.path),
+                      "index.json 是媒体夹的清单，任何阶段都不改名")
+        let leftovers = try fm.contentsOfDirectory(atPath: support.path)
+        for name in ["library.json", "trackinfo.json", "loudness.json"] {
+            XCTAssertTrue(leftovers.contains { $0.hasPrefix("\(name).migrated-") },
+                          "\(name) 要留底，目录里现在是 \(leftovers)")
+        }
+    }
+
+    // MARK: - 谁先开库谁负责迁移
+
+    /// **这条用例守的是 `AppState` 里那个构造顺序。**
+    ///
+    /// `AppState` 的几个 store 一度是「带默认值的存储属性」，而 Swift 会在 `init` 体
+    /// 跑起来之前就把它们造好——也就是在 `prepareDatabase()` 之前。它们一旦开主库，
+    /// 第一个被造出来的那个就会先建出一个空的 `library.sqlite`，而迁移器的幂等判据
+    /// 只有「库文件在，一切免谈」这一条，于是迁移**整个不跑**：用户的 `library.json`
+    /// 原封不动躺在那儿，App 打开却是一个空资料库。本机看不出来（库早迁好了），
+    /// 在任何全新安装上就是整份资料库静默消失。
+    ///
+    /// 所以那三行挪进了 `init` 体、挪到 `prepareDatabase()` 后面；而这里钉的是**更强的
+    /// 那一条**——不管哪个 store 先被造出来，旧 JSON 都已经搬完了。以后再往 `AppState`
+    /// 加一个 store，顺序写错的代价也只是少一次警告，不会是空库。
+    func testStoreConstructedBeforeMigrationStillEndsUpWithAFullDatabase() throws {
+        var archive = LegacyLibraryArchive()
+        archive.libraryTracks = [makeTrack("ne:1", title: "迁过来的")]
+        try write(archive, to: archiveURL)
+        var infos = TrackInfoArchiveFixture()
+        var info = TrackInfo()
+        info.comments = "手打的注释"
+        infos.infos = ["ne:1": info]
+        try write(infos, to: trackInfoURL)
+        try write(["ne:1": LoudnessEntry(lufs: -14.2, peakDB: -1.0, measuredAt: Date())],
+                  to: loudnessURL)
+
+        // 故意让 `LoudnessStore` 第一个开库（就是从前那个「存储属性先于 init 体」的顺序）。
+        let loudness = LoudnessStore(directory: support)
+        let trackInfo = TrackInfoStore(directory: support)
+        let library = LibraryStore(directory: support)
+
+        XCTAssertEqual(library.libraryTracks.map(\.title), ["迁过来的"], "资料库不该是空的")
+        XCTAssertEqual(trackInfo.infos["ne:1"]?.comments, "手打的注释")
+        XCTAssertEqual(loudness["ne:1"]?.lufs, -14.2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archiveURL.path),
+                       "迁移真的跑过了（旧存档已经改名留底）")
     }
 
 }

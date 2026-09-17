@@ -24,6 +24,9 @@ final class AmberDatabase {
 
     private var terminationObserver: (any NSObjectProtocol)?
 
+    /// 退出前各 store 要收的那点尾，按登记顺序跑，跑完才 checkpoint。见 `addTerminationTask`。
+    private var terminationTasks: [() -> Void] = []
+
     // MARK: - 开库
 
     /// 直接对着一个库文件开。
@@ -38,7 +41,11 @@ final class AmberDatabase {
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkpoint() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for task in self.terminationTasks { task() }
+                self.checkpoint()
+            }
         }
     }
 
@@ -110,16 +117,32 @@ final class AmberDatabase {
 
     // MARK: - 退出前收尾
 
+    /// 登记一件「退出前要做的事」。
+    ///
+    /// **`willTerminate` 观察者全 App 只有上面那一个。** 从前 `LibraryStore` /
+    /// `TrackInfoStore` / `LoudnessStore` 各挂一个，各自把防抖中的那份 JSON 同步写下去；
+    /// 现在每一次改动当场落库，没有「还没写的」，三处就都没有理由再各挂一个了。
+    ///
+    /// 但「没有理由挂观察者」不等于「退出前无事可做」，还剩两件**与落盘无关**的：
+    ///
+    /// - `LoudnessStore` 要先叫停离线扫描（不然退出时还有一条线程在读文件、算 DSP）；
+    /// - `TrackInfoStore` 要把断点那 5 秒台阶闸拦下的最后一点补写进去
+    ///   （见它 `setResumePosition` 的注释：内存里随时是新的，表里最多差 5 秒。
+    ///   从前这一点由它自己的 `flushNow` 在退出时补，现在由这里补）。
+    ///
+    /// 登记的顺序就是跑的顺序，且**全部跑完才 checkpoint**——反过来的话补写的那几行
+    /// 又会落进刚截断的 wal 里，退出后磁盘上还是「一个库 + 一截 wal」。
+    func addTerminationTask(_ task: @escaping () -> Void) {
+        terminationTasks.append(task)
+    }
+
     /// 把 wal 并回主库并截断。
     ///
     /// WAL 会在库旁边留 `library.sqlite-wal` / `-shm`，只拷走 `.sqlite` 会拿到一份陈旧的库
     /// ——用户手动备份、或者 `sqlite3` 命令行事后核数时都会踩到。正常退出之后磁盘上
     /// 永远是「一个完整文件 + 0 字节 wal」。
     ///
-    /// **现在这个观察者是空转的**：还没有任何 store 接到主库上来，checkpoint 也就没有
-    /// 东西可并。它先写好，是因为三个 store 各自的 `willTerminate` 观察者
-    /// （`LibraryStore` / `TrackInfoStore` / `LoudnessStore`）要合并到这一处来，
-    /// 那时它们的 `flushNow()` 身体换成 checkpoint，名字与调用点全保留。
+    /// 三个 store 的 `flushNow()` 身体现在都是它（名字与调用点全保留）。
     ///
     /// 失败不抛：这是退出路径，能做的只有尽力而为——真 checkpoint 不掉（比如磁盘满），
     /// 下次开库 SQLite 自己会把 wal 重放回去，数据不丢，只是那份 `.sqlite` 一时是陈旧的。
@@ -140,9 +163,9 @@ final class AmberDatabase {
     /// 一条命令看得见。
     ///
     /// **优先加法**（`ADD COLUMN` / `CREATE TABLE` / `CREATE INDEX`）。这套机制替代的是
-    /// 今天为了「加一个字段」手写的那一大串解码回落：`TrackInfo.init(from:)`
-    /// （`TrackInfoStore.swift:118`，36 个字段逐条 `decodeIfPresent` 兜默认值）
-    /// 与 `LibraryStore.Storage`（`:175-202`，同样一串）。那种写法的代价不是啰嗦，
+    /// 从前为了「加一个字段」手写的那一大串解码回落（`LibraryStore.Storage` 那一串已经
+    /// 随阶段 3 删掉；`TrackInfo.init(from:)` 只剩迁移器读那一次旧 JSON 时还要用，
+    /// **新加的面板字段不要再往它里面加一行**，走这条升级链）。那种写法的代价不是啰嗦，
     /// 是**它把「旧存档缺这个键」和「这个键解坏了」压成了同一种处置**——
     /// 一律回落默认值，于是数据出问题时一声不响。`ADD COLUMN … DEFAULT` 由 SQLite
     /// 一次性把默认值物化进每一行，读出来的永远是真实值。
