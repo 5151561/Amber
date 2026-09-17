@@ -18,7 +18,9 @@ final class DeckAudioMix {
     /// 淡入取 `[0, .5, .866, 1]`、淡出取它的镜像，节点处两条曲线的功率和正好是 1
     /// （0.25+0.75 = 0.75+0.25 = 1），段内最低约 −0.3 dB，听不出凹陷。[推]
     /// 真正的等功率要 cos/sin，AVFoundation 没有非线性斜坡的 API，只能折线逼近。
-    static let equalPowerNodes: [Float] = [0, 0.5, 0.866, 1]
+    ///
+    /// `nonisolated`：这几个数与 mix 本身无关，`CrossfadeRamp` 在非隔离处拿它验功率和。
+    nonisolated static let equalPowerNodes: [Float] = [0, 0.5, 0.866, 1]
 
     /// 建这一份 mix 用的音轨。留着是为了 `flatCopy()`：
     /// `AVMutableAudioMixInputParameters` 只能加斜坡不能删，要撤掉淡出只能整份重建。

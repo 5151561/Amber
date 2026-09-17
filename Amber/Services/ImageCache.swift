@@ -5,7 +5,12 @@ import ImageIO
 import os
 
 /// 图片缓存：内存 NSCache + 磁盘缓存 + 请求去重。
-final class ImageCache {
+///
+/// **不做成 actor**：`memoryCachedImage(for:)` 必须是同步的（理由见它头上那段），
+/// 而 actor 上的方法一律异步。所以走另一条路——可变状态只有在途表一份，收在
+/// `inFlight` 那把锁的 state 里，其余全是 `let`。`@unchecked` 只差 `NSCache` 这一项：
+/// 它自己是线程安全的，Foundation 没给它 `Sendable` 标注而已。
+final class ImageCache: @unchecked Sendable {
 
     static let shared = ImageCache()
 
@@ -16,8 +21,9 @@ final class ImageCache {
         config.timeoutIntervalForRequest = 20
         return config
     }())
-    private var inFlight: [String: Task<NSImage?, Never>] = [:]
-    private let lock = OSAllocatedUnfairLock()
+    /// 在途请求表。**表就装在锁里**，不另立一个字段：分开写的话锁护着谁全凭自觉，
+    /// 编译器也验不了；收进 state 之后「拿得到表」就等于「已经持锁」。
+    private let inFlight = OSAllocatedUnfairLock<[String: Task<NSImage?, Never>]>(initialState: [:])
     /// 过期清理只在首次取图时安排一次。
     private let didSweep = OSAllocatedUnfairLock(initialState: false)
 
@@ -67,11 +73,11 @@ final class ImageCache {
         }
 
         // 查与插必须在同一次加锁里：分两次的话两个调用方会各自建一份 task，各下一次图。
-        let task: Task<NSImage?, Never> = lock.withLock {
+        let task: Task<NSImage?, Never> = inFlight.withLock { inFlight in
             if let existing = inFlight[urlString] { return existing }
             let created = Task<NSImage?, Never> { [weak self] in
                 guard let self else { return nil }
-                defer { self.lock.withLock { _ = self.inFlight.removeValue(forKey: urlString) } }
+                defer { self.inFlight.withLock { _ = $0.removeValue(forKey: urlString) } }
                 do {
                     let (data, _) = try await self.session.data(from: url)
                     guard let image = Self.decode(data) else { return nil }

@@ -96,6 +96,11 @@ struct StreamFormat: Equatable, Sendable {
 extension StreamFormat {
     /// 从播放中的 item 读真实规格。asset 的音轨要异步加载，所以整个是 async 的。
     /// 拿不到音轨（还没就绪、或者取流失败）时返回 nil，气泡就显示「读取中」。
+    ///
+    /// `@MainActor` 不是为了这段代码，是因为 `AVPlayerItem.asset` 在 SDK 里就是主 actor 的。
+    /// 两个调用点（`PlayerController.readStreamFormat`、`DownloadStore.readFormat`）本来
+    /// 就在主 actor 上，标上只是把既有事实写明。
+    @MainActor
     static func read(from item: AVPlayerItem) async -> StreamFormat? {
         await read(from: item.asset)
     }

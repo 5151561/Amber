@@ -292,19 +292,25 @@ enum ImportTranscoder {
         guard let sourceTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw ImportError.noAudioTrack
         }
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderAudioMixOutput(audioTracks: [sourceTrack],
-                                                 audioSettings: spec.readerSettings)
+        // 下面这四个 AVFoundation 对象加那个 `finished`，都要被 `requestMediaDataWhenReady`
+        // 的 `@Sendable` 块捕获，可它们一个都不是 `Sendable`。真正的保证在本函数末尾那条
+        // 自建串行队列上：块只在它上面串行回调，四个对象从递给它那一刻起就只在块里被碰，
+        // 直到 continuation 收线才交回这里。编译器看不出这层保证，逐个手工担保。
+        nonisolated(unsafe) let reader = try AVAssetReader(asset: asset)
+        nonisolated(unsafe) let output = AVAssetReaderAudioMixOutput(audioTracks: [sourceTrack],
+                                                                     audioSettings: spec.readerSettings)
         guard reader.canAdd(output) else { throw ImportError.readFailed("解码设置不被支持") }
         reader.add(output)
 
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        let writer = try AVAssetWriter(outputURL: destination, fileType: spec.fileType)
+        nonisolated(unsafe) let writer = try AVAssetWriter(outputURL: destination,
+                                                           fileType: spec.fileType)
         // 标签必须在 `startWriting` 之前挂上，之后再改就写不进容器了。
         if !metadata.isEmpty { writer.metadata = metadata }
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: spec.writerSettings)
+        nonisolated(unsafe) let input = AVAssetWriterInput(mediaType: .audio,
+                                                           outputSettings: spec.writerSettings)
         input.expectsMediaDataInRealTime = false
         guard writer.canAdd(input) else { throw ImportError.writeFailed("编码设置不被支持") }
         writer.add(input)
@@ -319,8 +325,8 @@ enum ImportTranscoder {
 
         let queue = DispatchQueue(label: "Amber.ImportTranscoder")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            // 回调串行跑在 queue 上，`finished` 不需要另加锁。
-            var finished = false
+            // 回调串行跑在 queue 上，`finished` 不需要另加锁（上面那段注释说的就是这条队列）。
+            nonisolated(unsafe) var finished = false
             input.requestMediaDataWhenReady(on: queue) {
                 guard !finished else { return }
                 while input.isReadyForMoreMediaData {
