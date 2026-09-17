@@ -143,6 +143,16 @@ enum LoudnessMeter {
         ///
         /// 也没有换 `vDSP`：`vDSP_svesq` 的平方和是 `Float` 累加，这里是 `Double` 累加
         /// （实时 tap 与离线扫描本来就差这一点点），换过去数值会动，那是改语义不是优化。
+        ///
+        /// **这一族 `unsafe` 的契约**（下面逐处不再重复）：签名里的
+        /// `UnsafeBufferPointer<UnsafePointer<Float>>` 是**借来的**声道指针表——
+        /// 不安全在于调用方必须保证 `channels[c]` 各自至少有 `length` 个样本可读、
+        /// 且在本次调用返回前不被释放或改写。本函数只读不写、一个指针也不留存
+        /// （出去的全是 `Float`/`Double` 标量），所以越界与悬垂只可能来自调用方。
+        /// 两个调用方都是现取现用：`LoudnessStore` 在 `withUnsafeBufferPointer` 里调、
+        /// 下面那个数组版在自己刚分配又 `defer` 释放的缓冲上调，都出不了作用域。
+        /// `base[c] + offset` 与 `samples[i]` 的越界由上面 `n = min(subLength - frames,
+        /// length - offset)` 与 `offset < length` 两条夹住，`i < n` 恒有 `offset + i < length`。
         mutating func append(_ channels: UnsafeBufferPointer<UnsafePointer<Float>>,
                              frames length: Int) {
             guard length > 0, let base = channels.baseAddress, !channels.isEmpty else { return }
@@ -154,7 +164,7 @@ enum LoudnessMeter {
                 let n = min(subLength - frames, length - offset)
                 guard n > 0 else { break }
                 for c in 0..<channels.count {
-                    let samples = base[c] + offset
+                    let samples = unsafe base[c] + offset
                     let weight = weights[min(c, weights.count - 1)]
                     // 权重 0 的声道（LFE）不进能量，但峰值照算——峰值是采样峰值，
                     // 不是加权响度，从前那版也是所有声道一起看。
@@ -162,7 +172,7 @@ enum LoudnessMeter {
                         var channelPeak = peak
                         var i = 0
                         while i < n {
-                            let magnitude = abs(samples[i])
+                            let magnitude = abs(unsafe samples[i])
                             if magnitude > channelPeak { channelPeak = magnitude }
                             i += 1
                         }
@@ -180,7 +190,7 @@ enum LoudnessMeter {
                     // Release 下两种写法一样快，这条纯粹是为了 Debug 别把一个核焊死。
                     var i = 0
                     while i < n {
-                        let x = samples[i]
+                        let x = unsafe samples[i]
                         let magnitude = abs(x)
                         if magnitude > channelPeak { channelPeak = magnitude }
                         let y = shelf.b0 * x + s1
@@ -213,22 +223,32 @@ enum LoudnessMeter {
         ///
         /// 只给测试和「手里正好是数组」的调用方用：它自己要先把各声道拷进一段连续缓冲
         /// 才能拿到稳定的指针表，**每调一次两次分配**。离线扫描那条热路径走上面那个指针版。
+        ///
+        /// **不安全在哪、谁保证它安全**：两块手工分配的缓冲。`flat` 是 `count * length`
+        /// 个 `Float` 的连续区，`table` 是 `count` 根指进 `flat` 的指针。
+        /// 安全由三件事保：容量与写入量同源（都从 `count`／`length` 这两个值算，
+        /// 中途没人改）；两块都 `initialize` 满了才用，各配一条 `defer`
+        /// 做 `deinitialize` + `deallocate`，函数任何出口都走到；
+        /// `table` 里的指针只在本函数体内被 `append(_:frames:)` 借走一次，
+        /// 那个函数不留存指针（见它的注释），所以 `defer` 释放时没有别人还握着。
+        /// 每声道写入取 `min(length, source.count)`——声道长度不齐时按短的来，
+        /// 不会越过 `flat` 里属于本声道的那一段。
         mutating func append(_ channelsData: [[Float]]) {
             guard let length = channelsData.first?.count, length > 0 else { return }
             let count = channelsData.count
             let flat = UnsafeMutablePointer<Float>.allocate(capacity: count * length)
-            flat.initialize(repeating: 0, count: count * length)
-            defer { flat.deinitialize(count: count * length); flat.deallocate() }
+            unsafe flat.initialize(repeating: 0, count: count * length)
+            defer { unsafe flat.deinitialize(count: count * length); unsafe flat.deallocate() }
             for (c, samples) in channelsData.enumerated() {
                 samples.withUnsafeBufferPointer { source in
                     guard let start = source.baseAddress else { return }
-                    (flat + c * length).update(from: start, count: min(length, source.count))
+                    unsafe (flat + c * length).update(from: start, count: min(length, source.count))
                 }
             }
             let table = UnsafeMutablePointer<UnsafePointer<Float>>.allocate(capacity: count)
-            defer { table.deinitialize(count: count); table.deallocate() }
-            for c in 0..<count { (table + c).initialize(to: UnsafePointer(flat + c * length)) }
-            append(UnsafeBufferPointer(start: table, count: count), frames: length)
+            defer { unsafe table.deinitialize(count: count); unsafe table.deallocate() }
+            for c in 0..<count { unsafe (table + c).initialize(to: UnsafePointer(flat + c * length)) }
+            unsafe append(UnsafeBufferPointer(start: table, count: count), frames: length)
         }
 
         var integratedLUFS: Double? { LoudnessMeter.integrated(subBlockEnergies: subBlocks) }

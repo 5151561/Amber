@@ -36,6 +36,14 @@ enum LyricsRowMetricsCache {
     // 就是「sending 'self'」——问题只是从这里挪到了那里。
     //
     // 所以 SDK 给 `CALayer` 补上 `@MainActor` 之前，这里只能是断言而不是证明。
+    //
+    // 开了 strict memory safety（SE-0458）之后**每读写一次就报一条**。下面逐处标的
+    // `unsafe` 就是这一条，含义一个字没变，逐处不再重复：
+    // **不安全在哪**——`nonisolated(unsafe)` 等于跟编译器说「这三个全局可变量的
+    // 并发访问我自己负责」，真有第二个线程摸进来就是数据竞争，而且是编译器不再拦的那种。
+    // **谁保证它安全**——上面那条实测：只有主线程的排版路径会走到这里。
+    // 这是断言不是证明，所以它的有效期写在上面：SDK 给 `CALayer` 补上 `@MainActor`
+    // 的那天，这三行连同 `unsafe` 一起删掉，换成真正的隔离。
     nonisolated(unsafe) private static var storage: [String: [SBS_TextContentLayer.RowMetrics]] = [:]
     nonisolated(unsafe) private static var use: [String: UInt64] = [:]
     nonisolated(unsafe) private static var clock: UInt64 = 0
@@ -47,29 +55,29 @@ enum LyricsRowMetricsCache {
     }
 
     static func value(for key: String) -> [SBS_TextContentLayer.RowMetrics]? {
-        guard let cached = storage[key] else { return nil }
+        guard let cached = unsafe storage[key] else { return nil }
         touch(key)
         return cached
     }
 
     static func store(_ rows: [SBS_TextContentLayer.RowMetrics], for key: String) {
-        storage[key] = rows
+        unsafe storage[key] = rows
         touch(key)
         evictIfNeeded()
     }
 
     private static func touch(_ key: String) {
-        clock &+= 1
-        use[key] = clock
+        unsafe clock &+= 1
+        unsafe use[key] = unsafe clock
     }
 
     /// 超上限丢最旧的一半（同 `LyricsTextLayout` 的折行缓存），不整张清空。
     private static func evictIfNeeded() {
-        guard storage.count > limit else { return }
-        let victims = use.sorted { $0.value < $1.value }.prefix(storage.count / 2)
+        guard unsafe storage.count > limit else { return }
+        let victims = unsafe use.sorted { $0.value < $1.value }.prefix(unsafe storage.count / 2)
         for (key, _) in victims {
-            storage.removeValue(forKey: key)
-            use.removeValue(forKey: key)
+            unsafe storage.removeValue(forKey: key)
+            unsafe use.removeValue(forKey: key)
         }
     }
 }

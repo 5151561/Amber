@@ -114,7 +114,10 @@ extension SBS_TextContentLayer {
                 let ctLine = CTLineCreateWithAttributedString(
                     attributed.attributedSubstring(from: fragment.range))
                 var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-                CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
+                // CoreText 的 C 出参（同 `RubyLayout.typographicHeight`）：三个形参都是
+                // `UnsafeMutablePointer<CGFloat>?`，传的是上一行刚声明的本地 var 的地址，
+                // 生命周期不出这个闭包、不逃逸。CoreText 整套是 C API，没有安全替代。
+                unsafe CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
                 return RowMetrics(range: fragment.range,
                                   ctLine: ctLine,
                                   width: fragment.usedWidth,
@@ -502,9 +505,13 @@ extension SBS_TextContentLayer {
         // `nonisolated(unsafe)` 的理由同本族那几张排版缓存（见 `LyricsRowMetricsCache`）：
         // asyncAfter 到 .main 的闭包是主 actor 隔离的，而 `self` 是 `CALayer` 子类、
         // 在 SDK 里非隔离，直接捕获就是「sending 'self'」。弱引用语义一点没变。
+        // 读它也要标 `unsafe`：不安全在于 `nonisolated(unsafe)` 关掉的正是
+        // 「这个值跨隔离域用安不安全」那道检查。保证它安全的是派发本身——
+        // 闭包只在 `.main` 上跑一次，与 `me` 被赋值的地方同属主线程，
+        // 从头到尾只有一个线程摸过它。弱引用语义一点没变，图层没了就是 nil。
         nonisolated(unsafe) weak let me = self
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            me?.layoutLines.forEach { $0.ignoreProgress = false }
+            unsafe me?.layoutLines.forEach { $0.ignoreProgress = false }
         }
     }
 
@@ -518,9 +525,13 @@ extension SBS_TextContentLayer {
         // `nonisolated(unsafe)` 的理由同本族那几张排版缓存（见 `LyricsRowMetricsCache`）：
         // asyncAfter 到 .main 的闭包是主 actor 隔离的，而 `self` 是 `CALayer` 子类、
         // 在 SDK 里非隔离，直接捕获就是「sending 'self'」。弱引用语义一点没变。
+        // 读它也要标 `unsafe`：不安全在于 `nonisolated(unsafe)` 关掉的正是
+        // 「这个值跨隔离域用安不安全」那道检查。保证它安全的是派发本身——
+        // 闭包只在 `.main` 上跑一次，与 `me` 被赋值的地方同属主线程，
+        // 从头到尾只有一个线程摸过它。弱引用语义一点没变，图层没了就是 nil。
         nonisolated(unsafe) weak let me = self
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            me?.layoutLines.forEach { $0.ignoreProgress = false }
+            unsafe me?.layoutLines.forEach { $0.ignoreProgress = false }
         }
     }
 }
