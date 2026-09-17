@@ -538,6 +538,7 @@ final class AppState {
     ///
     /// **这两件事都不能挪回 `init`**：`AppState()` 一被构造就发网络请求的话，
     /// 任何构造它的测试都会在半路被失败 toast 改一次状态。
+    ///
     /// **埋点在这里**（区间 `AppState.runLaunchTasks`）：这个函数是启动路径上唯一一段
     /// 「主窗已经上屏、但还在干活」的时间，里面混着两条网络往返、一趟账号歌单同步
     /// 与三条本地活。中间那几条 `emitEvent` 把它切开——卡住时先看是哪一段，
@@ -588,6 +589,12 @@ final class AppState {
     /// 见 `LoudnessStore.offlineQueue`），所以这里整份丢给它就行。
     /// 用户没开「音量平衡」也照量——量是免费的（后台串行读文件），
     /// 等他哪天打开开关时已经有数了，不用再听一遍。
+    ///
+    /// **§2.6-5 把它列为「在主 actor 上做同步磁盘遍历」，这一句也不成立**：
+    /// 循环体里只有 `downloads.state(for:)`（一次字典查表——带 `fileExists` 的是
+    /// 隔壁那个 `fileURL(for:)`，它自己的注释里就写着这两条的分工）与 `loudness.measureIfNeeded`
+    /// （只排队、不起活）。这一趟是 O(资料库曲目数) 的**内存**遍历，一次系统调用都没有。
+    /// 启动路径上真正发 `stat(2)` 的是 `DownloadStore.loadIndex`，见那边。
     private func measureDownloadedTracks() {
         for track in library.libraryTracks {
             guard case .downloaded(let url) = downloads.state(for: track.id) else { continue }
