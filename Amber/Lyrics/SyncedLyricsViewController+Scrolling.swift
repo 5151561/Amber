@@ -70,7 +70,7 @@ extension SyncedLyricsViewController {
 
     private func hoverTarget() -> SyncedLyricsLineView? {
         guard let scrollView, let document = documentView,
-              let window = document.window, window.isKeyWindow,
+              let window = document.amberWindow, window.isKeyWindow,
               !isDragging
         else { return nil }
         let point = document.convert(window.mouseLocationOutsideOfEventStream, from: nil)

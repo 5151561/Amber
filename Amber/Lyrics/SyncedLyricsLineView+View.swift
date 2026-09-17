@@ -88,7 +88,7 @@ extension SyncedLyricsLineView {
         var inside = true
         // 自己跑事件循环：`NSControl` 的默认追踪会先把动作发出去，
         // 而这里要的是「按住期间一直缩着」。
-        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+        while let next = amberWindow?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
             let point = convert(next.locationInWindow, from: nil)
             if next.type == .leftMouseUp {
                 inside = bounds.contains(point)

@@ -87,6 +87,12 @@ enum LyricsTextLayout {
     // 就是「sending 'self'」——问题只是从这里挪到了那里。
     //
     // 所以 SDK 给 `CALayer` 补上 `@MainActor` 之前，这里只能是断言而不是证明。
+    //
+    // 开了 strict memory safety（SE-0458）之后**每读写一次就报一条**，逐处标的 `unsafe`
+    // 就是这一条，含义一个字没变：**不安全在哪**——`nonisolated(unsafe)` 等于跟编译器说
+    //「这个全局可变量的并发访问我自己负责」，真有第二个线程摸进来就是数据竞争；
+    // **谁保证它安全**——上面那条实测。断言的有效期也写在上面：SDK 给 `CALayer`
+    // 补上 `@MainActor` 的那天，这行连同 `unsafe` 一起删。本文件下面那三张折行缓存同理。
     nonisolated(unsafe) private static var languageCache: [String: String] = [:]
 
     /// 按文本自身的字符判语言（BCP-47）。拉丁 / 西里尔返回 nil——
@@ -95,10 +101,10 @@ enum LyricsTextLayout {
     /// 原版的语言来自歌词数据（每首歌带语言字段），Amber 的音源不给，只能自己认。
     static func languageIdentifier(for text: String) -> String? {
         guard !text.isEmpty else { return nil }
-        if let cached = languageCache[text] { return cached.isEmpty ? nil : cached }
+        if let cached = unsafe languageCache[text] { return cached.isEmpty ? nil : cached }
         let resolved = resolveLanguage(text)
-        if languageCache.count > 512 { languageCache.removeAll(keepingCapacity: true) }
-        languageCache[text] = resolved ?? ""
+        if unsafe languageCache.count > 512 { unsafe languageCache.removeAll(keepingCapacity: true) }
+        unsafe languageCache[text] = resolved ?? ""
         return resolved
     }
 
@@ -211,7 +217,7 @@ enum LyricsTextLayout {
             return Wrapped(fragments: [], usedSize: .zero, drawnHeight: 0)
         }
         let key = cacheKey(text: text, attributes: attributes, width: width)
-        if let cached = wrapCache[key] { touchWrapCache(key); return cached }
+        if let cached = unsafe wrapCache[key] { touchWrapCache(key); return cached }
 
         let storage = NSTextStorage(string: text, attributes: attributes)
         let manager = NSLayoutManager()
@@ -227,13 +233,19 @@ enum LyricsTextLayout {
 
         var fragments: [Fragment] = []
         var glyphIndex = 0
+        // 这三个 `unsafe` 都只为一件事：TextKit 1 这几个方法的 `effectiveRange` /
+        // `actualGlyphRange` 形参是 `NSRangePointer`（ObjC 的 `NSRange *`），
+        // **参数类型不安全，传 nil 也照报**。不安全在于调用方要给一块能写 `NSRange`
+        // 的内存；这里要么传 `&glyphRange`——Swift 现场取本地 var 的地址，
+        // 生命周期不出这一次调用、不逃逸——要么传 `nil`（不要这个出参）。
+        // 没有安全替代：TextKit 2 是另一套排版，换过去就是改折行结果，不是标注。
         while glyphIndex < manager.numberOfGlyphs {
             var glyphRange = NSRange()
-            let used = manager.lineFragmentUsedRect(forGlyphAt: glyphIndex,
-                                                    effectiveRange: &glyphRange)
-            let full = manager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-            let characters = manager.characterRange(forGlyphRange: glyphRange,
-                                                    actualGlyphRange: nil)
+            let used = unsafe manager.lineFragmentUsedRect(forGlyphAt: glyphIndex,
+                                                           effectiveRange: &glyphRange)
+            let full = unsafe manager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            let characters = unsafe manager.characterRange(forGlyphRange: glyphRange,
+                                                           actualGlyphRange: nil)
             fragments.append(Fragment(range: characters,
                                       usedWidth: used.width,
                                       height: full.height))
@@ -251,27 +263,27 @@ enum LyricsTextLayout {
                               usedSize: CGSize(width: min(ceil(used.width), width),
                                                height: used.height),
                               drawnHeight: drawn)
-        wrapCache[key] = wrapped
+        unsafe wrapCache[key] = wrapped
         touchWrapCache(key)
         evictWrapCacheIfNeeded()
         return wrapped
     }
 
     private static func touchWrapCache(_ key: String) {
-        wrapCacheClock &+= 1
-        wrapCacheUse[key] = wrapCacheClock
+        unsafe wrapCacheClock &+= 1
+        unsafe wrapCacheUse[key] = unsafe wrapCacheClock
     }
 
     /// 真正的淘汰：超上限就按访问序号丢掉最旧的一半，而不是整张表清空。
     /// 丢一半（不是一条）是为了不让每次插入都触发一轮排序。
     private static func evictWrapCacheIfNeeded() {
-        guard wrapCache.count > wrapCacheLimit else { return }
-        let victims = wrapCacheUse
+        guard unsafe wrapCache.count > wrapCacheLimit else { return }
+        let victims = unsafe wrapCacheUse
             .sorted { $0.value < $1.value }
-            .prefix(wrapCache.count / 2)
+            .prefix(unsafe wrapCache.count / 2)
         for (key, _) in victims {
-            wrapCache.removeValue(forKey: key)
-            wrapCacheUse.removeValue(forKey: key)
+            unsafe wrapCache.removeValue(forKey: key)
+            unsafe wrapCacheUse.removeValue(forKey: key)
         }
     }
 

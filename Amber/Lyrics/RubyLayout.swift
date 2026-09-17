@@ -144,6 +144,12 @@ enum RubyLayout {
     // 就是「sending 'self'」——问题只是从这里挪到了那里。
     //
     // 所以 SDK 给 `CALayer` 补上 `@MainActor` 之前，这里只能是断言而不是证明。
+    //
+    // 开了 strict memory safety（SE-0458）之后**每读写一次就报一条**，逐处标的 `unsafe`
+    // 就是这一条，含义一个字没变：**不安全在哪**——`nonisolated(unsafe)` 等于跟编译器说
+    //「这个全局可变量的并发访问我自己负责」，真有第二个线程摸进来就是数据竞争；
+    // **谁保证它安全**——上面那条实测。SDK 给 `CALayer` 补上 `@MainActor` 的那天，
+    // 这行连同 `unsafe` 一起删。
     nonisolated(unsafe) private static var wordStartCache: [String: Set<Int>] = [:]
 
     /// 每个词在整行里的起始 UTF-16 下标。
@@ -152,15 +158,15 @@ enum RubyLayout {
     /// 正好是发音要成块的粒度。它不加载语言模型，可以留在主线程的排版路径上——
     /// 与 `LyricsTextLayout` 里刻意绕开的`NLLanguageRecognizer` 不是一回事。
     static func wordStarts(in text: String) -> Set<Int> {
-        if let cached = wordStartCache[text] { return cached }
+        if let cached = unsafe wordStartCache[text] { return cached }
         let tokenizer = NLTokenizer(unit: .word)
         tokenizer.string = text
         var starts: Set<Int> = []
         for token in tokenizer.tokens(for: text.startIndex..<text.endIndex) {
             starts.insert(NSRange(token, in: text).location)
         }
-        if wordStartCache.count > 512 { wordStartCache.removeAll(keepingCapacity: true) }
-        wordStartCache[text] = starts
+        if unsafe wordStartCache.count > 512 { unsafe wordStartCache.removeAll(keepingCapacity: true) }
+        unsafe wordStartCache[text] = starts
         return starts
     }
 
@@ -211,7 +217,11 @@ enum RubyLayout {
 
     private static func typographicHeight(of line: CTLine) -> CGFloat {
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-        CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+        // CoreText 的 C 出参：三个形参都是 `UnsafeMutablePointer<CGFloat>?`，
+        // 不安全在于要给三块能写 `CGFloat` 的内存。这里传的是本地 var 的地址，
+        // 三个都在上一行刚声明、生命周期不出本函数、不逃逸。没有安全替代——
+        // CoreText 整套就是 C API，`CTLine` 的度量只此一条路。
+        unsafe CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
         return ascent + descent + leading
     }
 }

@@ -58,11 +58,23 @@ struct StreamFormat: Equatable, Sendable {
     }
 
     /// 44100 → "44.1 kHz"，48000 → "48 kHz"
+    ///
+    /// `String(format:)` 走 `CVarArg`，是不安全的；`RemoteDMAP.hexValue` 那条
+    /// `%02X` 能换成 `String(_:radix:)`，**这条换不掉**，差分跑过：`%.1f` 舍入的是
+    /// 这个 `Double` 的**二进制精确值**，而 `Decimal`/`FormatStyle` 舍入的是它的
+    /// 最短十进制表示，两者在半分点上分家。最扎眼的是 22050 Hz——22.05 的双精度值是
+    /// 22.0500000000000007…，`%.1f` 进位成 22.1，`.number.precision(.fractionLength(1))`
+    /// 无论配哪种 `rounded(rule:)` 都给 22.0。整数 Hz 侧的「四舍五入」同样对不上：
+    /// 半分点朝哪边进完全由二进制表示决定（50 Hz 进、150 Hz 退、450 Hz 进…），
+    /// 没有规律可抓，只能逐值拟合——那不是等价替换。
+    /// 1…400000 Hz 全扫 + 15 个真实采样率，三种候选写法分别错 1603/2000/1603 条。
+    ///
+    /// 所以走共用的 `fixed(_:)` 外壳（`Models.swift` 的「数字成串」一节）：里面仍是
+    /// `String(format:)`，但格式串与实参在那一行里锁死，不安全点收在外壳内部，
+    /// 调用点这里回到普通 Swift。
     private static func kHzText(_ rate: Double) -> String {
         let kHz = rate / 1000
-        let text = kHz == kHz.rounded()
-            ? String(Int(kHz))
-            : String(format: "%.1f", kHz)
+        let text = kHz == kHz.rounded() ? String(Int(kHz)) : kHz.fixed(1)
         return "\(text) kHz"
     }
 

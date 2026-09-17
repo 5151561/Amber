@@ -428,7 +428,7 @@ final class InspectorLyricsViewController: NSViewController {
     /// 装一块内容。永远 `positioned: .below`——右下那颗翻译浮动键是根视图的直接子件，
     /// 内容只能摆在它底下（[AX] Music 那颗也是窗口的直接子件，不在歌词组里、不跟着滚）。
     private func install(_ panel: NSView) {
-        guard panel.superview !== view else { return }
+        guard panel.amberSuperview !== view else { return }
         for sub in view.subviews where sub !== translationHost && sub !== panel {
             sub.removeFromSuperview()
         }
@@ -551,9 +551,9 @@ final class InspectorLyricsViewController: NSViewController {
         guard isViewLoaded else { return }
         // `viewIfLoaded` 而不是 `view`：空态期间歌词控制器的视图还没建，
         // 读 `view` 会把它顺手建出来。
-        let onScreen = view.window != nil
+        let onScreen = view.amberWindow != nil
             && !view.isHiddenOrHasHiddenAncestor
-            && lyricsController.viewIfLoaded?.superview != nil
+            && lyricsController.viewIfLoaded?.amberSuperview != nil
         if onScreen {
             // `tearDown()` 会把块式滚动观察者摘掉，再次上台得装回来（幂等）。
             lyricsController.installScrollObserversIfNeeded()

@@ -59,7 +59,7 @@ final class SyncedLyricsLineView: NSControl {
     }
 
     func applyBackingScale() {
-        lineLayer?.renderingScale = window?.backingScaleFactor ?? LyricsRenderingScale.current
+        lineLayer?.renderingScale = amberWindow?.backingScaleFactor ?? LyricsRenderingScale.current
     }
 
     // 悬停三道闸与点击见 +Interaction.swift（§4.1 / §4.3），
