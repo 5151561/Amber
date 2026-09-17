@@ -366,6 +366,16 @@ H 并进 F2）。主会话另做两道接缝。
 6. **Swift 6 不许图层回调视图**：`CALayer` 不是 `@MainActor` 而 `NSView` 是，层里直调视图方法先报 `[#ActorIsolatedCall]`，套 `MainActor.assumeIsolated` 后直接编译失败（`sending 'self' risks causing data races`）。与记忆 `am-calayer-not-mainactor` 同一条。
 7. **反向哨兵真的兜住了一次**：批 G 中间版本在「指针 → 整数」那半边多标了 `unsafe`，`[#UnnecessaryUnsafe]` 当场报出来。
 
+### 顺带确认的一件事
+
+测试日志里那几条 `attempt to write a readonly database` / `no such table: search_index`
+**是故意的**：三条降级回归用例自己把写弄失败、让查询抛错
+（`LibrarySearchIndexTests.testFallsBackToSubstringAfterAFailedWrite` / `…WhenTheQueryThrows`、
+`LibraryStoreDerivedTests.testDerivedQueriesFallBackToMemoryAfterAFailedWrite`）。
+它们仍然全绿，等于顺带验了批 K 改完之后 §4-18 的降级设计还活着。
+**实机那只进程零落库错误**——查这类日志一定要先按 PID 把实机与测试宿主分开
+（测试宿主也叫 Amber，见记忆 `am-tests-launch-real-app-tasks`）。
+
 ### 留给下一轮
 
 | 项 | 归属 |
@@ -487,6 +497,7 @@ I / J / K 三批并行 + 主会话三道接缝。**这一轮最该留下的不�
 | --- | --- |
 | **`searchFilter` 离开主 actor**——§2.4-1 里唯一还站得住的那半 | 批 K 没做的理由是**所有权**不是收益：七个调用点全在 `Views/Shell/**`。但也**还没有人量过**它——本机 203 首必然是微秒级，判据该是「库多大才值得」，照 §2.6-4 的做法先量再说 |
 | SQLite 写入路径收口的三步计划 | 写在 `Services/SQLiteDatabase.swift` 的类注释里（先拆 33 个助手成「主 actor 取值 + actor 写」，再让 `AmberDatabase` 变 actor，34 个调用点加 `await`）。附「别用 `@unchecked Sendable` + 锁绕过」的理由 |
-| `DownloadStore.loadIndex` 对**不可达卷**上的条目逐条 `stat` 到挂载超时 | 批 K 顺手发现、没动（没有可复现样本）。`LibraryStore.isVolumeReachable(for:)`（`:1033`）已是现成的两段式判据。现在有实测支撑了：本地盘 14 条就要 17 ms，是启动路径主线程上最贵的一段 |
+| ~~`DownloadStore.loadIndex` 对**不可达卷**上的条目逐条 `stat`~~ | **已做**（用户 2026-09-17 定）。判据从 `LibraryStore` 搬进 `DownloadStore`（路径是它给的，依赖方向本来就是这一头），对账循环前按**父目录**问一次、并缓存。行为一个字没变——卷不通时走的仍是「记录留着、不进 `states`、不改清单」那三件事，变的只有系统调用条数。回归 `testUnreachableVolumeEntrySurvivesReload`。**治不到的那一种写在注释里**：卷「挂着但不应答」（服务器没了的 SMB）时判据自己的第一次 `fileExists` 就会挂住，要靠超时或异步 |
+| `DownloadStore.loadIndex` 仍是同步的，跟着 `init` 跑在 `didFinishLaunching` 之前 | 上一条只治了「整卷不在」。挪去后台要改 `init` 的同步契约，与 `LibraryStore.load` 同一堵墙。**要拆启动读盘先看这条区间**（实机 17 ms）**，不是先看资料库那条**（3 ms） |
 | 全量本地化（抽进 String Catalog） | §5 单列。本轮只做了「声明这一门」那一档，并验掉了它是空头 |
 | §3-2（零沙盒 + 一刀切关 ATS） | 自始至终没排进任何批次 |
