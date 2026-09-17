@@ -183,6 +183,45 @@ struct SQLiteError: Error, CustomStringConvertible {
 /// `@MainActor` 的 store 里。要后台干活的话，正确的切法是后台只做文件 IO 与解析，
 /// 解析出的值类型交回主 actor 再写库（照 `ImportService` 那套）。
 ///
+/// ## 为什么它没有被收进 `actor`（2026-09-17，modernization-review §2.4-1 的落点）
+///
+/// 审查单的修法是「把 `AmberDatabase`/`SQLiteDatabase` 收进一个 `actor`，四个 store
+/// 保持 `@MainActor` 但读写 `await`，**先只搬只读的两条路**」。**后半句与前半句
+/// 互相排斥**，这不是工程量问题，是 Swift 的隔离模型问题：
+///
+/// **actor 隔离是按对象算的，不是按方法算的。** 这个类一旦进 actor，**所有**
+/// 入口同时变成 `await`——没有「只搬两条」这种中间态。而写入那一侧当场就不成立：
+///
+/// - `LibraryStore.persist(_:_:)` 的 body 是 `(SQLiteDatabase) throws -> Void`，
+///   34 个调用点、33 个 `in db: SQLiteDatabase` 的助手。这些助手**不是纯写**——
+///   它们在同一条语句里就读主 actor 的内存。最直白的一个是
+///   `LibraryStore.persistStat(id:in:)`：绑定数组本身就是
+///   `[id, playCounts[id] ?? 0, skipCounts[id] ?? 0, addedAt[id], …]`，五本主 actor
+///   的字典摆在 `db.run` 的参数里。
+/// - 更硬的是 `LibraryStore.persistAllPlaylists(in:)`：它在**一个事务里**交替做
+///   「`SELECT` 现有 id」→「读主 actor 的 `playlists`」→「`DELETE`」→
+///   「调同样 `@MainActor` 的 `searchIndex.delete`」。跨 actor 就是跨挂起点，
+///   而 SQLite 的事务是**连接级**的——中间挂起，别人拿同一条连接发的语句会落进
+///   这个还没提交的事务里。
+///
+/// 所以真正的先决条件是：**把这 33 个助手拆成「在主 actor 上取值」+「在 actor 上写」
+/// 两半**，写的那一半只收值类型。那是一次独立的改造，不是「顺手搬两条路」。
+///
+/// 而那两条只读路各自还另有一堵墙，都不在本批文件的所有权范围内：
+///
+/// - `searchFilter`：七个调用点全在 `Views/Shell/**`（清单在它自己的注释里），
+///   改 `async` 等于把七页的同步刷新链一起改成异步。
+/// - `loadFromDatabase`：它跑在 `LibraryStore.init` 里，而 `init` 同步返回时
+///   内存模型必须是满的——25 处测试构造点紧跟着就同步断言。
+///
+/// **不要用 `@unchecked Sendable` + 锁来绕过这一条。** 那条路通（把 `db`/`cache`/
+/// `transactionDepth` 收进一把可重入锁就能让它 `Sendable`），但买回来的东西是负的：
+/// 后台那一趟全量读会**持锁**几十毫秒，主线程此刻任何一次 `persist` 都得等它——
+/// 等于把「读不再卡主线程」换成「写开始卡主线程」。要并行读写得开第二条连接
+/// （WAL 允许），那又与「连接本就只有一条」冲突，并且每个 `AmberDatabase` 多一组
+/// 文件描述符——测试里每条用例一个临时目录，`AmberDatabase.shared` 的注释里
+/// 写着为什么这件事要紧。
+///
 /// `@safe`：连接句柄与语句缓存全程私有、一个都不外传，对外只收发 Swift 值类型——
 /// 不安全到这个类的边界为止。详见文件头那段。
 @safe final class SQLiteDatabase {
