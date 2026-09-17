@@ -43,10 +43,10 @@ enum LoudnessTestSignal {
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat,
                                                     frameCapacity: frames))
         buffer.frameLength = frames
-        let target = try XCTUnwrap(buffer.floatChannelData)
+        let target = try unsafe XCTUnwrap(buffer.floatChannelData)
         for (c, samples) in data.enumerated() {
             samples.withUnsafeBufferPointer { source in
-                if let start = source.baseAddress { target[c].update(from: start, count: samples.count) }
+                if let start = source.baseAddress { unsafe target[c].update(from: start, count: samples.count) }
             }
         }
         try file.write(from: buffer)
@@ -54,24 +54,29 @@ enum LoudnessTestSignal {
     }
 
     /// 按 `chunk` 帧一段喂进累加器——离线扫描就是这么喂的（4096 帧一读）。
+    ///
+    /// 这段里的 `unsafe` 说的是同一条契约：`flat` 是本函数自己 `allocate` 的一块连续内存，
+    /// `defer` 里配对 `deinitialize` + `deallocate`，中途不逃逸；每轮现搭的指针表只在
+    /// `withUnsafeBufferPointer` 的闭包里借给 `append`，`append` 自己不留存
+    /// （契约见 `LoudnessMeter.Accumulator.append` 的文档）。
     static func measure(_ data: [[Float]], sampleRate: Double,
                         chunk: Int) -> LoudnessMeter.Accumulator {
         var accumulator = LoudnessMeter.Accumulator(sampleRate: sampleRate, channels: data.count)
         let length = data[0].count
         let count = data.count
         let flat = UnsafeMutablePointer<Float>.allocate(capacity: count * length)
-        flat.initialize(repeating: 0, count: count * length)
-        defer { flat.deinitialize(count: count * length); flat.deallocate() }
+        unsafe flat.initialize(repeating: 0, count: count * length)
+        defer { unsafe flat.deinitialize(count: count * length); unsafe flat.deallocate() }
         for (c, samples) in data.enumerated() {
             samples.withUnsafeBufferPointer { source in
-                if let start = source.baseAddress { (flat + c * length).update(from: start, count: length) }
+                if let start = source.baseAddress { unsafe (flat + c * length).update(from: start, count: length) }
             }
         }
         var offset = 0
         while offset < length {
             let n = min(chunk, length - offset)
-            let table = (0..<count).map { UnsafePointer(flat + $0 * length + offset) }
-            table.withUnsafeBufferPointer { accumulator.append($0, frames: n) }
+            let table = unsafe (0..<count).map { unsafe UnsafePointer(flat + $0 * length + offset) }
+            table.withUnsafeBufferPointer { unsafe accumulator.append($0, frames: n) }
             offset += n
         }
         return accumulator
@@ -201,7 +206,7 @@ final class LoudnessMeterTests: XCTestCase {
         let accumulator = LoudnessTestSignal.measure(signal, sampleRate: fs, chunk: 4096)
         let elapsed = -start.timeIntervalSinceNow
         let samples = Double(accumulator.framesSeen * signal.count)
-        print(String(format: "append: %.3f s / 60 s 音频（%.0f× 实时），%.1f ns/样本",
+        print(unsafe String(format: "append: %.3f s / 60 s 音频（%.0f× 实时），%.1f ns/样本",
                      elapsed, 60 / elapsed, elapsed / samples * 1e9))
     }
 

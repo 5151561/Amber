@@ -1210,11 +1210,11 @@ final class DownloadStoreTests: XCTestCase {
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat,
                                                     frameCapacity: frames))
         buffer.frameLength = frames
-        if let channels = buffer.floatChannelData {
+        if let channels = unsafe buffer.floatChannelData {
             for frame in 0..<Int(frames) {
                 let value = Float(sin(2 * Double.pi * 440 * Double(frame) / 44_100)) * 0.5
                 for channel in 0..<Int(buffer.format.channelCount) {
-                    channels[channel][frame] = value
+                    unsafe channels[channel][frame] = value
                 }
             }
         }

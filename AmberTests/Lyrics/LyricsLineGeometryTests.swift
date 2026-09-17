@@ -256,7 +256,7 @@ final class LyricsLineGeometryTests: XCTestCase, LyricsKitFixtures {
         let dim = CGColor(gray: 1, alpha: 0.175)
         let painting = LyricsTextLayout.attributes(for: text, font: font, color: dim)
         let string = LyricsTextLayout.hardWrapped(text, attributes: painting, width: width)
-        let color = try XCTUnwrap(
+        let color = try unsafe XCTUnwrap(
             string.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
         XCTAssertEqual(color.cgColor.alpha, 0.175, accuracy: 0.001)
     }
@@ -414,7 +414,7 @@ final class LyricsLineGeometryTests: XCTestCase, LyricsKitFixtures {
                         let ctLine = CTLineCreateWithAttributedString(
                             attributed.attributedSubstring(from: fragment.range))
                         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-                        CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
+                        unsafe CTLineGetTypographicBounds(ctLine, &ascent, &descent, &leading)
                         return (fragment.range,
                                 fragment.usedWidth,
                                 LyricsTextLayout.rasterSafeHeight(ascent + descent + leading,

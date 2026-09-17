@@ -25,7 +25,7 @@ final class RemotePairingTests: XCTestCase {
             var md5 = Insecure.MD5()
             md5.update(data: Data("0000000000000001".utf8))
             md5.update(data: Data("1234".utf8))
-            return md5.finalize().map { String(format: "%02X", $0) }.joined()
+            return md5.finalize().hexString(uppercase: true)
         }()
         XCTAssertNotEqual(correct, naive)
     }
