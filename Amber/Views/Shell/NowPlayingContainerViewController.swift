@@ -10,6 +10,7 @@ import SwiftUI
 /// ```
 /// NowPlayingContainerViewController
 ///   ├── backdrop : MiniPlayerBackdropMetalView        §2.1 纱罩/律动＝内容视图宽度的函数
+///   │                （「减弱透明度」开着时换成 NSVisualEffectView，见 `makeBackdrop()`）
 ///   ├── content  : NSHostingView<NowPlayingView>      封面/元数据/时间行/传输行（SwiftUI 叶子）
 ///   ├── drawer   : InspectorContainerViewController   §4 歌词档／队列档共用一台容器
 ///   │     └── platterGlass : NSGlassEffectView(.regular)   队列档那块盘的玻璃外形
@@ -42,7 +43,27 @@ final class NowPlayingContainerViewController: NSViewController {
 
     /// [实测] 背景是 `TSLBackdropMetalView` 的复刻（计划「三处决定」第 2 条）。
     /// 四边贴满，纱罩浓度与律动速度每次 layout 按**容器宽度**重算（§2.1）。
-    private let backdrop = MiniPlayerBackdropMetalView()
+    ///
+    /// **不是 `let`，也不一定是 Metal 那只**：「减弱透明度」开着时它是毛玻璃那一支
+    /// （见 `makeBackdrop()`）。降级＝整只换掉，不是给同一只视图改参数。
+    ///
+    /// 初值里写全类名而不是 `Self`：存储属性的初始值里 `Self` 算协变位置，编译器不收。
+    private var backdrop: NSView = NowPlayingContainerViewController.makeBackdrop()
+
+    /// `backdrop` 是不是 Metal 那只。`as?` 的地方有五处（isActive / 纱罩 / 律动 / 封面），
+    /// 收在这一句里，省得每处各判一次型。
+    private var metalBackdrop: MiniPlayerBackdropMetalView? {
+        backdrop as? MiniPlayerBackdropMetalView
+    }
+
+    /// 当前封面的 CGImage。换底衬之后要把它重喂一遍
+    /// （同 `MiniPlayerContentView.currentArtwork`）。
+    private var backdropArtwork: CGImage?
+
+    /// 「减弱透明度」的观察令牌。**观察点必须在宿主这边**：降级时那只 Metal 视图
+    /// 根本不在场，挂在它身上的观察器等不到「关掉」那一下
+    /// （批 F2 踩过的坑，判据因此做成了 `MiniPlayerBackdropMetalView` 的类型属性）。
+    private var accessibilityPreferenceObserver: (any NSObjectProtocol)?
 
     /// 内容列那棵 SwiftUI 叶子。铁律 2：定尺寸槽 + `sizingOptions = []`。
     private var contentHost: NSHostingView<AnyView>?
@@ -180,14 +201,15 @@ final class NowPlayingContainerViewController: NSViewController {
         backdropIdle.translatesAutoresizingMaskIntoConstraints = true
         container.addSubview(backdropIdle)
         container.addSubview(backdrop)
-        // [实测] `appearance = NSAppearance(named: .vibrantDark)` + `setBlur(1000)`
-        // （后者在稳态下会被「画布对角线算 σ」那条无条件覆盖，见视图内部注释）。
-        backdrop.appearance = NSAppearance(named: .vibrantDark)
-        backdrop.setBlur(MusicMetrics.Backdrop.miniPlayerBlurRadius)
-        // ⚠ 背景自己的 `updatePausedState()` 只看窗口可见性/遮挡/`isHidden`，
-        // 而整窗播放器收起时是**位移出窗 + alpha 0，不是 isHidden**，它会一直画。
-        // 所以多一位 `isActive` 由本容器按 `isPresented` 推。
-        backdrop.isActive = isPresented
+        pushBackdropInputs()
+        // [HIG] 「减弱透明度」两个方向都要走得通：打开时退回毛玻璃、关掉时换回 Metal。
+        // 系统偏好随时可改，所以常驻一条观察。
+        accessibilityPreferenceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rebuildBackdropIfNeeded() }
+        }
 
         // 首帧先用列宽下限占位；真正的列宽在第一次 `layout()` 里算好推进去。
         let host = appState.hostingView { contentColumn(columnWidth: Self.minimumColumn) }
@@ -248,6 +270,78 @@ final class NowPlayingContainerViewController: NSViewController {
         }
 
         reloadArtworkIfNeeded()
+    }
+
+    /// 观察令牌不是 `Sendable`，非隔离的 `deinit` 取不到它。标 `isolated`：
+    /// 主线程上释放时照旧同步跑完，注销时机不变（同 `MiniPlayerContentView`）。
+    isolated deinit {
+        if let accessibilityPreferenceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityPreferenceObserver)
+        }
+    }
+
+    // MARK: - 底衬（[HIG]「减弱透明度」的降级）
+
+    /// 造一只当下该用的底衬。
+    ///
+    /// Metal 那一支是**自绘**的，`NSVisualEffectView` / `NSGlassEffectView` 会在
+    /// 「减弱透明度」打开时自己变实心，自绘的这一层不会——所以只能整只换成系统材质那支，
+    /// 判据与迷你窗同一条（`MiniPlayerBackdropMetalView.reducesTransparency`，
+    /// 那边的落点是 `MiniPlayerContentView.makeBackdrop(style:)` 的 `style != 1` 分支）。
+    ///
+    /// 毛玻璃那支的三个参数照抄迷你窗那份 [实测]：`.popover`（6）/`.behindWindow`（0）/
+    /// `.active`（1）。命中这一支时系统已经把它渲成实心，所以「透出什么」不重要，
+    /// 重要的是**这一层是不透明的**——它底下就是资料库，透过去就穿帮了。
+    private static func makeBackdrop() -> NSView {
+        guard !MiniPlayerBackdropMetalView.reducesTransparency else {
+            let view = NSVisualEffectView()
+            view.material = .popover
+            view.blendingMode = .behindWindow
+            view.state = .active
+            return view
+        }
+        let view = MiniPlayerBackdropMetalView()
+        // [实测] `appearance = NSAppearance(named: .vibrantDark)` + `setBlur(1000)`
+        // （后者在稳态下会被「画布对角线算 σ」那条无条件覆盖，见视图内部注释）。
+        view.appearance = NSAppearance(named: .vibrantDark)
+        view.setBlur(MusicMetrics.Backdrop.miniPlayerBlurRadius)
+        return view
+    }
+
+    /// 偏好翻了就整只换掉；没翻就什么都不做（这条通知里还捎着「减弱动态效果」
+    /// 等好几项，每一项改动都会发一次，不判一下等于无谓重建）。
+    private func rebuildBackdropIfNeeded() {
+        let wantsMetal = !MiniPlayerBackdropMetalView.reducesTransparency
+        guard wantsMetal != (metalBackdrop != nil) else { return }
+        let old = backdrop
+        let new = Self.makeBackdrop()
+        // 插在旧的正上方再撤掉旧的：z 序原样留住（压在空态底之上、内容列之下）。
+        view.addSubview(new, positioned: .above, relativeTo: old)
+        old.removeFromSuperview()
+        backdrop = new
+        pushBackdropInputs()
+        view.needsLayout = true
+    }
+
+    /// 把「本容器持有、底衬需要」的那几件一次性喂进去。新建一只之后必须调它，
+    /// 否则换回来的 Metal 底衬是黑的（没有封面）、而且在没人看的时候照样跑（`isActive`）。
+    private func pushBackdropInputs() {
+        backdrop.frame = view.bounds
+        // ⚠ 背景自己的 `updatePausedState()` 只看窗口可见性/遮挡/`isHidden`，
+        // 而整窗播放器收起时是**位移出窗 + alpha 0，不是 isHidden**，它会一直画。
+        // 所以多一位 `isActive` 由本容器按 `isPresented` 推。
+        metalBackdrop?.isActive = isPresented
+        metalBackdrop?.cgImage = backdropArtwork
+        applyBackdropDynamics(width: view.bounds.width)
+    }
+
+    /// [实测] §2.1：纱罩/律动挂在 `setFrameSize:` 真身尾段，**无条件**跟着宽度重算；
+    /// 入参是内容视图的**宽度**，不是高度。毛玻璃那支整段不管
+    /// （原版第一句就是 `backdrop as? TSLBackdropMetalView` 的判型）。
+    private func applyBackdropDynamics(width: CGFloat) {
+        guard let metalBackdrop else { return }
+        metalBackdrop.scrimAlpha = M.backdropScrimAlpha(contentWidth: width)
+        metalBackdrop.animationInterval = Float(M.backdropAnimationInterval(contentWidth: width))
     }
 
     // MARK: - 内容列
@@ -387,10 +481,7 @@ final class NowPlayingContainerViewController: NSViewController {
 
         backdropIdle.frame = bounds
         backdrop.frame = bounds
-        // [实测] §2.1：纱罩/律动挂在 `setFrameSize:` 真身尾段，**无条件**跟着宽度重算；
-        // 入参是内容视图的**宽度**，不是高度。
-        backdrop.scrimAlpha = M.backdropScrimAlpha(contentWidth: bounds.width)
-        backdrop.animationInterval = Float(M.backdropAnimationInterval(contentWidth: bounds.width))
+        applyBackdropDynamics(width: bounds.width)
 
         let geometry = contentGeometry(in: bounds)
         contentHost?.frame = geometry.frame
@@ -429,7 +520,8 @@ final class NowPlayingContainerViewController: NSViewController {
         isPresented = presented
         if changed {
             // 背景律动、rollover 计时、时间行那 10 Hz 的走时全按这一位启停。
-            backdrop.isActive = presented
+            // 毛玻璃那支没有律动可停（由系统自己画），所以只推给 Metal 那只。
+            metalBackdrop?.isActive = presented
             chrome.isActive = presented
             drawer.isActive = presented
             pushContentInputsIfNeeded()
@@ -857,8 +949,10 @@ final class NowPlayingContainerViewController: NSViewController {
         // `UnsafeMutablePointer<NSRect>?`。契约很短——指向上一行那个局部 `var`，
         // AppKit 只在这次调用里读写它，调用一返回就没人再拿着这个地址。
         let cgImage = unsafe image?.cgImage(forProposedRect: &rect, context: nil, hints: nil)
-        backdrop.cgImage = cgImage
+        backdropArtwork = cgImage
+        metalBackdrop?.cgImage = cgImage
         // 有封面时 Metal 那层自己铺满，空态底让位；没有（或还在取）就露出它。
+        // 「减弱透明度」那一支盖的是整块，露不露空态底都看不见，无需另开一路。
         backdropIdle.isHidden = cgImage != nil
         pushContentInputsIfNeeded()
     }
