@@ -206,8 +206,8 @@ class CatalogPageViewController: ContentPageController {
     }
     private var hoveredSection: Int?
     private weak var hoveredShelf: NSScrollView?
-    private weak var hoveredCard: CatalogHoverTarget?
-    private var shelfBoundsObserver: NSObjectProtocol?
+    private weak var hoveredCard: (any CatalogHoverTarget)?
+    private var shelfBoundsObserver: (any NSObjectProtocol)?
     private var arrowsShown = false
     /// 离开这一页时记下各货架横滚到哪，回来时恢复（VC 常驻，item 也不重建，
     /// 这一份只是保险：`transition(from:to:)` 会把视图整棵摘下来再挂回去）。
@@ -588,13 +588,13 @@ class CatalogPageViewController: ContentPageController {
             if let track = self.tracksByID[identifier] {
                 let item = collectionView.makeItem(withIdentifier: CatalogCardRegistry.trackRowIdentifier,
                                                    for: indexPath)
-                (item as? CatalogTrackRowConfigurable)?.configure(with: track, appState: self.appState)
+                (item as? any CatalogTrackRowConfigurable)?.configure(with: track, appState: self.appState)
                 return item
             }
             guard let model = self.itemsByID[identifier] else { return NSCollectionViewItem() }
             let item = collectionView.makeItem(
                 withIdentifier: CatalogCardRegistry.identifier(for: model.kind), for: indexPath)
-            (item as? CatalogCardConfigurable)?.configure(with: model, appState: self.appState)
+            (item as? any CatalogCardConfigurable)?.configure(with: model, appState: self.appState)
             return item
         }
         dataSource.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
@@ -798,7 +798,7 @@ class CatalogPageViewController: ContentPageController {
         for id in ids {
             guard let indexPath = dataSource.indexPath(for: id),
                   let model = itemsByID[id],
-                  let cell = collectionView.item(at: indexPath) as? CatalogCardConfigurable
+                  let cell = collectionView.item(at: indexPath) as? (any CatalogCardConfigurable)
             else { continue }
             cell.configure(with: model, appState: appState)
         }
@@ -1351,15 +1351,15 @@ class CatalogPageViewController: ContentPageController {
     private func updateCardHover(at point: NSPoint) {
         guard let superview = collectionView.superview else { return }
         var hit = collectionView.hitTest(collectionView.convert(point, to: superview))
-        var target: CatalogHoverTarget?
+        var target: (any CatalogHoverTarget)?
         while let view = hit, view !== collectionView {
-            if let card = view as? CatalogHoverTarget { target = card; break }
+            if let card = view as? any CatalogHoverTarget { target = card; break }
             hit = view.superview
         }
         setHoveredCard(target)
     }
 
-    private func setHoveredCard(_ card: CatalogHoverTarget?) {
+    private func setHoveredCard(_ card: (any CatalogHoverTarget)?) {
         guard card !== hoveredCard else { return }
         hoveredCard?.setHovering(false)
         hoveredCard = card

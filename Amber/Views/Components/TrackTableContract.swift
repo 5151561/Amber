@@ -82,14 +82,14 @@ enum TrackRowRegistry {
     /// 默认值按形态给（歌单 0、专辑详情 40、搜索与本地列表 34，逐页核过旧版调用点，
     /// 见 `TrackRowView.contentInset`），表格实现`TrackRowContentInsetProviding`
     /// 就按表格说的来（艺人页的 `.detail` 是 34；表格若已经自己内缩过就给 0）。
-    static func makeRow(in tableView: NSTableView) -> TrackRowViewConfigurable {
+    static func makeRow(in tableView: NSTableView) -> any TrackRowViewConfigurable {
         let row = (tableView.makeView(withIdentifier: rowIdentifier, owner: nil) as? TrackRowView)
             ?? {
                 let created = TrackRowView()
                 created.identifier = rowIdentifier
                 return created
             }()
-        if let provider = tableView as? TrackRowContentInsetProviding {
+        if let provider = tableView as? any TrackRowContentInsetProviding {
             row.contentInset = provider.trackRowContentInset
         }
         return row

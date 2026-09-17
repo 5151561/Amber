@@ -614,7 +614,7 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         headerView?.refreshLibraryState()
         tableView.enumerateAvailableRowViews { rowView, row in
             guard row >= 0, row < rows.count, case .track(let index) = rows[row],
-                  let configurable = rowView as? TrackRowViewConfigurable else { return }
+                  let configurable = rowView as? any TrackRowViewConfigurable else { return }
             configurable.configure(configuration(at: index), appState: appState)
         }
     }

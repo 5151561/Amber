@@ -1011,7 +1011,7 @@ final class DownloadStore: ObservableObject {
     var resolveMVURL: ((MV) async throws -> URL)?
 
     /// 一支 MV 下完（或下砸）的回音，由 AppState 转成 toast。
-    var onMVDownloadFinished: ((MV, Result<URL, Error>) -> Void)?
+    var onMVDownloadFinished: ((MV, Result<URL, any Error>) -> Void)?
 
     /// 正在下的 MV。跟曲目那套的排队/并发闸门分开：MV 是用户一支一支点的，
     /// 不像整张碟那样一次几十首，用不着队列。
@@ -1546,7 +1546,7 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, Sendable {
     /// 迁到 Swift 6 也不会报它，所以顺手修掉。
     private struct State {
         var onProgress: (@Sendable (Double) -> Void)?
-        var continuation: CheckedContinuation<URL, Error>?
+        var continuation: CheckedContinuation<URL, any Error>?
         /// `finishTasksAndInvalidate` 之前 URLSession 强引用 delegate，
         /// 所以 await 期间这个对象一直活着，不用自己持有自己。
         var task: URLSessionDownloadTask?
@@ -1601,15 +1601,15 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, Sendable {
         }
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         // 成功那一支已经在 didFinishDownloadingTo 里回过了，finish 自带一次性保护。
         if let error { finish(.failure(error)) }
     }
 
-    private func finish(_ result: Result<URL, Error>) {
+    private func finish(_ result: Result<URL, any Error>) {
         // 先在锁里把 continuation 取走（一次性保护就是这一步），出锁再 resume——
         // 别在持锁时 resume：续体恢复后跑的是调用方的代码，不该落在这把锁里。
-        let continuation = state.withLock { s -> CheckedContinuation<URL, Error>? in
+        let continuation = state.withLock { s -> CheckedContinuation<URL, any Error>? in
             defer { s.continuation = nil }
             return s.continuation
         }

@@ -492,7 +492,7 @@ enum ImportWorker {
     /// 普通 AIFF 文件，读它就是读文件系统），能做的只有读不动时再来一遍。
     nonisolated static func readMetadata(asset: AVURLAsset, source: URL,
                                          attempts: Int) async throws -> RawMetadata {
-        var lastError: Error = ImportError.readFailed("未知原因")
+        var lastError: any Error = ImportError.readFailed("未知原因")
         for attempt in 0..<max(attempts, 1) {
             do {
                 return try await readMetadataOnce(asset: asset, source: source)

@@ -800,7 +800,7 @@ enum RemoteHTTPClient {
             // 不许是 `@Sendable`），而这两个函数要被上面说的那些 handler 捕获。
             // 它们实际仍然只在主线程上跑：每个调用点不是裹在 `assumeIsolated` 里，
             // 就是在继承了主 actor 的 `Task` 里。
-            @Sendable func finish(_ result: Result<RemoteHTTPClientResponse, Error>) {
+            @Sendable func finish(_ result: Result<RemoteHTTPClientResponse, any Error>) {
                 guard !finished else { return }
                 finished = true
                 connection.cancel()

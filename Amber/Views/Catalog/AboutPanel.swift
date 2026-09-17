@@ -86,10 +86,10 @@ protocol AboutPanelPresenting: AnyObject {
 
 extension NSView {
     /// 沿响应链（自己 → 各级父视图 → 各级视图控制器 → 窗口）找简介面板的宿主。
-    func findAboutPanelPresenter() -> AboutPanelPresenting? {
+    func findAboutPanelPresenter() -> (any AboutPanelPresenting)? {
         var responder: NSResponder? = self
         while let current = responder {
-            if let host = current as? AboutPanelPresenting { return host }
+            if let host = current as? any AboutPanelPresenting { return host }
             responder = current.nextResponder
         }
         return nil

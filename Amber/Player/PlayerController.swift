@@ -248,7 +248,7 @@ final class PlayerController: ObservableObject {
     /// 另一路（预取 / 退场）
     private var other: PlaybackDeck { current === deckA ? deckB : deckA }
 
-    private var endObserver: NSObjectProtocol?
+    private var endObserver: (any NSObjectProtocol)?
     private var settingsCancellable: AnyCancellable?
     private var shuffleOrder: [Int] = []
     private var shuffleCursor = 0

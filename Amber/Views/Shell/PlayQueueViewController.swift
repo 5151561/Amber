@@ -841,7 +841,7 @@ final class PlayQueueDataSource: NSTableViewDiffableDataSource<PlayQueueSection,
 
     /// 面板内部重排：只有 `canReorder(_:)` 认的分区才起拖。
     @objc func tableView(_ tableView: NSTableView,
-                         pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+                         pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
         guard let controller,
               let item = controller.item(forRow: row),
               let section = controller.section(forRow: row),
@@ -853,7 +853,7 @@ final class PlayQueueDataSource: NSTableViewDiffableDataSource<PlayQueueSection,
         return pasteboardItem
     }
 
-    @objc func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo,
+    @objc func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
                          proposedRow row: Int,
                          proposedDropOperation dropOperation: NSTableView.DropOperation)
         -> NSDragOperation {
@@ -866,7 +866,7 @@ final class PlayQueueDataSource: NSTableViewDiffableDataSource<PlayQueueSection,
         return []
     }
 
-    @objc func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo,
+    @objc func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
                          row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
         guard let controller else { return false }
         let target = controller.item(forRow: row)

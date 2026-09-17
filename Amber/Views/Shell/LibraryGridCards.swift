@@ -36,7 +36,7 @@ enum LibraryGridSizing {
         guard width != lastWidth else { return }
         lastWidth = width
         collectionView.collectionViewLayout?.invalidateLayout()
-        for case let item as LibraryGridItemSizing in collectionView.visibleItems() {
+        for case let item as any LibraryGridItemSizing in collectionView.visibleItems() {
             item.update(width: width)
         }
     }
@@ -60,7 +60,7 @@ final class LibraryGridCollectionView: NSCollectionView {
 
     private weak var hoveredCard: LibraryGridCardView?
     private var hoverArea: NSTrackingArea?
-    private var boundsObserver: NSObjectProtocol?
+    private var boundsObserver: (any NSObjectProtocol)?
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
