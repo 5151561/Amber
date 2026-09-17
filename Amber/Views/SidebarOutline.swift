@@ -282,28 +282,70 @@ final class SidebarAccountAvatarView: NSView {
     private typealias M = MusicMetrics.Sidebar
 
     /// 账号头像。nil 时按 `initial` 画占位。
-    var image: NSImage? { didSet { needsDisplay = true } }
+    ///
+    /// 图**贴给层**，不在 `draw` 里 `image.draw(in:)`：后者每来一次 `needsDisplay`
+    /// （换昵称、重排、外观切换）就把位图重画一遍，而合成器自己贴 `contents` 是零成本的。
+    /// 模板同一文件的 `SidebarArtworkView`。
+    var image: NSImage? {
+        didSet {
+            guard image !== oldValue else { return }
+            showAvatar()
+        }
+    }
     /// 昵称首字（占位用）。
     var initial: String? { didSet { needsDisplay = true } }
 
+    /// 头像那一层。占位（蓝底 + 首字／人形）仍走 `draw`——那是矢量，一帧几微秒，
+    /// 而且它随 `initial` 变，做成层反而要自己管字体与倍率。
+    private let avatar = CALayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        // QQ 回的头像是方图（`s=140`），非方图按 aspect fill 居中裁，不留黑边
+        // ——与从前 `draw` 里那段「按长边缩、居中、圆里裁」逐像素等价。
+        avatar.contentsGravity = .resizeAspectFill
+        avatar.masksToBounds = true
+        avatar.isHidden = true
+        layer?.addSublayer(avatar)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     override var intrinsicContentSize: NSSize { NSSize(width: M.accountSize, height: M.accountSize) }
 
-    override func draw(_ dirtyRect: NSRect) {
-        let circle = NSBezierPath(ovalIn: bounds)
-        if let image {
-            NSGraphicsContext.saveGraphicsState()
-            circle.setClip()
-            // QQ 回的头像是方图（`s=140`），非方图按 aspect fill 居中裁，不留黑边。
-            let scale = max(bounds.width / max(image.size.width, 1),
-                            bounds.height / max(image.size.height, 1))
-            let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-            image.draw(in: NSRect(x: bounds.midX - size.width / 2,
-                                  y: bounds.midY - size.height / 2,
-                                  width: size.width, height: size.height))
-            NSGraphicsContext.restoreGraphicsState()
-            return
-        }
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        avatar.frame = bounds
+        // 从前的裁剪形状是 `NSBezierPath(ovalIn: bounds)`；这一格恒为正方（约束钉死
+        // `accountSize` × `accountSize`），所以半径取半边就是同一个圆。
+        avatar.cornerRadius = min(bounds.width, bounds.height) / 2
+        CATransaction.commit()
+    }
 
+    /// 贴 CGImage 而不是 NSImage，理由同 `SidebarArtworkView.showArtwork`。
+    private func showAvatar() {
+        let contents: Any?
+        if let cgImage = image?.amberCGImage {
+            contents = cgImage
+        } else {
+            contents = image
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        avatar.contents = contents
+        avatar.isHidden = image == nil
+        CATransaction.commit()
+        // 占位那一路归 `draw`：有图就让它画空。
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard image == nil else { return }
+        let circle = NSBezierPath(ovalIn: bounds)
         NSColor.systemBlue.withAlphaComponent(0.55).setFill()
         circle.fill()
         if let initial, !initial.isEmpty {

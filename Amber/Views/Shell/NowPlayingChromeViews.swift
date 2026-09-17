@@ -16,8 +16,9 @@ import SwiftUI
 ///
 /// 像素全部照 `MusicMetrics.NowPlaying` 那一组（[PX] 逐项实测），换骨架一个数不改。
 ///
-/// rollover（[实测] nowplaying spec §2.3）由本视图自己持有并驱动，不经 `@Published`
-/// 绕一圈（AGENTS.md 界面层铁律 3）；两档计时取 miniplayer spec §11.1 `MPContentView`
+/// rollover（[实测] nowplaying spec §2.3）由本视图自己持有并驱动，**不上广播**
+/// （AGENTS.md 界面层铁律 3；那条原来写的是「不经 `@Published`」，剥离 Combine 之后
+/// 换成了 `@Observable` 的属性，要守的东西一个字没变）；两档计时取 miniplayer spec §11.1 `MPContentView`
 /// 的 ivar 实测值——那张表记的就是整窗内容视图自己的字段，迷你横条与整窗是同一台
 /// `MPContentView`，所以两处本来就是同一个数。
 @MainActor
@@ -52,7 +53,7 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
         }
     }
 
-    // MARK: 私有状态（铁律 3：自己持有，不经 @Published）
+    // MARK: 私有状态（铁律 3：界面自己的显示态自己持有，不上广播）
 
     private let appState: AppState
     private var player: PlayerController { appState.player }
@@ -819,6 +820,15 @@ private final class NowPlayingVolumeBar: NSView {
         knob.frame = NSRect(x: knobX, y: (bounds.height - knobHeight) / 2,
                             width: knobWidth, height: knobHeight)
         knob.cornerRadius = knobHeight / 2
+        // 滑块带阴影，frame 在 `mouseDragged` 里逐事件重排：不给 `shadowPath`，
+        // 合成器每一帧都要照层的 alpha 现算一次离屏（同 `CatalogPlayButton.layout`）。
+        // 这只是横胶囊不是圆点，圆角取高的一半，与上面那句同一个形状。
+        // 走 `NSBezierPath.cgPath` 而不是 `CGPath(roundedRect:…:transform:)`：后者的
+        // `transform` 是裸指针形参，整条声明被判为不安全；这条是纯安全 API，
+        // 按三档的第一档「能改成安全代码的先改，不标注」。
+        knob.shadowPath = NSBezierPath(roundedRect: knob.bounds,
+                                       xRadius: knobHeight / 2,
+                                       yRadius: knobHeight / 2).cgPath
         CATransaction.commit()
         setAccessibilityValue("\(Int((current * 100).rounded()))%")
     }
