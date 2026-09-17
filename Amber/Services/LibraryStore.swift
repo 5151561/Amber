@@ -970,13 +970,22 @@ final class LibraryStore: ObservableObject {
     ///   所以单靠 `kind` 分不开本地碟与同一音源的在线碟，这一道必须单列。）
     /// - `kind`：两边都必然有音源，不同音源的同名碟一律不算同一张。
     /// - 艺人名与专辑名：大小写与前后空白无关（与 `ImportService.albumKey` 的归组口径一致）。
-    private static func fallbackKey(name: String, artist: String,
-                                    kind: ProviderKind, isLocal: Bool) -> String {
+    ///
+    /// **这两个重载不再是 `private`。** `album_key` 现在是一个**落盘的列**
+    /// （`track.album_key` / `library_album.album_key`，见 `AmberDatabase` 的 schema），
+    /// 算它的函数就不再是 `LibraryStore` 的实现细节。`AmberDatabaseMigration` 必须调
+    /// 同一个它——自己抄一份等于给一个已经持久化的键制造第二份真相，
+    /// 两边哪天漂移了（归一化口径变了、键里多带一段）专辑会静默认不出来，不报错。
+    ///
+    /// `normalizedForMatching` 与 `belongs(_:to:)` 照旧 `private`：前者只有这里调，
+    /// 后者收的是内存模型 `Track`，迁移器解的是旧存档的 `LegacyTrack`，够不着也不该够着。
+    static func fallbackKey(name: String, artist: String,
+                            kind: ProviderKind, isLocal: Bool) -> String {
         [normalizedForMatching(name), normalizedForMatching(artist),
          kind.rawValue, isLocal ? "1" : "0"].joined(separator: "\u{1}")
     }
 
-    private static func fallbackKey(for track: Track) -> String {
+    static func fallbackKey(for track: Track) -> String {
         fallbackKey(name: track.albumName, artist: track.artistName,
                     kind: track.kind, isLocal: track.isLocal)
     }
