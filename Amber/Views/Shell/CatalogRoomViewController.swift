@@ -108,10 +108,15 @@ final class CatalogRoomViewController: ContentPageController {
     private var selectedTag: CatalogTagRef?
     private var isLoading = false
     private var loadTask: Task<Void, Never>?
+    /// 上一次取数是断网收的场（§2.6-8）：这一页原本只有 loading / empty 两档，
+    /// 断网与「这个分类真的没有内容」在界面上分不开，也没有重试的口子。
+    private var isOffline = false
 
-    // 覆盖层（加载 / 空态）
+    // 覆盖层（加载 / 出错 / 空态）
     private let overlay = RoomOverlayView()
     private let spinner = NSProgressIndicator()
+    private let errorBox = NSStackView()
+    private let errorLabel = NSTextField(labelWithString: "")
     private var emptyHost: NSView?
     private var overlayTop: NSLayoutConstraint!
 
@@ -152,7 +157,14 @@ final class CatalogRoomViewController: ContentPageController {
 
         collectionView.collectionViewLayout = makeLayout()
         collectionView.backgroundColors = [.clear]
-        collectionView.isSelectable = false
+        // 对键盘开放（审查单 §2.5-1，与目录页同一条）：方向键选、回车打开。
+        // 鼠标行为一个字不变——卡片根视图自己接了 `mouseDown`（空实现、不调 super，
+        // 见 `CatalogCardContentView`），事件到不了 `NSCollectionView.mouseDown`，
+        // 单击仍旧是「直接打开」。多选保持关着，免得空白处一拖就画出框选矩形。
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = false
+        collectionView.delegate = self
+        collectionView.onActivateSelection = { [weak self] in self?.activateSelection() }
         CatalogCardRegistry.register(in: collectionView)
         collectionView.register(CatalogRoomHeaderView.self,
                                 forSupplementaryViewOfKind: NSCollectionView.elementKindSectionHeader,
@@ -181,8 +193,28 @@ final class CatalogRoomViewController: ContentPageController {
         spinner.translatesAutoresizingMaskIntoConstraints = false
         overlay.addSubview(spinner)
 
+        // 出错块照目录页那台引擎铺（`CatalogPageViewController.buildOverlay`）：
+        // wifi 图标 + 一行说明 + 「重试」，竖排居中，与加载/空态共用同一条「内容顶」。
+        let errorIcon = NSImageView()
+        errorIcon.image = NSImage(systemSymbolName: "wifi.exclamationmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 40, weight: .regular))
+        errorIcon.contentTintColor = .tertiaryLabelColor
+        errorLabel.textColor = .secondaryLabelColor
+        errorLabel.alignment = .center
+        let retry = NSButton(title: "重试", target: self, action: #selector(retryTapped))
+        retry.bezelStyle = .push
+        errorBox.orientation = .vertical
+        errorBox.alignment = .centerX
+        errorBox.spacing = 12
+        errorBox.setViews([errorIcon, errorLabel, retry], in: .top)
+        errorBox.translatesAutoresizingMaskIntoConstraints = false
+        errorBox.isHidden = true
+        overlay.addSubview(errorBox)
+
         overlayTop = spinner.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor)
         NSLayoutConstraint.activate([
+            errorBox.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            errorBox.topAnchor.constraint(equalTo: spinner.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
@@ -313,10 +345,12 @@ final class CatalogRoomViewController: ContentPageController {
         loadTask?.cancel()
         guard let tag = selectedTag, !tag.id.isEmpty else {
             isLoading = false
+            isOffline = false
             apply(items: [])
             return
         }
         isLoading = true
+        isOffline = false
         // **旧结果原地留着**，只把 spinner 叠上去（同 `SearchResultsModel`：新词条提交后
         // 旧结果不撤、等新结果到了再换）。从前这里先 `apply(items: [])` 再等网络，
         // 于是换一次标签整片网格先消失变 spinner、滚动位置归零；两个标签共有的歌单
@@ -330,9 +364,20 @@ final class CatalogRoomViewController: ContentPageController {
         loadTask = Task { [weak self] in
             let result = await appState.provider(group.kind).playlists(tag: tag)
             guard !Task.isCancelled, let self, self.selectedTag == tag else { return }
+            // 一个也没交出来时才去问「是不是断网」（§2.6-8；`playlists(tag:)` 不抛错，
+            // 判据只能来自系统，理由见 `CatalogFeedModel.isNetworkUnavailable`）。
+            let offline = result.isEmpty ? await CatalogFeedModel.isNetworkUnavailable() : false
+            guard !Task.isCancelled, self.selectedTag == tag else { return }
             self.isLoading = false
+            self.isOffline = offline
             self.apply(items: result.map(self.playlistItem))
         }
+    }
+
+    /// 出错块上那颗「重试」。只有分类浏览页会走到出错态，其余三种形态的内容
+    /// 要么是路由带进来的、要么是本地台账，压根不发请求。
+    @objc private func retryTapped() {
+        reloadTag()
     }
 
     // MARK: - 数据源与快照
@@ -416,8 +461,11 @@ final class CatalogRoomViewController: ContentPageController {
 
     private func updateOverlay() {
         let showsLoading = isLoading
+        // 断网优先于空态：三档互斥，一件都没摆出来时「网络不可用 + 重试」盖过
+        // 「这个分类暂时没有内容。」——两者从前混成一句，用户看不出该开 Wi-Fi 还是换分类。
+        let showsError = !isLoading && items.isEmpty && isOffline
         var emptyMessage: String?
-        if !isLoading, items.isEmpty {
+        if !isLoading, !showsError, items.isEmpty {
             switch content {
             case .recentlyPlayed: emptyMessage = "最近播放的音乐会显示在这里。"
             case .tagGroup: emptyMessage = "这个分类暂时没有内容。"
@@ -429,14 +477,19 @@ final class CatalogRoomViewController: ContentPageController {
         spinner.isHidden = !showsLoading
         if showsLoading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
 
+        errorLabel.stringValue = showsError ? CatalogFeedModel.offlineMessage : ""
+        errorBox.isHidden = !showsError
+
         if let emptyMessage {
             installEmptyHost(message: emptyMessage,
                              image: emptyGlyph(for: content))
         }
         emptyHost?.isHidden = emptyMessage == nil
-        overlay.isHidden = !showsLoading && emptyMessage == nil
+        overlay.isHidden = !showsLoading && !showsError && emptyMessage == nil
 
-        let extra = showsLoading ? Self.loadingTop
+        // 出错块与加载指示同一档落点（都从「内容顶 + loadingTop」开始），
+        // 空态那档照旧（最近播放页多让 60）。
+        let extra = showsLoading || showsError ? Self.loadingTop
             : (isRecentlyPlayed ? Self.emptyExtraTop : 0)
         overlayTop.constant = headerHeight + Self.headerToContent + extra
     }
@@ -570,6 +623,31 @@ final class CatalogRoomViewController: ContentPageController {
         hoveredCard = card
         card?.setHovering(true)
     }
+
+    // MARK: - 键盘（审查单 §2.5-1）
+
+    /// 回车打开选中那一件。落点不在这里另写一份，一律调那一件视图自己的
+    /// `accessibilityPerformPress()`——理由与目录页那份逐字相同
+    /// （见 `CatalogPageViewController.activateSelection`）。
+    private func activateSelection() {
+        guard let indexPath = collectionView.selectionIndexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.accessibilityPerformPress()
+    }
+}
+
+// MARK: - 键盘选择
+
+extension CatalogRoomViewController: NSCollectionViewDelegate {
+
+    /// 选中挪到一件上就把它滚进可视区（这一页只有纵向网格一种段，
+    /// 但写法与目录页同一句，那边还要管横向货架）。
+    func collectionView(_ collectionView: NSCollectionView,
+                        didSelectItemsAt indexPaths: Set<IndexPath>) {
+        guard let indexPath = indexPaths.first,
+              let item = collectionView.item(at: indexPath) else { return }
+        _ = item.view.scrollToVisible(item.view.bounds)
+    }
 }
 
 // MARK: - 覆盖层
@@ -588,8 +666,30 @@ private final class RoomCollectionView: NSCollectionView {
 
     var onMouseMoved: ((NSPoint) -> Void)?
     var onMouseExited: (() -> Void)?
+    /// 回车 / Enter（以及没在播时的空格）落在选中那一件上：打开它。
+    var onActivateSelection: (() -> Void)?
 
     private var hoverArea: NSTrackingArea?
+
+    /// 与目录页 `CatalogShelfCollectionView.keyDown` 同一份（键码、空格那一档的
+    /// 判据与理由都在那边写全了）。
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 36, 76:                                    // Return / Enter
+            if activateSelection() { return }
+        case 49:                                        // Space
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.isDisjoint(with: [.command, .option, .control]), activateSelection() { return }
+        default: break
+        }
+        super.keyDown(with: event)
+    }
+
+    private func activateSelection() -> Bool {
+        guard !selectionIndexPaths.isEmpty, let onActivateSelection else { return false }
+        onActivateSelection()
+        return true
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
