@@ -15,7 +15,7 @@ import SwiftUI
 ///
 /// 骨架换 AppKit（appkit-rewrite-plan 阶段 2）时**像素与行为一个不改**，只换了实现：
 /// 玻璃 `NSGlassEffectView`、按键`NSButton`、封面/进度条/音量条自绘、悬浮态
-/// `NSTrackingArea` + 自己持有的布尔（计划 §2 铁律 3：不再经`@Published` 绕一圈）。
+/// `NSTrackingArea` + 自己持有的布尔（铁律 3：界面自己的显示态自己持有，不上广播）。
 /// 内部排版全部走 `layout()` 手排 frame：这一条胶囊的每个数都是实测常量，
 /// 用约束表达反而要为「组间距随播放态跳变」再挂一层可变约束。
 @MainActor
@@ -935,24 +935,41 @@ private final class MiniArtworkView: NSView {
         // 会留在层上（同 `CatalogArtworkView.setArtwork`）。
         guard request != requestedURL || request == nil else { return }
         requestedURL = request
+        loadTask?.cancel()
+        loadTask = nil
+        // 内存里已经有就当场贴，**不先置空**：哪怕图早就在 `NSCache` 里，
+        // 「先 `contents = nil` → 下一轮微任务回填」也必定让胶囊白一帧，
+        // 换歌时那下闪动就是它（`ImageCache.memoryCachedImage` 的头注写的正是这条路）。
+        if let cached = ImageCache.shared.memoryCachedImage(for: request) {
+            show(cached)
+            return
+        }
         // 图没到之前露的是渐变占位（与旧版 `ArtworkView` 同形）。
         artwork.contents = nil
         artwork.isHidden = true
         placeholderGlyph.isHidden = false
-        loadTask?.cancel()
         loadTask = Task { [weak self] in
             let image = await ImageCache.shared.image(for: request)
             guard let self, !Task.isCancelled, self.requestedURL == request,
                   let image else { return }
-            // 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
-            let contents: Any = image.amberCGImage ?? image
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.artwork.contents = contents
-            self.artwork.isHidden = false
-            CATransaction.commit()
-            self.placeholderGlyph.isHidden = true
+            self.show(image)
         }
+    }
+
+    /// 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
+    private func show(_ image: NSImage) {
+        let contents: Any
+        if let cgImage = image.amberCGImage {
+            contents = cgImage
+        } else {
+            contents = image
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        artwork.contents = contents
+        artwork.isHidden = false
+        CATransaction.commit()
+        placeholderGlyph.isHidden = true
     }
 
     override func updateTrackingAreas() {
@@ -1210,6 +1227,12 @@ private final class MiniVolumeBar: NSView {
         knob.frame = NSRect(x: knobX, y: (bounds.height - knobSize) / 2,
                             width: knobSize, height: knobSize)
         knob.cornerRadius = knobSize / 2
+        // 圆钮带阴影，frame 在 `mouseDragged` 里逐事件重排：不给 `shadowPath`，
+        // 合成器每一帧都要照层的 alpha 现算一次离屏（同 `CatalogPlayButton.layout`）。
+        // 走 `NSBezierPath.cgPath` 而不是 `CGPath(ellipseIn:transform:)`：后者的
+        // `transform` 是裸指针形参，整条声明被判为不安全；这条是纯安全 API，
+        // 按三档的第一档「能改成安全代码的先改，不标注」。
+        knob.shadowPath = NSBezierPath(ovalIn: knob.bounds).cgPath
         CATransaction.commit()
         setAccessibilityValue("\(Int((current * 100).rounded()))%")
     }

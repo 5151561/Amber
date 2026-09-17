@@ -781,12 +781,40 @@ private final class HeaderView: FlippedView {
 /// 插图页的拖放区。[推]：AX 不暴露内部元素，行为照 spec §4.2 的描述做
 /// （从访达拖图进来、`InfoPanelAlbumArtDrag` 那张占位图的语义）。
 private final class ArtworkDropView: NSView {
+    /// 图与边框都按这个圆角走。
+    private static let cornerRadius: CGFloat = 6
+
     var onImageData: ((Data) -> Void)?
     var onRemove: (() -> Void)?
-    var image: NSImage? { didSet { needsDisplay = true } }
+
+    /// 插图**贴给层**，不在 `draw` 里 `image.draw(in:)`：后者每来一次 `needsDisplay`
+    /// 就把一张动辄 1500–3000px 的封面在主线程上重画一遍。
+    var image: NSImage? {
+        didSet {
+            guard image !== oldValue else { return }
+            needsLayout = true
+        }
+    }
+
+    private let artwork = CALayer()
+    /// 边框也搬成层：`draw` 画的东西是视图自己那层的 `contents`，**排在所有子层底下**，
+    /// 图一贴就把边框盖住了。整块改成两个子层之后这只视图连后备位图都不要了。
+    private let border = CAShapeLayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
+        // 层的 frame 就是「按比例贴合、居中」算出来的那个矩形（见 `artworkRect`），
+        // 长宽比与图一致，所以 `.resizeAspect` 与从前的 `image.draw(in: target)` 等价。
+        artwork.contentsGravity = .resizeAspect
+        artwork.cornerRadius = Self.cornerRadius
+        artwork.masksToBounds = true
+        artwork.isHidden = true
+        layer?.addSublayer(artwork)
+        border.fillColor = nil
+        border.lineWidth = 1
+        layer?.addSublayer(border)
+        updateBorderColor()
         registerForDraggedTypes([.fileURL, .tiff, .png])
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "移除插图", action: #selector(remove), keyEquivalent: ""))
@@ -797,33 +825,55 @@ private final class ArtworkDropView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func draw(_ dirtyRect: NSRect) {
+    /// **按比例贴合、居中**——从前是 `draw(in: bounds)`，那是拉伸填充：
+    /// 非正方形的封面会被压扁，而边框还留在原处，看着就是「图没跟着框走」。
+    private var artworkRect: NSRect? {
+        guard let image, image.size.width > 0, image.size.height > 0 else { return nil }
         let frame = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let border = NSBezierPath(roundedRect: frame, xRadius: 6, yRadius: 6)
-
-        guard let image, image.size.width > 0, image.size.height > 0 else {
-            // 没有插图：画一个空框当拖放靶子
-            NSColor.separatorColor.setStroke()
-            border.lineWidth = 1
-            border.stroke()
-            return
-        }
-
-        // **按比例贴合、居中，再用圆角裁掉**——从前是 `draw(in: bounds)`，那是拉伸填充：
-        // 非正方形的封面会被压扁，而边框还留在原处，看着就是「图没跟着框走」。
         let scale = min(frame.width / image.size.width, frame.height / image.size.height)
         let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
-        let target = NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
-                            width: size.width, height: size.height)
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(roundedRect: target, xRadius: 6, yRadius: 6).addClip()
-        image.draw(in: target)
-        NSGraphicsContext.restoreGraphicsState()
-        // 边框贴着图本身走，不是贴着那个方框
-        NSColor.separatorColor.setStroke()
-        let outline = NSBezierPath(roundedRect: target.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-        outline.lineWidth = 1
-        outline.stroke()
+        return NSRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
+
+    override func layout() {
+        super.layout()
+        let radius = Self.cornerRadius
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let rect = artworkRect, let image {
+            artwork.frame = rect
+            // 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
+            if let cgImage = image.amberCGImage {
+                artwork.contents = cgImage
+            } else {
+                artwork.contents = image
+            }
+            artwork.isHidden = false
+        } else {
+            artwork.contents = nil
+            artwork.isHidden = true
+        }
+        border.frame = bounds
+        // 有图时边框贴着**图本身**走，不是贴着那个方框；没图时就是那只空框拖放靶子。
+        // 路径与从前 `draw` 里那两条 `NSBezierPath` 逐点相同（含 0.5 的半线宽内缩）。
+        let outline = (artworkRect ?? bounds).insetBy(dx: 0.5, dy: 0.5)
+        border.path = NSBezierPath(roundedRect: outline,
+                                   xRadius: radius, yRadius: radius).cgPath
+        CATransaction.commit()
+    }
+
+    /// `separatorColor` 是动态色。从前走 `draw`，外观一变 AppKit 自己重画；
+    /// 贴进 `CAShapeLayer` 之后 cgColor 是当场解析的定值，得自己重取一次。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBorderColor()
+    }
+
+    private func updateBorderColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            border.strokeColor = NSColor.separatorColor.cgColor
+        }
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

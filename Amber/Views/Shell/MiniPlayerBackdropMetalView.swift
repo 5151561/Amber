@@ -88,6 +88,17 @@ final class MiniPlayerBackdropMetalView: MTKView {
     /// 把 speed 顶成 5.0——**慢十倍，不是停**。
     private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
+    /// [HIG] 「减弱透明度」。这块底衬是自绘的 Metal，**系统替它降级不了**——
+    /// `NSVisualEffectView` / `NSGlassEffectView` 自己会变实心，自绘的这一层不会，
+    /// 所以只能自己读一次。命中时宿主该整只换回系统材质那一支
+    ///（`MiniPlayerContentView.makeBackdrop(style:)` 的 `style != 1` 分支）。
+    ///
+    /// 放成类型属性而不是实例属性：判据要在**还没建这只视图之前**就问
+    /// （命中时根本不建它），实例属性问不到。
+    static var reducesTransparency: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    }
+
     // MARK: - Metal 家什（任何一件缺席都进降级路径）
 
     private let commandQueue: (any MTLCommandQueue)?
@@ -255,6 +266,9 @@ final class MiniPlayerBackdropMetalView: MTKView {
     private func observeSystemChanges() {
         let center = NSWorkspace.shared.notificationCenter
         // 「减弱动态效果」是可以随时改的，改完要当场生效。
+        // 「减弱透明度」在同一条通知里，但它要的是**整只换掉自己**，这只视图做不了，
+        // 由宿主接同一条通知（`MiniPlayerContentView.buildViews`）——命中时根本不会
+        // 有这只视图在场，观察点只能在宿主那边。
         let token = center.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil, queue: .main
