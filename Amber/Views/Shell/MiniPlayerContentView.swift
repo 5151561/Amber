@@ -201,7 +201,7 @@ final class MiniPlayerContentView: NSView {
     private var rolloverTrackingArea: NSTrackingArea?
     /// `viewDidMoveToWindow` 挂的`windowFocusObserver`（spec §2.3 的 +384）。
     /// 另一支 `accessibilityFocusObserver`（+392）没做：AX 焦点没有公开通知。
-    private var focusObservers: [NSObjectProtocol] = []
+    private var focusObservers: [any NSObjectProtocol] = []
 
     /// 淡出之后得有东西露出来才值得淡：组 II 起露的是大封面；组 I 露的是静息层
     /// （42pt 小封面 + 标题），所以要有曲目。没曲目的组 I 淡掉只剩一块空玻璃，不淡。

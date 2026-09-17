@@ -201,7 +201,7 @@ extension SyncedLyricsLineLayer {
     /// 前面三道闸：`contentLayer` 非 nil、能转型成 **`SBS_TextContentLayer`**
     /// （类名实测得到）、`manager` 非 nil。整行文本层与间奏层都不吃这一步。
     func startProgress(at elapsed: TimeInterval, animated: Bool) {
-        (contentLayer as? SBS_TextContentLayerProgress)?
+        (contentLayer as? any SBS_TextContentLayerProgress)?
             .setProgress(elapsed, animated: animated)
     }
 }

@@ -72,6 +72,6 @@ final class AmberApplication: NSApplication {
     private func acceptsTextInput(_ responder: NSResponder) -> Bool {
         // 只读的 NSTextView（歌词、说明文字）不算在输入里，空格照旧是播放/暂停。
         if let text = responder as? NSTextView { return text.isEditable }
-        return responder is NSTextInputClient
+        return responder is (any NSTextInputClient)
     }
 }

@@ -167,7 +167,7 @@ final class InfoPanelFormView: NSView {
     private static let slotBase = 10
 
     private let fields: [InfoPanelField]
-    private weak var host: InfoPanelFormHost?
+    private weak var host: (any InfoPanelFormHost)?
     /// 反查用：控件 → 字段序号，`controlTextDidChange` 那条路要用
     private var textViewFields: [ObjectIdentifier: Int] = [:]
     /// 已装上的控件，键沿用 tag 那套编码（`index * slotBase + slot`）：
@@ -181,7 +181,7 @@ final class InfoPanelFormView: NSView {
 
     override var isFlipped: Bool { true }
 
-    init(fields: [InfoPanelField], host: InfoPanelFormHost) {
+    init(fields: [InfoPanelField], host: any InfoPanelFormHost) {
         self.fields = fields
         self.host = host
         // 文档视图至少铺满可视区；内容更长时按最后一件控件的下沿加一点留白。

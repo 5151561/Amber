@@ -116,7 +116,7 @@ final class CatalogRoomViewController: ContentPageController {
     private var emptyHost: NSView?
     private var overlayTop: NSLayoutConstraint!
 
-    private weak var hoveredCard: CatalogHoverTarget?
+    private weak var hoveredCard: (any CatalogHoverTarget)?
 
     /// 一件的身份。**不带位置**：位置一旦进来，在网格头上插一张卡就会让后面每一件的
     /// 身份全变，整页被判成「删光重加」——全部重建（封面重取、看得见闪动），
@@ -330,7 +330,7 @@ final class CatalogRoomViewController: ContentPageController {
             guard let self, let model = self.itemsByID[identifier] else { return NSCollectionViewItem() }
             let item = collectionView.makeItem(
                 withIdentifier: CatalogCardRegistry.identifier(for: model.kind), for: indexPath)
-            (item as? CatalogCardConfigurable)?.configure(with: model, appState: self.appState)
+            (item as? any CatalogCardConfigurable)?.configure(with: model, appState: self.appState)
             return item
         }
         dataSource.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
@@ -542,15 +542,15 @@ final class CatalogRoomViewController: ContentPageController {
         let inScroll = scrollView.convert(point, from: collectionView)
         guard scrollView.bounds.contains(inScroll) else { setHoveredCard(nil); return }
         var hit = collectionView.hitTest(collectionView.convert(point, to: superview))
-        var target: CatalogHoverTarget?
+        var target: (any CatalogHoverTarget)?
         while let candidate = hit, candidate !== collectionView {
-            if let card = candidate as? CatalogHoverTarget { target = card; break }
+            if let card = candidate as? any CatalogHoverTarget { target = card; break }
             hit = candidate.superview
         }
         setHoveredCard(target)
     }
 
-    private func setHoveredCard(_ card: CatalogHoverTarget?) {
+    private func setHoveredCard(_ card: (any CatalogHoverTarget)?) {
         guard card !== hoveredCard else { return }
         hoveredCard?.setHovering(false)
         hoveredCard = card

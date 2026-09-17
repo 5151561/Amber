@@ -89,7 +89,7 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     private var rolloverTrackingArea: NSTrackingArea?
     /// `viewDidMoveToWindow` 挂的`windowFocusObserver`（spec §2.3 的 +384）。
     /// 另一支 `accessibilityFocusObserver`（+392）没做：AX 焦点没有公开通知。
-    private var focusObservers: [NSObjectProtocol] = []
+    private var focusObservers: [any NSObjectProtocol] = []
 
     // MARK: 视图
 

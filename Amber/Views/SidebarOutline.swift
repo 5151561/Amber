@@ -588,7 +588,7 @@ final class SidebarOutlineController: NSObject, NSOutlineViewDataSource, NSOutli
 
     /// 侧栏永远是「落在这一行上」，不存在行间插入。AppKit 对平铺的 outline 默认会提
     /// 「插到第 N 个孩子前面」，所以这里自己按光标位置把落点改钉到那一行。
-    func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
+    func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo,
                      proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
         let point = outlineView.convert(info.draggingLocation, from: nil)
         let row = outlineView.row(at: point)
@@ -597,7 +597,7 @@ final class SidebarOutlineController: NSObject, NSOutlineViewDataSource, NSOutli
         return .copy
     }
 
-    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
+    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo,
                      item: Any?, childIndex index: Int) -> Bool {
         guard let node = item as? SidebarNode, let row = nodes.firstIndex(of: node) else { return false }
         let tracks = (info.draggingPasteboard.pasteboardItems ?? []).flatMap { item -> [Track] in

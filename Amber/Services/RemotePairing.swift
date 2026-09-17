@@ -101,9 +101,9 @@ final class MemoryPairingStorage: RemotePairingStorage {
 final class RemotePairingStore {
 
     private(set) var devices: [PairedRemote] = []
-    private let storage: RemotePairingStorage
+    private let storage: (any RemotePairingStorage)
 
-    init(storage: RemotePairingStorage = KeychainPairingStorage()) {
+    init(storage: any RemotePairingStorage = KeychainPairingStorage()) {
         self.storage = storage
         if let json = storage.load(), let data = json.data(using: .utf8),
            let decoded = try? JSONDecoder().decode([PairedRemote].self, from: data) {

@@ -697,7 +697,7 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
     /// NSTableView 就不开拖拽会话，转而做范围选择（拖起来「选中区跟着鼠标扩」就是这个样子）。
     /// 所以这里只依赖两件确定的事：这一行有曲目、JSON 编得出来；类型直接写字符串常量，
     /// 不在拖拽这条热路径上碰 `UTType(exportedAs:)`（它要查一次 LaunchServices）。
-    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
         guard let track = track(at: row),
               let data = try? JSONEncoder().encode(TrackTransfer(tracks: [track]))
         else { return nil }

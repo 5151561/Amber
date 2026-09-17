@@ -111,7 +111,7 @@ extension SyncedLyricsViewController {
     /// [实测]只做一件事：把行取出来交给
     /// `SyncedLyricsViewController.delegate`，由宿主决定怎么跳。
     func notifyDelegateOfTap(on lineView: SyncedLyricsLineView) {
-        (delegate as? SyncedLyricsViewControllerDelegate)?
+        (delegate as? any SyncedLyricsViewControllerDelegate)?
             .syncedLyricsViewController(self, didTap: lineView.lineLayer?.line)
     }
 }

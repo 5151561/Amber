@@ -42,3 +42,7 @@ OTHER_SWIFT_FLAGS = $(inherited) -enable-upcoming-feature ImmutableWeakCaptures
 // 报在 <unknown>:0（@Published 的 _enclosingInstance 下标展开，没有文件位置），
 // 另有 10 条 "does not conform to ObservableObject" 是缺 import Combine 的连带错误。
 SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES
+
+// ExistentialAny（SE-0335）：协议当类型用必须写 any。67 处，纯机械。
+// 其中 27 处是可选，要写 (any X)? 而不是 any X?——后者是硬错误，不会静默。
+SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY = YES

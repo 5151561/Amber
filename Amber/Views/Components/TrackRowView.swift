@@ -718,7 +718,7 @@ final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
     /// 行只把事件转上去。表格不认这条协议时才退回只算本行——那是给契约里
     /// 自带 `remove` 的调用点留的兜底，两条路不会同时生效。
     private func makeMenu() -> NSMenu? {
-        if let table = tableView as? TrackRowMenuProviding, let row = tableView?.row(for: self),
+        if let table = tableView as? any TrackRowMenuProviding, let row = tableView?.row(for: self),
            row >= 0 {
             return table.trackRowMenu(forRow: row)
         }

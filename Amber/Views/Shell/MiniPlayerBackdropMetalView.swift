@@ -90,14 +90,14 @@ final class MiniPlayerBackdropMetalView: MTKView {
 
     // MARK: - Metal 家什（任何一件缺席都进降级路径）
 
-    private let commandQueue: MTLCommandQueue?
-    private var rotationPipeline: MTLRenderPipelineState?
-    private var pinchPipeline: MTLRenderPipelineState?
-    private var linearSampler: MTLSamplerState?
+    private let commandQueue: (any MTLCommandQueue)?
+    private var rotationPipeline: (any MTLRenderPipelineState)?
+    private var pinchPipeline: (any MTLRenderPipelineState)?
+    private var linearSampler: (any MTLSamplerState)?
 
     /// 离屏那两张：三层旋转的结果 → 高斯模糊的结果。按 `offscreenDownsample` 缩着渲（[推]）。
-    private var offscreenTexture: MTLTexture?
-    private var blurredTexture: MTLTexture?
+    private var offscreenTexture: (any MTLTexture)?
+    private var blurredTexture: (any MTLTexture)?
     private var offscreenSize: CGSize = .zero
     private var blurFilter: MPSImageGaussianBlur?
     /// [实测] `perfShadersWorkOnThisDevice`（x8）：MPS 支不可用时原版走手写两趟高斯。
@@ -105,14 +105,14 @@ final class MiniPlayerBackdropMetalView: MTKView {
     private var supportsPerformanceShaders = false
 
     /// 交叉淡化的三张槽位：source = 旧图、destination = 新图、pending = 还没轮到的下一张。
-    private var sourceTexture: MTLTexture?
-    private var destinationTexture: MTLTexture?
-    private var pendingTexture: MTLTexture?
+    private var sourceTexture: (any MTLTexture)?
+    private var destinationTexture: (any MTLTexture)?
+    private var pendingTexture: (any MTLTexture)?
     /// [实测] `OffscreenBackdropEncoder.transitionNeeded`。
     private var transitionNeeded = false
 
-    private var workspaceObservers: [NSObjectProtocol] = []
-    private var occlusionObserver: NSObjectProtocol?
+    private var workspaceObservers: [any NSObjectProtocol] = []
+    private var occlusionObserver: (any NSObjectProtocol)?
 
     private var isRenderable: Bool {
         device != nil && commandQueue != nil && rotationPipeline != nil && pinchPipeline != nil
@@ -491,9 +491,9 @@ final class MiniPlayerBackdropMetalView: MTKView {
     }
 
     /// 离屏趟：三层各画一个铺满的四边形，后层按自己的 alpha 压前层。
-    private func encodeOffscreen(buffer: MTLCommandBuffer, target: MTLTexture,
-                                 pipeline: MTLRenderPipelineState, sampler: MTLSamplerState,
-                                 source: MTLTexture, destination: MTLTexture) {
+    private func encodeOffscreen(buffer: any MTLCommandBuffer, target: any MTLTexture,
+                                 pipeline: any MTLRenderPipelineState, sampler: any MTLSamplerState,
+                                 source: any MTLTexture, destination: any MTLTexture) {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
@@ -519,9 +519,9 @@ final class MiniPlayerBackdropMetalView: MTKView {
     }
 
     /// 上屏趟：饱和度 / 亮度钳位 / 明暗因子 / 纱罩，全在 `backdrop_pinch_fragment` 里。
-    private func encodePinch(buffer: MTLCommandBuffer, descriptor: MTLRenderPassDescriptor,
-                             pipeline: MTLRenderPipelineState, sampler: MTLSamplerState,
-                             source: MTLTexture) {
+    private func encodePinch(buffer: any MTLCommandBuffer, descriptor: MTLRenderPassDescriptor,
+                             pipeline: any MTLRenderPipelineState, sampler: any MTLSamplerState,
+                             source: any MTLTexture) {
         guard let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(source, index: 0)

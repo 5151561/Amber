@@ -269,7 +269,7 @@ enum ImportTranscoder {
     /// 能做的只有**读失败时重来几遍**——划伤的碟重读一次常常就过去了。
     static func export(url: URL, to destination: URL, spec: ImportOutputSpec,
                        metadata: [AVMetadataItem] = [], attempts: Int = 1) async throws {
-        var lastError: Error = ImportError.readFailed("未知原因")
+        var lastError: any Error = ImportError.readFailed("未知原因")
         for attempt in 0..<max(attempts, 1) {
             do {
                 try await exportOnce(url: url, to: destination, spec: spec, metadata: metadata)

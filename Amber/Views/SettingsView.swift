@@ -1073,7 +1073,7 @@ private struct RemotePairingSheet: View {
                 dismiss()
             } catch {
                 isPairing = false
-                remote.lastError = (error as? LocalizedError)?.errorDescription
+                remote.lastError = (error as? any LocalizedError)?.errorDescription
                     ?? error.localizedDescription
             }
         }
