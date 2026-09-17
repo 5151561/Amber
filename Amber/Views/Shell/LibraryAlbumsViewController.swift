@@ -8,17 +8,25 @@ import SwiftUI
 /// 列宽换算与「最近添加」共用 `LibraryGridSizing`。
 @MainActor
 final class LibraryAlbumsViewController: LibraryPageController,
-                                         NSCollectionViewDataSource,
                                          NSCollectionViewDelegate,
                                          NSCollectionViewDelegateFlowLayout {
 
+    /// 这一页只有一段，段身份是个定值。**不是段序号**——身份里掺下标，插一段就把后面
+    /// 每一段判成「删了再加」（`reactive-ui-review.md §2.2` 点名的第一类坑）。
+    private static let gridSectionID = "library-albums"
+
     private var collectionView: LibraryGridCollectionView!
+    private var dataSource: NSCollectionViewDiffableDataSource<String, String>!
     private var albums: [Album] = []
+    /// 身份 → 此刻该画成什么。item provider 与就地重配都问它。
+    private var albumsByID: [String: Album] = [:]
     private var laidOutItemWidth: CGFloat = 0
     /// 一张专辑都没有时那片空态（懒建，建好就留着，只切显隐）。
     private var emptyHost: NSView?
     /// 同一轮 runloop 里的多次请求合并成一次（见 `setNeedsRefresh`）。
     private var pendingRefresh = false
+    /// 合批期间攒下的「这一批该不该动画」，取最保守的那一声（见 `setNeedsRefresh`）。
+    private var pendingAnimated = true
     /// 被 `isHidden` 收着期间攒下的刷新，等 `pageDidAppear()` 补。
     private var needsRefreshWhenShown = false
 
@@ -46,11 +54,13 @@ final class LibraryAlbumsViewController: LibraryPageController,
         collectionView.collectionViewLayout = layout
         collectionView.backgroundColors = [.clear]
         collectionView.isSelectable = true
-        collectionView.dataSource = self
         // 少了这一句，`sizeForItemAt` 根本不会被问，flow layout 就退回默认的 50×50 槽。
         collectionView.delegate = self
         collectionView.register(LibraryAlbumCollectionItem.self,
                                 forItemWithIdentifier: LibraryAlbumCollectionItem.identifier)
+        // `dataSource` 由 diffable 自己接上（它在 init 里就把 `collectionView.dataSource`
+        // 指向自己），所以这里不再写 `collectionView.dataSource = self`。
+        makeDataSource()
         scroll.documentView = collectionView
         // 空态要盖在网格上，所以外面套一层容器。
         let container = NSView()
@@ -67,42 +77,59 @@ final class LibraryAlbumsViewController: LibraryPageController,
     }
 
     private func bind() {
-        refresh()
+        // 首次填充：没有「从哪儿变到哪儿」可言，不动画。
+        refresh(animated: false)
         // 这一页真正读的只有四份：专辑集合、曲目（判空专辑用）、专辑喜爱（仅喜爱筛选）、
         // 评分（按星级排序）。从前订的是 `library.objectWillChange` ——
         // 心水一首歌、记一次播放、改一条勾选都会把这一页整个重排一遍。
         let changes = appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums, .ratings])
         observers.add(Task { @MainActor [weak self] in
             for await _ in changes {
-                self?.setNeedsRefresh()
+                self?.setNeedsRefresh(animated: true)
             }
         })
         // `@Observable` 没有 `objectWillChange` 那条「随便什么变了」的信号——这是好事，
         // 它正是「一次入库把资料库四页全量重算一遍」的由来。这里把本页真读的三项装成
         // 一个快照：与原来等价，而与它们无关的写入不再把这一页叫醒。
-        observers.observeAny({ [model] in (model.favoritesOnly, model.search, model.sort) }) { [weak self] in self?.setNeedsRefresh() }
+        observers.observeAny({ [model] in (model.favoritesOnly, model.search, model.sort) }) { [weak self] in
+            self?.setNeedsRefresh(animated: false)
+        }
     }
 
-    /// 刷新入口：合批 + 可见性闸。
+    /// 刷新入口：合批 + 可见性闸 + 这一批**该不该动画**。
     ///
-    /// **合批**照歌曲页那条（`LibrarySongsViewController.setNeedsRefresh`）：一轮 runloop
-    /// 里来 N 声只重排一次，而且推迟到下一轮再读值——`model` 那几项是`@Published`，
-    /// 在 willSet 发布，当场读到的还是旧值。
+    /// **合批**照歌曲页那条（`LibrarySongsViewController.setNeedsRefresh`）：同一次用户操作
+    /// 常常连着改好几项（改筛选顺带改排序、一次入库同时动专辑与曲目两位），
+    /// 一轮 runloop 里来 N 声只重排一次。
+    ///
+    /// **动画判据按变更的「来由」给，不看差异有多大**——数件数就成了拿样本调阈值
+    /// （记忆 `am-no-per-song-tuning`）。来由只有三类：
+    /// - 资料库变了（入库 / 退库 / 喜爱 / 星级）：用户刚做完一件事，落到这一页通常是
+    ///   一两张碟的增删或挪位，**动画**正是 Music 的样子；
+    /// - 搜索词 / 筛选 / 排序变了：一次换掉一大片（每敲一个字都来一次），动起来是满屏乱飞，
+    ///   **不动画**；
+    /// - 首次填充与切回本页补刷：用户不在场时攒下的差异，**不动画**。
+    ///
+    /// 合批期间来的几声取最保守的那一声：同一轮里既有资料库变更又有搜索词变更时不动画。
     ///
     /// **可见性闸**：导航容器把访问过的根页全缓存着、切页只切 `isHidden`
     /// （`ContentNavigationController.install`），隐藏的页重排一遍没人看得见，
     /// 只记一笔等 `pageDidAppear()` 补。
-    private func setNeedsRefresh() {
+    private func setNeedsRefresh(animated: Bool) {
         guard let view = viewIfLoaded, !view.isHiddenOrHasHiddenAncestor else {
             needsRefreshWhenShown = true
             return
         }
-        guard !pendingRefresh else { return }
+        guard !pendingRefresh else {
+            pendingAnimated = pendingAnimated && animated
+            return
+        }
         pendingRefresh = true
+        pendingAnimated = animated
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.pendingRefresh = false
-            self.refresh()
+            self.refresh(animated: self.pendingAnimated)
         }
     }
 
@@ -111,19 +138,74 @@ final class LibraryAlbumsViewController: LibraryPageController,
         super.pageDidAppear()
         guard needsRefreshWhenShown else { return }
         needsRefreshWhenShown = false
-        refresh()
+        refresh(animated: false)
     }
 
     /// 筛选（仅喜爱）→ 搜索（专辑名 / 艺人名）→ 排序。规则与旧 `LibraryAlbumsPage` 一字不差。
-    private func refresh() {
+    private func refresh(animated: Bool) {
         let library = appState.library
         var result = library.libraryAlbums.filter { !library.tracks(in: $0).isEmpty }
         if model.favoritesOnly { result = result.filter { library.isFavoriteAlbum($0) } }
         let matches = library.searchFilter(model.search, kind: .album)
         result = result.filter { matches.keeps($0.id, [$0.name, $0.artistName]) }
-        albums = sorted(result)
-        collectionView?.reloadData()
+        // 身份是 `Album.id`：**不含下标**（插一张碟不会动到其余各件的身份），
+        // **不含会变的内容**（碟名、艺人、封面、星级改了仍是同一张碟，只重配不重建）。
+        // 唯一一处「内容进了 id」是本地导入碟的 `local:album:<sha1(碟名+艺人)>`——那是
+        // 整个 App 的身份口径（`library_album.id` 主键、`albumAddedAt` 的键都是它），
+        // 换了名字在库里本来就是另一张碟，不是这里的临时拼接。
+        // 去重的原委见 `LibraryGridIdentity.deduplicated`。
+        albums = LibraryGridIdentity.deduplicated(sorted(result))
+        albumsByID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0) })
+        apply(animated: animated)
         updateEmptyState()
+    }
+
+    private func makeDataSource() {
+        dataSource = NSCollectionViewDiffableDataSource<String, String>(
+            collectionView: collectionView
+        ) { [weak self] collectionView, indexPath, identifier in
+            let item = collectionView.makeItem(withIdentifier: LibraryAlbumCollectionItem.identifier,
+                                               for: indexPath)
+            guard let self, let cell = item as? LibraryAlbumCollectionItem,
+                  let album = self.albumsByID[identifier] else { return item }
+            cell.configure(album: album,
+                           width: LibraryGridSizing.itemSize(in: collectionView).width,
+                           appState: self.appState)
+            return cell
+        }
+    }
+
+    private func apply(animated: Bool) {
+        guard dataSource != nil else { return }
+        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+        snapshot.appendSections([Self.gridSectionID])
+        snapshot.appendItems(albums.map(\.id), toSection: Self.gridSectionID)
+        dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+            self?.reconfigureVisibleItems()
+        }
+    }
+
+    /// 身份没变、内容变了的那几件：**复用原来那张卡再装一遍数据**。
+    ///
+    /// AppKit 的 `NSDiffableDataSourceSnapshot` **没有** `reconfigureItems(_:)`（那是 UIKit
+    /// 独有的，原委与做法见 `CatalogPageViewController.reconfigure`），所以这件事只能手写。
+    /// 这一页非要它不可的是标题后那颗红 ★：心水一张碟不改专辑的身份，光靠 diff
+    /// 那张卡一个字都不会重画，星就亮不起来——从前 `reloadData()` 是顺手全画一遍的。
+    /// 同理还有补封面那一路（`LibraryStore.addAlbumToLibrary` 会给已在库的碟回填
+    /// `artworkURL`，id 一个字不变）。
+    ///
+    /// 只走在屏的那几件（`visibleItems()` 本身就是这个界）；没在屏的等下次出队，
+    /// item provider 装的就已经是新值。重配不会让封面重取：
+    /// `CatalogArtworkView.setArtwork` 对同一个地址原地返回（那一句的注释写了原委）。
+    private func reconfigureVisibleItems() {
+        guard let collectionView, let dataSource else { return }
+        let width = LibraryGridSizing.itemSize(in: collectionView).width
+        for case let item as LibraryAlbumCollectionItem in collectionView.visibleItems() {
+            guard let indexPath = collectionView.indexPath(for: item),
+                  let id = dataSource.itemIdentifier(for: indexPath),
+                  let album = albumsByID[id] else { continue }
+            item.configure(album: album, width: width, appState: appState)
+        }
     }
 
     /// 主排序 + 方向。降序＝升序结果整体反转（与歌曲页 `SongsTableSort` 同法）。
@@ -176,22 +258,7 @@ final class LibraryAlbumsViewController: LibraryPageController,
         collectionView?.clearHover()
     }
 
-    // MARK: - 数据源
-
-    func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
-
-    func collectionView(_ collectionView: NSCollectionView,
-                        numberOfItemsInSection section: Int) -> Int { albums.count }
-
-    func collectionView(_ collectionView: NSCollectionView,
-                        itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
-        let item = collectionView.makeItem(withIdentifier: LibraryAlbumCollectionItem.identifier,
-                                           for: indexPath) as! LibraryAlbumCollectionItem
-        item.configure(album: albums[indexPath.item],
-                       width: LibraryGridSizing.itemSize(in: collectionView).width,
-                       appState: appState)
-        return item
-    }
+    // MARK: - 布局
 
     func collectionView(_ collectionView: NSCollectionView,
                         layout collectionViewLayout: NSCollectionViewLayout,
