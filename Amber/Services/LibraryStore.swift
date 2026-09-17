@@ -51,7 +51,9 @@ struct LibraryChange: OptionSet, Sendable {
 ///
 /// ## 内存模型与表的关系
 ///
-/// 下面那 28 个可观察属性全部保留（批 8 之前是 `@Published`），**内存这一份是真值，表跟着它镜像**。
+/// 下面那 19 个可观察属性（批 8 之前是 `@Published`）**内存这一份是真值，表跟着它镜像**。
+/// 数从 28 掉到 19 不是删了属性：批 G 按审查单 §2.4-4 把注入依赖、回调与镜像索引
+/// 一共 11 个标成了 `@ObservationIgnored`，它们还在，只是不再是可观察出口。
 /// 启动时一趟 SELECT 把它们填满，之后每一次改动当场往对应的那几行写一笔定向写。
 ///
 /// 从前这里是「整份 `Storage` 编码成 JSON、防抖 500 ms、`.atomic` 覆盖原文件」。
@@ -274,8 +276,8 @@ final class LibraryStore {
         //
         // 生产路径上 `AppState` 已经先跑过一次（那一次才有窗口可以弹错），
         // 所以这里永远撞上「库已存在」那条幂等分支，`try?` 吞掉的只可能是测试里的畸形目录。
-        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
-                                                renameLegacyOnSuccess: true)
+        _ = try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                    renameLegacyOnSuccess: true)
         database = try? AmberDatabase.shared(directory: directory)
         load()
         // **没有 willTerminate 观察者了。** 从前那一个是防抖写盘的兜底（退出前把还没到期

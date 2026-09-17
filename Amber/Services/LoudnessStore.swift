@@ -70,8 +70,8 @@ final class LoudnessStore {
     init(directory: URL? = nil) {
         // 开库之前先把迁移跑到，理由与 `TrackInfoStore.init` 逐字相同：
         // **谁先开库谁负责迁移**，一个都不许在旧 JSON 还没搬完之前把空库建出来。
-        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
-                                                renameLegacyOnSuccess: true)
+        _ = try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                    renameLegacyOnSuccess: true)
         database = try? AmberDatabase.shared(directory: directory)
         load()
         // **没有自己的 willTerminate 观察者了**（全 App 只剩 `AmberDatabase` 那一个）。

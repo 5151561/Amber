@@ -337,8 +337,8 @@ final class TrackInfoStore {
         // 幂等分支；留着这一行是为了**谁先开库谁负责迁移**——哪天有人又把某个 store
         // 排到了 `prepareDatabase()` 前面，代价也只是少一次警告，而不是用户的资料库
         // 被一个空库顶掉。`mediaFolder` 原样跟着 `directory` 走，理由见 `LibraryStore.init`。
-        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
-                                                renameLegacyOnSuccess: true)
+        _ = try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                    renameLegacyOnSuccess: true)
         database = try? AmberDatabase.shared(directory: directory)
         load()
         // **没有自己的 willTerminate 观察者了**（全 App 只剩 `AmberDatabase` 那一个）。
