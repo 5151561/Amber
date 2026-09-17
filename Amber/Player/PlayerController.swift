@@ -6,10 +6,11 @@ import os
 
 /// 播放进度。
 ///
-/// 单独一个 ObservableObject，**不并进** `PlayerController`：进度 10 Hz 一跳，
-/// 而 `AppState` 把`player.objectWillChange` 转发给了全体订阅者，
+/// 单独一个可观察对象，**不并进** `PlayerController`：进度 10 Hz 一跳。
+/// Combine 时代 `AppState` 把`player.objectWillChange` 转发给了全体订阅者，
 /// 于是「整个界面每秒重画十次」——实测光这一条就吃掉 40% CPU（风扇也是这么来的）。
-/// 拆出来之后，只有真正显示时间的那几块（进度条、时间标签、歌词）订阅它。
+/// 那条转发早已去掉，但拆分仍然成立：换成 `@Observable` 之后是「谁读谁重画」，
+/// 时间这一项只该让真正显示它的那几块（进度条、时间标签、歌词）读到。
 @MainActor
 @Observable
 final class PlaybackClock {
@@ -132,7 +133,7 @@ final class PlayerController {
     private(set) var currentIndex: Int?
     private(set) var isPlaying = false
     private(set) var isLoading = false
-    /// 播放进度。转发到 `clock`，**不是**`@Published`——见`PlaybackClock` 的注释。
+    /// 播放进度。转发到 `clock`，**不是本类自己的可观察属性**——见`PlaybackClock` 的注释。
     let clock = PlaybackClock()
     var currentTime: TimeInterval {
         get { clock.time }
@@ -155,8 +156,30 @@ final class PlayerController {
     /// 迷你播放器的音质气泡显示它——设置里选的档位会降级，气泡要报实际拿到的那一档。
     private(set) var streamFormat: StreamFormat?
 
+    // MARK: 接线闭包（由 AppState 注入，全部 `@ObservationIgnored`）
+    //
+    // `@Observable` 的默认是「**所有**存储属性都可观察」——不写 `@ObservationIgnored`
+    // 的注入依赖、私有账本、回调闭包一律在内。上面那一段（`queue` 到 `streamFormat`）
+    // 是真界面状态，该可观察；从这里往下到本类末尾的字段一个都不是：
+    //
+    // - **闭包不是状态**。`AppState.init` 里给它们赋一次值，此后再没人写。
+    //   可观察的代价是每一次赋值都进 `withObservationTracking` 的注册表走一趟，
+    //   而收益是零——没有任何一处订阅「谁接管了 onSkip」。
+    // - **播放内部账本**（`failureStreak` / `queueVersion` / `shuffleCursor` /
+    //   `wantsPlayback` …）按帧、按 tick、按每一次取流在变。它们都是 `private`，
+    //   外面订不到，但**可观察本身就有成本**：每次写都要过一次
+    //   `willSet`/`didSet` 包装。类头那条「不要往这里加可观察属性」说的就是这件事，
+    //   这一批只是把它落到已有字段上。
+    //
+    // 判据照 `Services/LibraryStore.swift` 那 10 个：**只有「界面会跟着它重画」的字段
+    // 才留在可观察面上**。加新字段时先问这一句，默认答案是「加 `@ObservationIgnored`」。
+    //
+    // （`let` 其实用不着这个标注——`@Observable` 宏本来就跳过不可变属性。
+    // 这里仍给 `deckA` / `deckB` / `observers` 标上，与 `LibraryStore` 的写法保持一致，
+    // 也免得哪天有人把它改成 `var` 时悄悄多出三个可观察字段。）
+
     /// 由 AppState 注入：解析曲目流地址
-    var providerResolver: ((Track) async throws -> URL)?
+    @ObservationIgnored var providerResolver: ((Track) async throws -> URL)?
     /// 由 AppState 注入：本地曲目的原始文件找不着了（`ProviderError.localFileMissing`），
     /// 而且这一首是**用户自己点播的**。界面层接过去弹「你想要查找它吗？」
     /// （`MissingFileLocator`，spec §10.1）。
@@ -164,37 +187,37 @@ final class PlayerController {
     /// 弹窗为什么不在这一层：播放器是播放层，不做 UI 决策；而「该不该弹」这件事
     /// 也只有这里判得出——预取（`prepareStandby`）同样会撞上文件缺失，
     /// 那一路一声不吭才是对的。
-    var onLocalFileMissing: ((Track) -> Void)?
+    @ObservationIgnored var onLocalFileMissing: ((Track) -> Void)?
     /// 由 AppState 注入：一首歌被「跳过」时记一笔（资料库「跳过次数」列）。
     /// 什么才算跳过见 `next(userInitiated:)` 里的窗口判定。
-    var onSkip: ((Track) -> Void)?
+    @ObservationIgnored var onSkip: ((Track) -> Void)?
     /// 由 AppState 注入：曲目**真正开始出声**时调一次（item 就绪那一刻）。
     /// 只用来更新「最近播放」，不动播放次数——Music 的「最近播放」是「开始听过」的口径，
     /// 点开就算；播放次数则要听完才算，见 `onTrackPlayed`。
-    var onTrackStarted: ((Track) -> Void)?
+    @ObservationIgnored var onTrackStarted: ((Track) -> Void)?
     /// 由 AppState 注入：曲目**播到结尾**时调一次，单曲循环每绕一遍都算一次。
     /// 播放次数与「上次播放时间」吃这一条：Music 里没听完就切走的那首不加次数，
     /// 所以记账点必须在结尾、不能在开播那一刻。
-    var onTrackPlayed: ((Track) -> Void)?
+    @ObservationIgnored var onTrackPlayed: ((Track) -> Void)?
     /// 由 AppState 注入：这首以前量过响度没有（音量平衡用）。
-    var loudnessProvider: ((Track) -> LoudnessEntry?)?
+    @ObservationIgnored var loudnessProvider: ((Track) -> LoudnessEntry?)?
     /// 由 AppState 注入：一首整整播完、响度量出来了，写回缓存。
-    var onLoudnessMeasured: ((Track, LoudnessEntry) -> Void)?
+    @ObservationIgnored var onLoudnessMeasured: ((Track, LoudnessEntry) -> Void)?
     /// 由 AppState 注入：这首歌在歌曲表的勾选列里勾着没有。
     /// 未勾选的歌**只在自动往下走时**被跳过（顺播、随机、播完自动接），
     /// 双击、下一首、••• 菜单这些用户主动的入口一概照放（Music/iTunes 语义）。
     /// 没注入时一律当勾着，行为与没有这条开关时逐字一致。
-    var isTrackChecked: ((Track) -> Bool)?
+    @ObservationIgnored var isTrackChecked: ((Track) -> Bool)?
     /// 由 AppState 注入：当前该允许哪些空间化格式（跟着输出设备与「杜比全景声」偏好走）。
     /// 没注入时按设置里的模式直接折算，见 `spatializationFormats()`。
-    var spatializationProvider: (() -> AVAudioSpatializationFormats)?
+    @ObservationIgnored var spatializationProvider: (() -> AVAudioSpatializationFormats)?
     /// 由 AppState 注入：自动连播——拿一首歌去问它的音源要**相似歌曲**
     /// （`MusicProvider.similarTracks`）。候选源就这一条，别再往里掺别的召回，
     /// 理由（连同 2026-09-09 那次接错）写在 `MusicProvider.similarTracks` 的注释里。
-    var autoplayCandidatesProvider: ((Track, Int) async -> [Track])?
+    @ObservationIgnored var autoplayCandidatesProvider: ((Track, Int) async -> [Track])?
     /// 由 AppState 注入：这个音源有没有相似歌曲接口（`MusicProvider.supportsAutoplay`）。
     /// 没注入时一律当没有，行为与「自动连播关着」一致。
-    var autoplaySupported: ((ProviderKind) -> Bool)?
+    @ObservationIgnored var autoplaySupported: ((ProviderKind) -> Bool)?
 
     // MARK: 「显示简介」面板的逐曲覆盖（`TrackInfoStore`，由 AppState 注入）
     //
@@ -202,14 +225,14 @@ final class PlayerController {
     // 是极少数曲目才会设的，正常播放不能为它们多绕一步。
 
     /// 这一首在面板里设过「开始 / 停止时间、随机播放时跳过、音量调整」没有。
-    var playbackOverridesProvider: ((String) -> PlaybackOverrides?)?
+    @ObservationIgnored var playbackOverridesProvider: ((String) -> PlaybackOverrides?)?
     /// 「记住播放位置」记下的断点（只有勾了那一项的曲目才会有）。
-    var resumePositionProvider: ((String) -> TimeInterval?)?
+    @ObservationIgnored var resumePositionProvider: ((String) -> TimeInterval?)?
     /// 记 / 清断点。播到哪儿报到哪儿（10 Hz），播完整首报 nil。
-    var onResumePosition: ((String, TimeInterval?) -> Void)?
+    @ObservationIgnored var onResumePosition: ((String, TimeInterval?) -> Void)?
 
     /// 这一首的「停止时间」已经触发过：`handleTick` 每 0.1 s 来一次，触发一次就够了。
-    private var stopTimeFiredForTrackID: String?
+    @ObservationIgnored private var stopTimeFiredForTrackID: String?
 
     var currentTrack: Track? {
         guard let i = currentIndex, queue.indices.contains(i) else { return nil }
@@ -220,7 +243,7 @@ final class PlayerController {
     ///
     /// 只有一个消费者：本地文件缺失时该不该弹对话框（见 `onLocalFileMissing`）。
     /// 与「算不算一次跳过」那条判据无关，两者的 `userInitiated` 各管各的。
-    private(set) var currentStartIsUserInitiated = true
+    @ObservationIgnored private(set) var currentStartIsUserInitiated = true
 
     /// 切走时算不算一次跳过的时间窗，见 `next(userInitiated:)`。
     static let skipWindow: Range<TimeInterval> = 2..<20
@@ -245,51 +268,51 @@ final class PlayerController {
     /// 只改这一个常量，别处不用动。
     static let attachMixToSpatialItems = true
 
-    private let deckA = PlaybackDeck()
-    private let deckB = PlaybackDeck()
+    @ObservationIgnored private let deckA = PlaybackDeck()
+    @ObservationIgnored private let deckB = PlaybackDeck()
     /// 出声的那一路
-    private var current: PlaybackDeck
+    @ObservationIgnored private var current: PlaybackDeck
     /// 另一路（预取 / 退场）
     private var other: PlaybackDeck { current === deckA ? deckB : deckA }
 
-    private var endObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var endObserver: (any NSObjectProtocol)?
     /// 设置相关的三条观察（音频偏好 / 过渡 / 自动连播）都挂这里。
-    private let observers = TaskBag()
-    private var shuffleOrder: [Int] = []
-    private var shuffleCursor = 0
+    @ObservationIgnored private let observers = TaskBag()
+    @ObservationIgnored private var shuffleOrder: [Int] = []
+    @ObservationIgnored private var shuffleCursor = 0
     /// 连续取流失败的次数。整队都放不出来时用它兜底，避免一路空跳到队尾。
-    private var failureStreak = 0
+    @ObservationIgnored private var failureStreak = 0
     /// 上次向系统「正在播放」面板推送的时刻
-    private var lastNowPlayingPush: TimeInterval = 0
+    @ObservationIgnored private var lastNowPlayingPush: TimeInterval = 0
 
-    private var standbyPhase: StandbyPhase = .idle
+    @ObservationIgnored private var standbyPhase: StandbyPhase = .idle
     /// 每次动队列（播放/插入/随机/循环/停止）自增。在飞的预取拿着旧号回来就作废。
-    private var queueVersion = 0
+    @ObservationIgnored private var queueVersion = 0
     /// 这一首被 seek 进了尾段：斜坡按绝对时间装，落到斜坡中段会起手半音量，
     /// 所以本首直接放弃过渡走老路。换歌时清掉。
-    private var fadeSuppressedForCurrent = false
+    @ObservationIgnored private var fadeSuppressedForCurrent = false
     /// 这一首的交叠被「位置离结尾太远」那道闸拦下过（见 `shouldBeginOverlap`）。
     /// 只是为了不让日志每 100 ms 刷一行；时长被精修之后会重新给一次机会。
-    private var overlapSkippedForCurrent = false
+    @ObservationIgnored private var overlapSkippedForCurrent = false
     /// 用户此刻想不想出声。`pause()` 置假，用户主动起播 / 换歌置真。
     ///
     /// 所有**自动**的 `play()`（item 就绪、交叠开始、接管、单曲循环）都先看它：
     /// 用户在交叠里按了暂停，不能因为退场那一路又回报了一次就绪、或者它播到了结尾
     /// 就把声音重新放出来——那次 bug 的表现是「暂停后下一首没停，静默播完就切歌」。
-    private var wantsPlayback = true
-    private var audioPrefs = AudioPrefs(soundEnhancer: false, soundEnhancerLevel: 0, soundCheck: false)
+    @ObservationIgnored private var wantsPlayback = true
+    @ObservationIgnored private var audioPrefs = AudioPrefs(soundEnhancer: false, soundEnhancerLevel: 0, soundCheck: false)
     /// 「歌曲过渡」的缓存副本。tick 是 10 Hz，不能每跳都去拷一份几十个字段的
     /// `SettingsValues` 出来问一个 Bool。
-    private var crossfadeEnabled = false
+    @ObservationIgnored private var crossfadeEnabled = false
 
     /// 「自动连播」开关的缓存副本，来源同上（`SettingsValues.playQueueAutoplay`）。
-    private var autoplayOn = false
+    @ObservationIgnored private var autoplayOn = false
     /// 正在补的那一批。换歌/换队列时取消，见 `refillAutoplayIfNeeded`。
-    private var autoplayTask: Task<Void, Never>?
+    @ObservationIgnored private var autoplayTask: Task<Void, Never>?
     /// 「这一轮已经按这首补过了」。**按种子曲目 id 去重**，不是按次数：
     /// `startCurrent()` 每次换歌都会调`refillAutoplayIfNeeded`，没有这个标记的话
     /// 队列一直不够长（音源只肯给 5 首）就会每换一首都打一次网络。
-    private var autoplaySeedID: String?
+    @ObservationIgnored private var autoplaySeedID: String?
 
     init() {
         current = deckA
@@ -821,7 +844,7 @@ final class PlayerController {
     private static let scanTick: TimeInterval = 0.15
     private static let scanRate: Double = 8
 
-    private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var scanTask: Task<Void, Never>?
 
     /// [实测] `startFFRew:`：按住期间持续推进播放位置，松手停。
     func startFFRew(_ direction: ScanDirection) {
@@ -1103,8 +1126,8 @@ final class PlayerController {
         if !stale, seconds.isFinite { currentTime = seconds }
         let playing = deck.player.timeControlStatus == .playing
         let stateChanged = playing != isPlaying
-        // 只在真的变了才写：@Published 不比较新旧值，每跳赋一次
-        // 就等于每跳发一次 objectWillChange，整个界面跟着重画。
+        // 只在真的变了才写：可观察属性不比较新旧值，每跳赋一次
+        // 就等于每跳惊动一次订阅方，读 `isPlaying` 的那几块跟着重画。
         if stateChanged { isPlaying = playing }
         // 系统「正在播放」面板不需要 10Hz，播放状态变了或隔了一秒才推一次。
         let now = Date.timeIntervalSinceReferenceDate
