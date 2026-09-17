@@ -120,15 +120,25 @@ enum CatalogFailureSink {
         current?.error.withLock { if $0 == nil { $0 = error } }
     }
 
+    /// 圈出一段调用树，把里面发生的连接类失败连同结果一起交出来。
+    ///
+    /// `CatalogSlotResult` 有 `failure` 可以装，`playlists(tag:)` 交的却是光秃秃的
+    /// `[Playlist]`（分类浏览页那条路）——后者没地方装，只能在调用点当场接住。
+    /// 所以这里是通用形，`attach` 是它在 `CatalogSlotResult` 上的特化。
+    static func collect<T: Sendable>(_ body: () async -> T) async -> (T, URLError?) {
+        let box = Box()
+        let value = await $current.withValue(box) { await body() }
+        return (value, box.error.withLock { $0 })
+    }
+
     /// provider 的 `catalogItems` 在出口处套这一层。
     ///
     /// 只在**这一格什么都没交出来**时才贴 `failure`：格子里有内容就说明该拿的拿到了，
     /// 某条支线超时不该让整页被判成「网络不可用」。这也正是 `failure` 那个字段
     /// 写着的语义——「这一格取不到」，不是「这一格里出过错」。
     static func attach(_ body: () async -> CatalogSlotResult) async -> CatalogSlotResult {
-        let box = Box()
-        var result = await $current.withValue(box) { await body() }
-        if result.items.isEmpty { result.failure = box.error.withLock { $0 } }
+        var (result, failure) = await collect(body)
+        if result.items.isEmpty { result.failure = failure }
         return result
     }
 }

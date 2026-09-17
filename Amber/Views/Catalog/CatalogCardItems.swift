@@ -561,7 +561,10 @@ final class CatalogCornerBadge: NSView {
 /// **为什么单独做成一只视图**：11 种卡整棵都是 CALayer 组的（`override func draw` 全仓
 /// 0 处），把环画进卡片自己的 `draw` 等于给每一张卡都配上一块位图后备。这只视图只在
 /// 真的拿到焦点时才在场，没焦点时整棵树和从前一模一样。
-private final class CatalogCardFocusRingView: NSView {
+/// **不是 `private`**：目录曲目行（`CatalogCardItemsWide.swift` 的 `CatalogTrackRowView`）
+/// 是裸 `NSView`、不在卡片基类体系里，继承不到环，但要的是同一只。两份实现分头维护
+/// 意味着哪天改了内缩或圆角只改一半，所以这里开到文件外可见。
+final class CatalogCardFocusRingView: NSView {
 
     /// 路径往里让出的一圈 ＝ 环往外扩的那一圈。层背视图的绘制被自己的 bounds 裁掉，
     /// 环画到界外就没了，所以先让出来。

@@ -362,12 +362,16 @@ final class CatalogRoomViewController: ContentPageController {
         apply(items: items)
         let appState = appState
         loadTask = Task { [weak self] in
-            let result = await appState.provider(group.kind).playlists(tag: tag)
+            // `playlists(tag:)` 按设计不抛错（交不出来就是空数组），所以判据从旁路来：
+            // `CatalogFailureSink` 圈住这段调用树，网络层的连接类失败会落进第二个返回值。
+            // 从前这里问的是 `NWPathMonitor`「现在有没有网」——那是在**结果已经回来之后**
+            // 另问系统一次，答的不是「刚才那次为什么空」（服务端 500 与断网同样是空数组，
+            // 而拔网线之后插回去又会答「有网」）。现在两者同源，就是那一次请求自己的错。
+            let (result, failure) = await CatalogFailureSink.collect {
+                await appState.provider(group.kind).playlists(tag: tag)
+            }
             guard !Task.isCancelled, let self, self.selectedTag == tag else { return }
-            // 一个也没交出来时才去问「是不是断网」（§2.6-8；`playlists(tag:)` 不抛错，
-            // 判据只能来自系统，理由见 `CatalogFeedModel.isNetworkUnavailable`）。
-            let offline = result.isEmpty ? await CatalogFeedModel.isNetworkUnavailable() : false
-            guard !Task.isCancelled, self.selectedTag == tag else { return }
+            let offline = result.isEmpty && failure != nil
             self.isLoading = false
             self.isOffline = offline
             self.apply(items: result.map(self.playlistItem))
