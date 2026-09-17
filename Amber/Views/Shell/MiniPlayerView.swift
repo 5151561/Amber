@@ -64,7 +64,10 @@ final class MiniPlayerView: NSView {
     private let remainingField = MiniTimeLabel(labelWithString: "")
 
     /// 音量气泡里那条自绘细条
-    private let volumeBar = MiniVolumeBar()
+    /// 气泡里那条是系统 `NSSlider`：[实测] 这版 macOS 的滑块本来就是细轨 + 横胶囊滑块，
+    /// 自绘那版既抄不出拖动时的玻璃高光，轨道与滑块还写死了白色——气泡是系统材质，
+    /// 浅色外观下白轨道几乎看不见。
+    private let volumeBar = NSSlider()
 
     private let lyricsButton = MiniIconButton()
     private let queueButton = MiniIconButton()
@@ -583,7 +586,7 @@ final class MiniPlayerView: NSView {
     private func updateVolume() {
         volumeButton.symbolName = VolumeGlyph.symbol(for: player.volume)
         apply(volumeButton, active: showingVolume)
-        volumeBar.value = player.volume
+        if volumeBar.doubleValue != player.volume { volumeBar.doubleValue = player.volume }
     }
 
     private func updateInspectorButtons() {
@@ -666,6 +669,10 @@ final class MiniPlayerView: NSView {
         }
     }
 
+    @objc private func volumeSliderChanged() {
+        player.volume = volumeBar.doubleValue
+    }
+
     private func makeQualityPopover() -> NSPopover {
         let popover = NSPopover()
         // 音质气泡是叶子，留 SwiftUI（整窗播放器的「无损」徽标点开的是同一枚）。
@@ -680,7 +687,6 @@ final class MiniPlayerView: NSView {
     }
 
     private func makeVolumePopover() -> NSPopover {
-        // Music 的音量条是自绘细条，不是 NSSlider；照旧版 `AmberTrackBar` 的样子搭一条。
         let container = NSView()
         let low = NSImageView()
         let high = NSImageView()
@@ -696,8 +702,18 @@ final class MiniPlayerView: NSView {
             container.addSubview(view)
         }
         volumeBar.translatesAutoresizingMaskIntoConstraints = false
-        volumeBar.onScrub = { [weak self] value in self?.player.volume = value }
-        volumeBar.value = player.volume
+        volumeBar.minValue = 0
+        volumeBar.maxValue = 1
+        volumeBar.isContinuous = true
+        // 两侧的喇叭字形取的是 `smallSystemFontSize`，滑块跟着走 small 这一档
+        // （[实测] 轨道高 4、滑块 18×14；迷你播放器窗工具条上那条也是 small）。
+        volumeBar.controlSize = .small
+        // [实测] 与迷你播放器窗那条同源。
+        volumeBar.trackFillColor = .labelColor
+        volumeBar.doubleValue = player.volume
+        volumeBar.target = self
+        volumeBar.action = #selector(volumeSliderChanged)
+        volumeBar.setAccessibilityLabel("音量")
         container.addSubview(volumeBar)
         NSLayoutConstraint.activate([
             low.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
@@ -705,7 +721,6 @@ final class MiniPlayerView: NSView {
             high.leadingAnchor.constraint(equalTo: volumeBar.trailingAnchor, constant: 8),
             container.trailingAnchor.constraint(equalTo: high.trailingAnchor, constant: 14),
             volumeBar.widthAnchor.constraint(equalToConstant: 120),
-            volumeBar.heightAnchor.constraint(equalToConstant: MiniVolumeBar.hitHeight),
             volumeBar.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
             container.bottomAnchor.constraint(equalTo: volumeBar.bottomAnchor, constant: 12),
             low.centerYAnchor.constraint(equalTo: volumeBar.centerYAnchor),
@@ -1168,107 +1183,6 @@ private final class MiniProgressView: NSControl {
 }
 
 // MARK: - 音量条
-
-/// 音量气泡里那条细轨。Music 的音量条是自绘细条（不是 `NSSlider`），
-/// 形制照旧版 `AmberTrackBar`：5pt 轨道 + 常驻白色圆钮，命中高度 11。
-/// 自绘轨道继承 `NSControl` 的理由见 `NowPlayingVolumeBar`（不然拖它会把窗口拖走）。
-private final class MiniVolumeBar: NSControl {
-
-    static let barHeight: CGFloat = 5
-    static let hitHeight: CGFloat = barHeight + 6
-    private static let knobSize: CGFloat = barHeight + 5
-
-    var onScrub: ((Double) -> Void)?
-    var value: Double = 1 {
-        didSet {
-            guard dragValue == nil, value != oldValue else { return }
-            layoutBars()
-        }
-    }
-
-    private var dragValue: Double?
-    private let track = CALayer()
-    private let played = CALayer()
-    private let knob = CALayer()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        track.backgroundColor = NSColor(white: 1, alpha: MusicGrays.tertiary).cgColor
-        played.backgroundColor = NSColor(white: 1, alpha: MusicGrays.primary).cgColor
-        knob.backgroundColor = NSColor.white.cgColor
-        knob.shadowColor = NSColor.black.cgColor
-        knob.shadowOpacity = 0.25
-        knob.shadowRadius = 2
-        knob.shadowOffset = CGSize(width: 0, height: -1)
-        [track, played, knob].forEach { layer?.addSublayer($0) }
-
-        setAccessibilityElement(true)
-        setAccessibilityRole(.slider)
-        setAccessibilityLabel("音量")
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var isFlipped: Bool { false }
-
-    override func layout() {
-        super.layout()
-        layoutBars()
-    }
-
-    private func layoutBars() {
-        let current = min(max(dragValue ?? value, 0), 1)
-        let height = Self.barHeight
-        let y = (bounds.height - height) / 2
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        track.frame = NSRect(x: 0, y: y, width: bounds.width, height: height)
-        track.cornerRadius = height / 2
-        played.frame = NSRect(x: 0, y: y, width: bounds.width * current, height: height)
-        played.cornerRadius = height / 2
-        let knobSize = Self.knobSize
-        let knobX = min(max(bounds.width * current - knobSize / 2, 0), bounds.width - knobSize)
-        knob.frame = NSRect(x: knobX, y: (bounds.height - knobSize) / 2,
-                            width: knobSize, height: knobSize)
-        knob.cornerRadius = knobSize / 2
-        // 圆钮带阴影，frame 在 `mouseDragged` 里逐事件重排：不给 `shadowPath`，
-        // 合成器每一帧都要照层的 alpha 现算一次离屏（同 `CatalogPlayButton.layout`）。
-        // 走 `NSBezierPath.cgPath` 而不是 `CGPath(ellipseIn:transform:)`：后者的
-        // `transform` 是裸指针形参，整条声明被判为不安全；这条是纯安全 API，
-        // 按三档的第一档「能改成安全代码的先改，不标注」。
-        knob.shadowPath = NSBezierPath(ovalIn: knob.bounds).cgPath
-        CATransaction.commit()
-        setAccessibilityValue("\(Int((current * 100).rounded()))%")
-    }
-
-    // 音量是 continuous：拖动过程中就一路回调。
-    override func mouseDown(with event: NSEvent) { scrub(event) }
-    override func mouseDragged(with event: NSEvent) { scrub(event) }
-    override func mouseUp(with event: NSEvent) {
-        scrub(event)
-        dragValue = nil
-    }
-
-    private func scrub(_ event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let target = min(max(point.x / max(bounds.width, 1), 0), 1)
-        dragValue = target
-        layoutBars()
-        onScrub?(target)
-    }
-
-    override func accessibilityPerformIncrement() -> Bool {
-        onScrub?(min(value + 0.05, 1))
-        return true
-    }
-
-    override func accessibilityPerformDecrement() -> Bool {
-        onScrub?(max(value - 0.05, 0))
-        return true
-    }
-}
 
 // MARK: - AirPlay
 
