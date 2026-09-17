@@ -247,8 +247,18 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
     private var loadTask: Task<Void, Never>?
     private var requestedURL: String?
     private var sharpImage: CGImage?
-    /// 画布对应的尺寸（宽/高一致才不重画，见 `regenerateBackdrop()`）。
+    /// **层上那两张画布**对应的尺寸（宽/高一致才不重画，见 `regenerateBackdrop()`）。
     private var canvasFor: NSSize?
+    /// **正在后台烘**的那一档。与 `canvasFor` 分开：投递出去到贴回来之间层上还是旧画布，
+    /// 只看 `canvasFor` 挡不住重复投递——首次装图那一路层上干脆是空的，
+    /// 拖窗会把同一档尺寸连投几十次。
+    private var pendingCanvas: NSSize?
+    /// 每次投递自增。烘好的画布拿着投递时的号回来，对不上就是过期画布，丢掉——
+    /// 实时拖窗时后发的先回来是常态，不校验就会贴上一档尺寸的画布。
+    private var canvasToken: UInt64 = 0
+    /// `CIContext` 是 `NS_SWIFT_SENDABLE` 的（头文件里就这么标的），建一次交给后台那一路复用。
+    /// `cacheIntermediates: false`：这些中间结果只用一次，留着白占显存。
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -299,6 +309,9 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
         blurLayer.contents = nil
         sharpLayer.contents = nil
         canvasFor = nil
+        // 换人时把号推过去：上一位的画布可能还在后台烘，回来时不作废就会贴到这一位身上。
+        pendingCanvas = nil
+        canvasToken &+= 1
         guard let request else { return }
         if let cached = ImageCache.shared.memoryCachedImage(for: request) {
             install(image: cached)
@@ -371,23 +384,58 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
     ///
     /// - 清晰画布：同一构图**不糊**，裁出 hero 带那一段，按 2x 渲染（要显示原图细节）。
     /// - 糊画布：同一构图 + 高斯 36，整页一段，1x 就够。
-    /// 交叉淡化时两层逐像素对齐，图不会「呼吸」。先缩图再糊，一次几毫秒，
-    /// 窗口改尺寸时重画也不抖。
+    /// 交叉淡化时两层逐像素对齐，图不会「呼吸」。
+    ///
+    /// 烘这两张**不在主线程做**：它从前挂在 `layout()` 里，而糊画布那一张是
+    /// `CIGaussianBlur(radius: 36)` 渲整页 1x 画布，实时拖窗时每一档新尺寸都要同步烘一次。
+    /// 现在投给 `bake` 那条 `@concurrent` 的路，算完回主 actor 贴——**这期间旧画布照旧
+    /// 显示**（不清 `contents`），所以拖动过程中背景不会闪空。
     private func regenerateBackdropIfNeeded(width: CGFloat, height: CGFloat, heroHeight: CGFloat) {
         guard let sharpImage, sharpImage.width > 0, sharpImage.height > 0,
               width > 0, height > 0 else { return }
         let canvas = NSSize(width: width, height: height)
-        if let canvasFor, abs(canvasFor.width - canvas.width) < 0.5,
-           abs(canvasFor.height - canvas.height) < 0.5, blurLayer.contents != nil { return }
-        canvasFor = canvas
+        func isSameCanvas(_ size: NSSize?) -> Bool {
+            guard let size else { return false }
+            return abs(size.width - canvas.width) < 0.5 && abs(size.height - canvas.height) < 0.5
+        }
+        if isSameCanvas(pendingCanvas) { return }
+        if isSameCanvas(canvasFor), blurLayer.contents != nil { return }
+        pendingCanvas = canvas
+        canvasToken &+= 1
+        let token = canvasToken
+        let context = ciContext
+        Task { [weak self] in
+            let baked = await Self.bake(source: sharpImage, width: width, height: height,
+                                        heroHeight: heroHeight, context: context)
+            // 号对不上＝这趟的输入已经过时（拖窗时后发的先回来是常态），画布丢掉，
+            // 两份记账也不动——那是当值那一趟的。
+            guard let self, self.canvasToken == token else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.sharpLayer.contents = baked.sharp
+            self.blurLayer.contents = baked.blurred
+            CATransaction.commit()
+            self.canvasFor = canvas
+            self.pendingCanvas = nil
+        }
+    }
 
+    /// 烘那一趟本身。`@concurrent`：SE-0461 之后非隔离 async 函数默认继承调用方隔离，
+    /// 不标就还是在主 actor 上跑，等于什么都没搬（同 `MusicProvider` 那 17 处的理由）。
+    ///
+    /// 入参全是 `Sendable` 的：`CGImage` 与 `CIContext` 头文件里就标着；
+    /// `CIFilter` 不是，所以滤镜在这一路里现建。
+    @concurrent
+    private nonisolated static func bake(
+        source: CGImage, width: CGFloat, height: CGFloat, heroHeight: CGFloat, context: CIContext
+    ) async -> (sharp: CGImage?, blurred: CGImage?) {
         // 2x 像素空间里做映射（清晰画布要 retina 细节；糊画布顺着这个空间一起算，
         // 反正马上要糊掉）。视图坐标顶左、CI 坐标底左，图顶对齐页顶就是
         // CI 的 y = 画布高 − 图画布高。
-        let scale2x = width * 2 / CGFloat(sharpImage.width)
-        let drawnHeight2x = CGFloat(sharpImage.height) * scale2x
+        let scale2x = width * 2 / CGFloat(source.width)
+        let drawnHeight2x = CGFloat(source.height) * scale2x
         let top2x = height * 2 - drawnHeight2x
-        let image = CIImage(cgImage: sharpImage)
+        let image = CIImage(cgImage: source)
         let base = image
             .transformed(by: CGAffineTransform(scaleX: scale2x, y: scale2x))
             .transformed(by: CGAffineTransform(translationX: 0, y: top2x))
@@ -401,20 +449,19 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
         }
         composed = composed.clampedToExtent()
 
-        let context = CIContext(options: [.cacheIntermediates: false])
         // 清晰画布：hero 带那一段（2x）。
         let heroCrop = CGRect(x: 0, y: (height - heroHeight) * 2,
                               width: width * 2, height: heroHeight * 2)
-        let sharpCanvas = context.createCGImage(composed, from: heroCrop)
+        let sharp = context.createCGImage(composed, from: heroCrop)
         // 糊画布：整页（1x 像素空间另算一遍映射，反正马上糊掉）。
         var blurred: CGImage?
         if let filter = CIFilter(name: "CIGaussianBlur") {
-            let scale1x = width / CGFloat(sharpImage.width)
-            let top1x = height - CGFloat(sharpImage.height) * scale1x
+            let scale1x = width / CGFloat(source.width)
+            let top1x = height - CGFloat(source.height) * scale1x
             var page = image
                 .transformed(by: CGAffineTransform(scaleX: scale1x, y: scale1x))
                 .transformed(by: CGAffineTransform(translationX: 0, y: top1x))
-            if CGFloat(sharpImage.height) * scale1x < height {
+            if CGFloat(source.height) * scale1x < height {
                 let mirror1x = image
                     .transformed(by: CGAffineTransform(scaleX: scale1x, y: -scale1x))
                     .transformed(by: CGAffineTransform(translationX: 0, y: top1x))
@@ -427,12 +474,7 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
                 context.createCGImage($0, from: CGRect(x: 0, y: 0, width: width, height: height))
             }
         }
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        sharpLayer.contents = sharpCanvas
-        blurLayer.contents = blurred
-        CATransaction.commit()
+        return (sharp, blurred)
     }
 }
 
