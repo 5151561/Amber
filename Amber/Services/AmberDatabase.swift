@@ -465,7 +465,8 @@ final class AmberDatabase {
         -- 「external 是权威、media 是可重建的投影」这个判断成立，但不变量不该由表边界
         -- 保证：十几处读点问的都是同一个问题（「这首歌在本机有文件吗，在哪」），
         -- 拆表要给它们全加 UNION，只换来 4 处少写一个 WHERE。
-        -- 不变量改由重建语句的 WHERE scope='media' AND volume_uuid = ? 保证，
+        -- 不变量改由重建语句的 WHERE scope = 'media' 保证（落点：
+        -- DownloadStore.rebuildMediaProjection，卷号那一半见它自己的注释），
         -- 再由一条测试守住——测试还能同时守住「WHERE 写对了但 UPSERT 覆盖了
         -- external 行的 quality」这类表边界根本守不住的情况。
         --
