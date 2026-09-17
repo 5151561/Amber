@@ -54,7 +54,6 @@ extension SyncedLyricsViewController {
     func handleTap(on lineView: SyncedLyricsLineView) -> SyncedLyricsLineView? {
         guard specs.renderingMode != .static else { return nil }
 
-        displayLink?.isPaused = true
         manager?.needsTapHandling = true
         // 注意：点击**立刻**交还控制权，不走 §2.9 那 3 秒。等 3 秒的只有拖动。
         //
@@ -73,16 +72,12 @@ extension SyncedLyricsViewController {
             content.freezeProgress(for: specs.lineTapProgressFreezeDuration)
         }
 
-        notifyDelegateOfTap(on: lineView)
-
-        // 原版在这里 `asyncAfter(.now() + 1.0)` 等新时间源，逾期回退到旧的
-        // （§1.4 第三条）。Amber 只有一个时间源（`AVPlayer`），没有可回退的对象，
-        // 对应动作就是把每帧驱动放开——冻结窗口一过就恢复，不等满 1 秒，
-        // 否则点完歌词会僵一秒。`[补]`
-        DispatchQueue.main.asyncAfter(deadline: .now() + specs.lineTapProgressFreezeDuration) {
-            [weak self] in
-            self?.displayLink?.isPaused = false
+        // 点击立刻触发平滑滚动到目标行，无需等待 seek 往返延迟
+        if let line = lineView.lineLayer?.line {
+            jump(to: line, animated: true)
         }
+
+        notifyDelegateOfTap(on: lineView)
         return lineView
     }
 

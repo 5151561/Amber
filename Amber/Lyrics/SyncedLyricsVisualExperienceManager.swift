@@ -60,14 +60,15 @@ final class SyncedLyricsVisualExperienceManager {
     /// 再把 `filters.gaussianBlur.inputRadius` 动到 3.0。判据是二值的「是不是当前聚焦行」，
     /// 不是按距离的梯度——和实测的 σ≈3.1、不单调一致。
     ///
-    /// **Amber 取 1.5，不是 3.0**（`[实机]`，2026-09-07 用户逐档判读）：3.0 在 Amber 上
+    /// **Amber 取 2.0，不是 3.0**（`[实机]`，2026-09-07 用户逐档判读定在 1.5，
+    /// 2026-09-17 上调到 2.0）：3.0 在 Amber 上
     /// 把非聚焦行的副行（翻译/发音，侧栏 12pt）
     /// 糊到读不出来。这是个**取值不是结论**——3.0 是 [实测]、σ≈3.1 是 [PX] 实测，
     /// 两边自洽，所以差异出在 Amber 这一侧，只是还没测出来在哪：最可能的一处是
     /// `CIGaussianBlur.inputRadius` 在 Music 那边按背衬像素算、在 Amber 这边按点算
     /// （Retina 上正好差一倍），但没有证据，没敢照这个假设去写 `/ backingScaleFactor`。
     /// 量清楚之前先按实机判读取值，`-lyricsblur <值>` 可以现场调。
-    static var deselectedBlurRadius: CGFloat { LyricsDebugFlags.blurRadius ?? 1.5 }
+    static var deselectedBlurRadius: CGFloat { LyricsDebugFlags.blurRadius ?? 2.0 }
 
     /// 松手后多久交还控制权。
     ///

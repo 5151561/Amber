@@ -175,4 +175,66 @@ final class LyricsScrubTests: XCTestCase, LyricsKitFixtures {
         }
         assertInstrumentalRowsConsistent(visual, at: now)
     }
+
+    /// 无论目标行是否在视口内、是否为间奏行，只要 animated 为真就允许动画，不产生瞬移硬跳。
+    func testJumpShouldAnimateRespectsAnimatedFlag() {
+        let (controller, _, _) = makeScrubFixture(elapsed: { 0 })
+        let offScreenFrame = CGRect(x: 0, y: 5000, width: 300, height: 40)
+        let inScreenFrame = CGRect(x: 0, y: 100, width: 300, height: 40)
+        let textLine = controller.lyrics?.lines[0]
+        let instrumentalLine = controller.lyrics?.lines[1]
+
+        // animated 为 true 时均应为 true
+        XCTAssertTrue(controller.jumpShouldAnimate(targetLineFrame: offScreenFrame,
+                                                   targetLine: textLine,
+                                                   animated: true))
+        XCTAssertTrue(controller.jumpShouldAnimate(targetLineFrame: inScreenFrame,
+                                                   targetLine: textLine,
+                                                   animated: true))
+        XCTAssertTrue(controller.jumpShouldAnimate(targetLineFrame: offScreenFrame,
+                                                   targetLine: instrumentalLine,
+                                                   animated: true))
+        XCTAssertTrue(controller.jumpShouldAnimate(targetLineFrame: inScreenFrame,
+                                                   targetLine: instrumentalLine,
+                                                   animated: true))
+
+        // animated 为 false 时为 false
+        XCTAssertFalse(controller.jumpShouldAnimate(targetLineFrame: offScreenFrame,
+                                                    targetLine: textLine,
+                                                    animated: false))
+        XCTAssertFalse(controller.jumpShouldAnimate(targetLineFrame: inScreenFrame,
+                                                    targetLine: textLine,
+                                                    animated: false))
+    }
+
+    /// 远距离跳转（目标行位移超出视口高）时，应启动 ScrollSpring 进行平滑视口滚动，而非瞬移或逐行卡顿。
+    func testJumpOffScreenLineAnimatesSmoothlyViaScrollSpring() throws {
+        let (controller, visual, _) = makeScrubFixture(elapsed: { 0 })
+        runLayoutPass(controller)
+
+        // 确保初始滚动位于顶部 0
+        controller.setScrollOrigin(.zero)
+        XCTAssertNil(controller.scrollSpring)
+
+        // 跳转至第 7 行（远在几屏之外）
+        let targetLine = try XCTUnwrap(controller.lyrics?.lines[7])
+        controller.jump(to: targetLine, animated: true)
+
+        // 验证：由于 delta 远超可视高度 (260)，交由 ScrollSpring 平滑滚动
+        XCTAssertNotNil(controller.scrollSpring, "远距离跳转应启动 ScrollSpring 平滑滑动")
+
+        // 模拟数帧后，滚动位置逐步靠近目标
+        let initialY = controller.scrollView?.contentView.bounds.origin.y ?? 0
+        let targetOrigin = controller.targetOrigin(for: visual.lineViews[7])
+
+        controller.advanceScrollSpring(at: CACurrentMediaTime() + 0.1)
+        let midY = controller.scrollView?.contentView.bounds.origin.y ?? 0
+        XCTAssertGreaterThan(midY, initialY, "视口应在弹簧驱动下逐步平滑滚向目标")
+
+        // 弹簧完成后顺利落位
+        controller.advanceScrollSpring(at: CACurrentMediaTime() + 2.0)
+        XCTAssertNil(controller.scrollSpring)
+        let finalY = controller.scrollView?.contentView.bounds.origin.y ?? 0
+        XCTAssertEqual(finalY, targetOrigin.y, accuracy: 1.0, "最终精准平滑落位于目标 origin")
+    }
 }

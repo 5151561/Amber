@@ -12,12 +12,13 @@ final class LyricsBlurStaticTests: XCTestCase, LyricsKitFixtures {
 
     /// 加模糊会被「禁用 / 高对比度」挡住，去模糊永远允许；上限写死 4。
     ///
-    /// 非聚焦行取 1.5 而不是 [实测] 3.0：3.0 在 Amber 上会把副行（翻译/发音，
-    /// 侧栏 12pt）糊到读不出来，`[实机]` 2026-09-07 用户逐档判读定的值，
+    /// 非聚焦行取 2.0 而不是 [实测] 3.0：3.0 在 Amber 上会把副行（翻译/发音，
+    /// 侧栏 12pt）糊到读不出来，`[实机]` 2026-09-07 用户逐档判读定在 1.5、
+    /// 2026-09-17 上调到 2.0，
     /// 缘由见 `SyncedLyricsVisualExperienceManager.deselectedBlurRadius` 那段注释。
     func testBlurRadiusIsClampedAndGated() {
         XCTAssertEqual(SyncedLyricsVisualExperienceManager.maxBlurRadius, 4)
-        XCTAssertEqual(SyncedLyricsVisualExperienceManager.deselectedBlurRadius, 1.5)
+        XCTAssertEqual(SyncedLyricsVisualExperienceManager.deselectedBlurRadius, 2.0)
 
         let manager = SyncedLyricsVisualExperienceManager()
         manager.specs.lineBlurEnabled = false
