@@ -1177,11 +1177,12 @@ final class NeteaseAPI: MusicProvider {
         }
         if let yrc = lyric("yrc") {
             return LyricParser.parse(yrc, translation: lyric("ytlrc") ?? lyric("tlyric"),
-                                     transliteration: lyric("yromalrc") ?? lyric("romalrc"))
+                                     transliteration: lyric("yromalrc") ?? lyric("romalrc"),
+                                     title: track.title)
         }
         guard let lrc = lyric("lrc") else { return [] }
         return LyricParser.parse(lrc, translation: lyric("tlyric"),
-                                 transliteration: lyric("romalrc"))
+                                 transliteration: lyric("romalrc"), title: track.title)
     }
 
     // MARK: - MV 取流

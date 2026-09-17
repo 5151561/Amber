@@ -1618,12 +1618,15 @@ final class QQAPI: MusicProvider {
         // 逐字这条先问。**非 nil ＝ 这一趟有结论**，空数组也是结论（音源明说这首没有词，
         // 见下面的 `lyric_style`），到此为止；nil ＝ 没给出结论（没有逐字版、或请求失败），
         // 退回行级再问一次。`(try? …) ?? nil` 是把`[LyricLine]??` 压平一层。
-        if let decided = (try? await lyrics(mid: mid, wordByWord: true)) ?? nil { return decided }
-        return ((try? await lyrics(mid: mid, wordByWord: false)) ?? nil) ?? []
+        if let decided = (try? await lyrics(mid: mid, title: track.title,
+                                            wordByWord: true)) ?? nil { return decided }
+        return ((try? await lyrics(mid: mid, title: track.title,
+                                   wordByWord: false)) ?? nil) ?? []
     }
 
     /// nil = 这条路没给出结论，可以再试另一条；`[]` = 音源明说这首没有词。
-    private func lyrics(mid: String, wordByWord: Bool) async throws -> [LyricLine]? {
+    private func lyrics(mid: String, title: String,
+                        wordByWord: Bool) async throws -> [LyricLine]? {
         let data = try await musicu(
             module: "music.musichallSong.PlayLyricInfo",
             method: "GetPlayLyricInfo",
@@ -1651,7 +1654,7 @@ final class QQAPI: MusicProvider {
         // 与 `trans` 同样走 `QRCDecoder`，qrc 模式下是逐字格式。
         let transliteration = (data["roma"] as? String).flatMap { QRCDecoder.decodePayload($0) }
         return LyricParser.parse(lyric, translation: translation,
-                                 transliteration: transliteration)
+                                 transliteration: transliteration, title: title)
     }
 
     // MARK: - MV 取流
