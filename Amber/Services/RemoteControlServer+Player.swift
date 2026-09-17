@@ -82,10 +82,21 @@ extension PlayerController: RemoteControlTarget {
         return state
     }
 
-    var remoteChanges: AnyPublisher<Void, Never> {
+    var remoteChanges: AsyncStream<Void> {
         // `clock`（10 Hz 的进度）**不能**并进来：那会把长轮询打成每秒十次唤醒，
         // 遥控器的电池和这台机器的 CPU 都受不了。进度靠 `cant`/`cast` 由客户端自己推。
-        objectWillChange.eraseToAnyPublisher()
+        //
+        // 过渡形态：`PlayerController` 还是 ObservableObject，这里先桥 objectWillChange。
+        // 它改成 @Observable 之后换成 `Observations`，协议这一侧不用动。
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let pump = Task { @MainActor in
+            for await _ in objectWillChange.values {
+                continuation.yield(())
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in pump.cancel() }
+        return stream
     }
 }
 

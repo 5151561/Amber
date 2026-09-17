@@ -122,7 +122,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     private var selectedTrackID: String?
 
     // 工具栏
-    private lazy var binder = SearchFieldBinder(text: model.$search) { [weak self] text in
+    private lazy var binder = SearchFieldBinder(text: model.$search.values) { [weak self] text in
         self?.model.search = text
     }
     private lazy var filterMenuController = LibraryArtistFilterMenuController(model: model)

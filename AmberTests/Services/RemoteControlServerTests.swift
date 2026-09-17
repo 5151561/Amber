@@ -1,4 +1,3 @@
-import Combine
 import XCTest
 @testable import Amber
 
@@ -8,7 +7,7 @@ private final class FakeRemoteTarget: RemoteControlTarget {
 
     var state = RemotePlayState()
     private(set) var calls: [String] = []
-    private let subject = PassthroughSubject<Void, Never>()
+    private let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .unbounded)
 
     func remotePlay() { calls.append("play") }
     func remotePause() { calls.append("pause") }
@@ -25,7 +24,7 @@ private final class FakeRemoteTarget: RemoteControlTarget {
     func remoteSetShuffle(_ on: Bool) { calls.append("shuffle:\(on)") }
     func remoteSetRepeat(_ state: Int) { calls.append("repeat:\(state)") }
     func snapshot() -> RemotePlayState { state }
-    var remoteChanges: AnyPublisher<Void, Never> { subject.eraseToAnyPublisher() }
+    var remoteChanges: AsyncStream<Void> { changes.stream }
 }
 
 /// DACP 路由：登录鉴权、播放状态容器、控制命令的分发。
