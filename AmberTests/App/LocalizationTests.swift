@@ -1,18 +1,31 @@
 import XCTest
 @testable import Amber
 
-/// 钉住「本 App 声明了 zh-Hans 这门本地化」。
+/// 钉住「系统自己那些串跟着中文走」。
 ///
 /// 为什么值得一条测试：Amber 的界面文案全是硬编码中文，很容易以为「反正是中文 App，
-/// 本地化与我无关」。但**系统框架自己那些串不经过本 App 的代码**——⌘Z 的完整标题由
+/// 本地化与我无关」。但**系统框架那些串不经过本 App 的代码**——⌘Z 的完整标题由
 /// Foundation 按格式串「撤销%@」拼（zh_CN 那条没有空格），全屏那条由 AppKit 提供。
-/// bundle 里一个 `.lproj` 都没有时，`Bundle.main.localizations` 是空的，系统会按
-/// 「这个 App 不支持用户的语言」处理，那两条就可能读成 "Undo 删除播放列表" /
-/// "Enter Full Screen"（审查单 §3-1、§8 验收第 13 条）。
+/// 审查单 §3-1 担心的是：bundle 里一个 `.lproj` 都没有时，系统会按「这个 App 不支持
+/// 用户的语言」处理，那两条就读成 "Undo 删除播放列表" / "Enter Full Screen"。
 ///
-/// `Support/Info.plist` 的 `CFBundleDevelopmentRegion = zh-Hans` 只说明「源语言是中文」，
-/// 不等于「装出来的 bundle 里有 zh-Hans 这门」。后者靠 `Amber/Resources/zh-Hans.lproj/`
-/// 存在，而这里就是钉它没被误删、也真的进了产物。
+/// **[实测 2026-09-17] 这个担心不成立，而且补 `.lproj` 是空头。** 试过三种形态：
+///
+/// | 形态 | `Bundle.localizations` | `undoMenuItemTitle` |
+/// | --- | --- | --- |
+/// | 产物里有 `zh-Hans.lproj` | `["zh-Hans"]` | 撤销删除播放列表 |
+/// | 把它从产物里删掉 | `["zh-Hans"]` | 撤销删除播放列表 |
+/// | 换个 main bundle 没中文的进程（`xcrun swift` 跑探针） | — | Undo 删除播放列表 |
+///
+/// 前两行说明 `Support/Info.plist` 的 `CFBundleDevelopmentRegion = zh-Hans` **一条就够**
+/// ——这一门是它供的，不需要真有那个目录。所以曾经加过的 `Amber/Resources/zh-Hans.lproj/`
+/// 又删掉了：留着就是一道没人验证过、看着像在起作用的护身符。
+/// 第三行是反例，证明这条路确实跟着 main bundle 的本地化走，不是「反正都会是中文」。
+///
+/// 这条测试因此不是钉那个目录，是钉**结论**：谁哪天动了 `CFBundleDevelopmentRegion`，
+/// 或者哪次升级改了系统的回退规则，这里会先红。
+///
+/// 全量本地化（把几千处硬编码中文抽进 String Catalog）是另一件事，审查单 §5 单列着。
 final class LocalizationTests: XCTestCase {
 
     /// 测试宿主就是 Amber 本身，所以 `Bundle.main` 就是装出来的那份 App。

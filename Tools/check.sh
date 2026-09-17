@@ -26,7 +26,15 @@ derived=build/DerivedData
 
 # 全量构建时的警告条数基线。改动它要在提交信息里写明「哪条没了 / 哪条新增、为什么」——
 # 基线的价值全在「有人动它时必须解释一句」，悄悄跟着涨就等于没有。
-warning_baseline=14
+#
+# 口径就是下面那条 `grep | sort -u`（按 file:line:col 去重的唯一条数）。审查单 §8 记的
+# 「14 条」不是这个口径——两个子代理各自独立在 84d5d99 上量到 21，去掉 deprecated 与
+# 「'as' test is always true」两类正好 14，所以当时多半是分类计的。要对账先对口径。
+#
+# 2026-09-17：21 → 17。批 J 消掉 1 条（未使用的 seedSongMid）、批 K 消掉 3 条
+#（三处 `try? AmberDatabaseMigration.runIfNeeded` 补 `_ =`——`@discardableResult`
+# 穿不过 `try?`）。两批都没有新增。
+warning_baseline=17
 
 mode=full
 case ${1:-} in

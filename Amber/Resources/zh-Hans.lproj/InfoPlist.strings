@@ -1,4 +1,0 @@
-/* 程序坞、访达、关于面板里的名字。与 `Support/Info.plist` 的 CFBundleDisplayName 同值，
-   写在这里是为了让 zh-Hans.lproj 里有一条真条目而不只是注释。 */
-"CFBundleDisplayName" = "Amber";
-"CFBundleName" = "Amber";
