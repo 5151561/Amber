@@ -75,6 +75,29 @@ final class AudioTagWriterFLACTests: XCTestCase {
         XCTAssertEqual(comment.vendor, "reference libFLAC 1.4.3", "vendor 是编码器签名，不该被我们改")
     }
 
+    /// vendor 读不回来时落到我们自己的兜底名，而不是把坏字节原样抄进新文件。
+    ///
+    /// 三种读不回来：不是合法 UTF-8、长度字段本身就不够 4 字节、长度字段声称的比正文还长。
+    /// 这几条是 `vorbisVendor` 的 nil 路径——它现在在 `RawSpan` 上读，越界是 trap 不是返回
+    /// nil，长度只能靠这几条 `guard` 先验；漏掉任何一条，坏文件换来的就不是兜底名而是崩溃。
+    func testFallsBackToOwnVendorWhenOldOneIsUnreadable() throws {
+        let cases: [(why: String, old: Data)] = [
+            ("不是合法 UTF-8", Data([0x04, 0, 0, 0, 0xFF, 0xFE, 0x80, 0x01, 0, 0, 0, 0])),
+            ("长度字段自己就截断了", Data([0x02, 0x00])),
+            ("长度声称的比正文长", Data([0xFF, 0x00, 0x00, 0x00]) + Data("abc".utf8)),
+        ]
+        for (why, old) in cases {
+            let url = try write(fixture: Self.flac(blocks: [(4, old)], audio: Self.fakeFrames),
+                                name: "vendor.flac")
+
+            try FLACTagWriter.write(Self.fullTags, to: url)
+
+            let comment = try XCTUnwrap(Self.parse(Data(contentsOf: url)).comment)
+            XCTAssertEqual(comment.vendor, "Amber", "\(why)：该落到兜底名")
+            XCTAssertEqual(Self.value("TITLE", in: comment.fields), "Emily", "\(why)：文字标签照写")
+        }
+    }
+
     /// STREAMINFO 必须仍是第一块，SEEKTABLE 这类别人写的块要留着，PADDING 可以丢。
     func testKeepsStreamInfoFirstAndPreservesOtherBlocks() throws {
         let seekTable = Data(repeating: 0xAB, count: 18)

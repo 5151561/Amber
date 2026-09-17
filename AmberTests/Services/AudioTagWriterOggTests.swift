@@ -92,6 +92,22 @@ final class AudioTagWriterOggTests: XCTestCase {
         XCTAssertEqual(pages.first?.raw, original.first?.raw, "识别头独占 BOS 页，整页原样抄过去")
     }
 
+    /// granule 是 64 位：超过 2^32 的值、以及「未知 granule」那个全 1（RFC 3533 §6 的 -1），
+    /// 重排时只换页号，这一格一个比特都不该动。
+    /// 页头现在是一次读出整个 64 位再按小端解释，这条盯的就是高 32 位有没有被丢掉。
+    func testWideGranulesSurviveRenumbering() throws {
+        let granules: [UInt64] = [0x1_0000_0000, .max]
+        let fixture = Self.vorbisFixture(granules: granules)
+        let url = try write(fixture: fixture.data)
+
+        try OggTagWriter.write(Self.fullTags, to: url)
+
+        let pages = try Self.parse(Data(contentsOf: url))
+        try Self.assertWellFormed(pages)
+        XCTAssertEqual(pages.suffix(2).map(\.granule), granules, "granule 要原样带过来")
+        XCTAssertEqual(pages.suffix(2).map(\.body), fixture.audioBodies, "音频页正文也是")
+    }
+
     /// 已经有标签的再写一次是替换：同名字段只留一条，旧字段不残留。
     func testReplacesExistingComment() throws {
         let fixture = Self.vorbisFixture(fields: [("TITLE", "旧标题"), ("COMMENT", "旧备注")])
@@ -279,7 +295,10 @@ final class AudioTagWriterOggTests: XCTestCase {
 
     /// 最小 Vorbis 流：识别头独占 BOS 页，comment + setup 一页，然后两页音频（末页带 EOS）。
     /// 这个排布就是 Vorbis I §4.2 规定的样子，也是 oggenc 实际写出来的样子。
-    static func vorbisFixture(fields: [(String, String)] = [], foreign: Data? = nil) -> Fixture {
+    ///
+    /// `granules` 只有验 64 位边界那条会自己传，默认就是一秒一页的那两个值。
+    static func vorbisFixture(fields: [(String, String)] = [], foreign: Data? = nil,
+                              granules: [UInt64] = [44_100, 88_200]) -> Fixture {
         let serial: UInt32 = 0x1234_5678
         let vendor = "Xiph.Org libVorbis I 20200704"
         // 识别头 30 字节：包类型+"vorbis"、版本、声道、采样率、三档码率、块大小、framing bit
@@ -301,9 +320,9 @@ final class AudioTagWriterOggTests: XCTestCase {
         if let foreign { data.append(foreign) }
         data.append(page(headerType: 0, granule: 0, serial: serial, sequence: 1,
                          packets: [comment, setup]))
-        data.append(page(headerType: 0, granule: 44_100, serial: serial, sequence: 2,
+        data.append(page(headerType: 0, granule: granules[0], serial: serial, sequence: 2,
                          packets: [audioBodies[0]]))
-        data.append(page(headerType: 0x04, granule: 88_200, serial: serial, sequence: 3,
+        data.append(page(headerType: 0x04, granule: granules[1], serial: serial, sequence: 3,
                          packets: [audioBodies[1]]))
         return Fixture(data: data, serial: serial, vendor: vendor, identification: identification,
                        setup: setup, audioBodies: audioBodies,
