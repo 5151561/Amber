@@ -28,7 +28,9 @@ target 级）。现在开着的除了 Swift 6 语言模式 + complete 并发 + a
 这里是唯一副本（`design-ref/appkit-rewrite-plan.md` §2 只作引用，要改改这里）：
 
 1. **不再新增 `NSViewRepresentable` / `NSViewControllerRepresentable`。** 方向只能是 AppKit 里挂`NSHostingView`。
-2. `NSHostingView` 只能挂在**定尺寸**的槽里，且`sizingOptions = []`（Apple 文档原话：减少布局测量、提升性能；帧比内容小时内容居中）。滚动容器里的单元格不许用`NSHostingView`，除非里面真有 SwiftUI 才能做的控件（先例：`SongsRichCellView`）。
+2. `NSHostingView` 只能挂在**定尺寸**的槽里，且`sizingOptions = []`。滚动容器里的单元格不许用`NSHostingView`，除非里面真有 SwiftUI 才能做的控件（先例：`SongsRichCellView`）。
+
+   **`sizingOptions = []` 买到的是什么，别记错**（2026-09-17 订正，原文把两件事并成了一件）：它**只**关掉「照 SwiftUI 的 min/intrinsic/max 反推约束与固有尺寸」——文档原话是默认值为 `.standardBounds`（含 `minSize`/`intrinsicContentSize`/`maxSize`），设成 `[]` 则 *will create no constraints at all*，收益是 *reduces the amount of layout measurements that need to be performed*。而「帧与内容不一样大时内容在帧里居中」是 `NSHostingView` **无条件**的行为（文档把它单写成一句，不挂任何条件），**跟 `sizingOptions` 取什么值没关系**。所以：靠「居中」得到的版式，不设这一行也成立；不设这一行，丢的是性能，不是版式。
 3. 悬浮态、选中态、当前播放指示由 AppKit 视图自己持有并 `needsDisplay`，不许经过共享的可观察状态绕一圈。（这条原来写的是「不许经过`@Published`」——剥离 Combine 之后换成了 `@Observable` 的属性，要守的东西一个字没变：界面自己的显示态不上广播。）
 4. 菜单命令走响应链 target-action + `validateMenuItem`；导航意图（前往专辑/艺人）走响应链冒泡，删掉`pendingRoute`。
 5. 像素规格照旧取 `MusicMetrics` / `MusicColors`，迁移「换骨架，像素一个不改」（与歌曲表、侧栏两次迁移同一原则）。新增度量要标出处：`[实测]` = 对着 Music 量出来的定值，`[资源]` = 取自 Music 的资源包，`[AX]` = 辅助功能树，`[PX]` = 截图逐像素量，`[推]` = 没有依据、按惯例推的。
