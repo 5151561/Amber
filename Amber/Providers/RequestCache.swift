@@ -14,6 +14,16 @@ actor RequestCache {
     /// 5 分钟又短到「新碟上架」「巅峰榜」这类日更内容不会停在旧的一版上。
     static let catalogTTL: TimeInterval = 300
 
+    /// 条目上限。超了就先扫过期的，还超就按到期时间从最早的开始扔。
+    ///
+    /// 为什么需要上限：键带分页参数（`start` / `offset` / tag），一次长会话里越翻越多，
+    /// 而从前**过期条目只会被同键覆盖**——没人翻回第 3 页，第 3 页那条就永远留着。
+    /// 一条目录响应几十到几百 KB，攒够几百条就是几十 MB 白占。
+    ///
+    /// 200 取自这层缓存的实际用量：三个目录页每页十来条接口，来回切页、翻几页，
+    /// 一次正常浏览会话的活跃键不到 100；200 给足了余量又不至于让它无限长。
+    private static let capacity = 200
+
     private var entries: [String: (value: any Sendable, expiresAt: Date)] = [:]
     private var inFlight: [String: Task<(any Sendable)?, Never>] = [:]
 
@@ -36,7 +46,21 @@ actor RequestCache {
         inFlight.removeValue(forKey: key)
         if let value {
             entries[key] = (value, Date().addingTimeInterval(ttl))
+            evictIfNeeded()
         }
         return value as? T
+    }
+
+    /// 只在**新写入一条**之后跑，不在读路径上跑：读是热路径（每个格子每次露面都问一次），
+    /// 写是冷路径（一次真网络之后才有一条）。
+    private func evictIfNeeded() {
+        guard entries.count > Self.capacity else { return }
+        let now = Date()
+        entries = entries.filter { $0.value.expiresAt > now }
+        guard entries.count > Self.capacity else { return }
+        // 全都还没过期：按到期时间扔掉最早的那几条（同一个 TTL 下等价于「最早写进来的」）。
+        let doomed = entries.sorted { $0.value.expiresAt < $1.value.expiresAt }
+            .prefix(entries.count - Self.capacity)
+        for (key, _) in doomed { entries.removeValue(forKey: key) }
     }
 }

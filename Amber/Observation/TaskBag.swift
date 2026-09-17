@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Synchronization
 
 /// 一袋订阅任务，袋子没了就全部取消——`Set<AnyCancellable>` 的对位物。
 ///
@@ -13,6 +14,14 @@ final class TaskBag {
     init() {}
 
     func add(_ task: Task<Void, Never>) {
+        // 顺手扫掉已取消的那几个。从前这里只增不减：一个长命宿主（`AppState`、窗口控制器）
+        // 每 `cancelAll()` 一轮再重订一轮，数组就长一截，攒的是一整程不会回收的续体。
+        //
+        // 只能扫「已取消」这一位：`Task` 没有同步问得出的「跑完了没有」——那要 `await`，
+        // 而这里是同步入口。够用了，本类批量释放的入口就是 `cancelAll()` / `deinit`，
+        // 两者都走取消这条路。自然跑完（被观察对象没了、流终止）的那几个仍会留着，
+        // 它们本来也已经没有续体可跑，留着只占一个引用。
+        tasks.removeAll { $0.isCancelled }
         tasks.append(task)
     }
 
@@ -86,21 +95,63 @@ extension TaskBag {
     /// 迁移时把消费方**真正读的那几项**装成一个元组传进来，行为与原来等价，
     /// 而与它无关的写入不再把它叫醒。
     ///
-    /// 用法：`observers.observeAny({ (model.items, model.sort, model.filter) }) { … }`
+    /// 元组没有 Equatable，所以**不会去重**（与 `objectWillChange` 同口径）。
     ///
-    /// 元组没有 Equatable，所以：**不会去重**（与 `objectWillChange` 同口径），
-    /// 也**没有** `observe` 那道基线保护——登记到首次跑起来之间的改动会被当成「当前值」丢掉。
-    /// 这里的消费方都是 `setNeedsRefresh()` 这种幂等合批入口，页面自己的首次加载另有其路，
-    /// 漏掉启动那一下没有后果；要是哪天用在别处，先想清楚这一条。
+    /// **但「丢首值」这一手不是 `dropFirst()`。** 这里与 `observe` 守的是同一条：
+    /// 订阅登记之后、`Task` 第一次跑起来之前的那段窗口里如果值就变了，`Observations`
+    /// 的首个元素已经是**新值**，`dropFirst()` 会把这条改动整个吞掉、等多久都不来。
+    ///
+    /// 元组比不了值，所以基线换了一种问法：登记那一刻同步挂一个一次性的
+    /// `withObservationTracking`——它在快照里**任何一项第一次被写**时置位。首个元素到货时
+    /// 这一位还是假，就说明期间没人改过，那才是该丢的「当前值」；已经置位了就照发。
+    /// 「值变成了什么」问不出来，「有没有人改过」问得出来，而这里要的正是后者。
+    ///
+    /// 两处代价，都比静默丢事件划算：
+    ///
+    /// - 那道 `withObservationTracking` 若一直没人触发，它的登记会留在被观察对象的
+    ///   registrar 上直到对象析构（没有撤销 API）。每个调用点一份、捕获的只是一个
+    ///   `Atomic<Bool>`，21 个调用点合起来不到 2 KB。
+    /// - 首个元素到货**之后**才发生的第一次写也会置位，于是极小概率多发一次。
+    ///   消费方都是 `setNeedsRefresh()` 这种幂等合批入口，多一次无害；
+    ///   少一次才是要命的（那正是这段代码在修的）。
+    ///
+    /// 用法：`observers.observeAny({ (model.items, model.sort, model.filter) }) { … }`
     func observeAny<Snapshot: Sendable>(
         _ snapshot: @escaping @MainActor @Sendable () -> Snapshot,
         onChange: @escaping @MainActor () -> Void
     ) {
+        let baseline = ObservationBaseline()
+        withObservationTracking {
+            _ = snapshot()
+        } onChange: {
+            baseline.raise()
+        }
         add(Task { @MainActor in
-            for await _ in Observations(snapshot).dropFirst() {
+            var isFirst = true
+            for await _ in Observations(snapshot) {
                 if Task.isCancelled { return }
+                if isFirst {
+                    isFirst = false
+                    // 期间没人改过 ＝ 这就是要丢掉的「当前值」。
+                    if !baseline.wasRaised { continue }
+                }
                 onChange()
             }
         })
     }
+}
+
+/// 「登记之后有没有人写过」这一位。`observeAny` 的基线就是它。
+///
+/// 为什么要个盒子：`Atomic` 是 `~Copyable` 的，进不了逃逸闭包，只能挂在一个引用类型上
+///（同形的现成物是 `Services/LoudnessStore.swift` 的 `LoudnessScanCancellation`）。
+/// 为什么必须是原子的而不是裸 `var`：`withObservationTracking` 的 `onChange` 由被观察
+/// 属性的 `willSet` 调，**谁在写谁就在调**，不保证落在主线程上。
+private final class ObservationBaseline: Sendable {
+    private let raised = Atomic<Bool>(false)
+
+    init() {}
+
+    func raise() { raised.store(true, ordering: .relaxed) }
+    var wasRaised: Bool { raised.load(ordering: .relaxed) }
 }
