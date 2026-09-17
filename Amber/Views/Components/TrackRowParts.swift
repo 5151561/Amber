@@ -191,6 +191,10 @@ final class TrackRowRatingView: NSButton {
             stars.append(view)
         }
         setAccessibilityRole(.slider)
+        // 标签说「这是什么」、值说「现在是多少」，与另外四条自绘滑块同解
+        // （`MiniPlayerView:1093` 是「播放进度」+ mm:ss）。从前这里把值写进了标签、
+        // 值一直是空的：报着 `.slider` 却没有 value，VoiceOver 念不出当前档位。
+        setAccessibilityLabel("评分")
     }
 
     @available(*, unavailable)
@@ -203,8 +207,25 @@ final class TrackRowRatingView: NSButton {
                 ? TrackRowKit.key
                 : TrackRowKit.key.withAlphaComponent(R.emptyOpacity)
         }
-        setAccessibilityLabel(value == 0 ? "未评分" : "\(value) 星")
-        toolTip = value == 0 ? "未评分" : "\(value) 星"
+        // 值写在这里而不是 `init`：同一只视图会被表格复用、评分也能当场改
+        //（右键菜单、⌘1…⌘5），只在建视图那一次写等于永远停在建的那一刻。
+        let description = value == 0 ? "未评分" : "\(value) 星"
+        setAccessibilityValue(description)
+        toolTip = description
+    }
+
+    /// `.slider` 这个 role 许诺了「能调」，所以把 VoiceOver 的 ⌃⌥→ / ⌃⌥← 接上，
+    /// 落点与鼠标点星同一条（`onRate`）。0 星 = 未评分，是合法档位，所以下界是 0。
+    override func accessibilityPerformIncrement() -> Bool {
+        guard rating < 5 else { return false }
+        onRate?(rating + 1)
+        return true
+    }
+
+    override func accessibilityPerformDecrement() -> Bool {
+        guard rating > 0 else { return false }
+        onRate?(rating - 1)
+        return true
     }
 
     /// 五颗星占的总宽（左对齐排在 `Rating.rowWidth` 的槽里）。
