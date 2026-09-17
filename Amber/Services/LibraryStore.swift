@@ -1384,11 +1384,19 @@ final class LibraryStore: ObservableObject {
         rebuildAlbumIndex()
     }
 
-    private static let trackSelect = """
-        SELECT id, kind, title, artist_name, artist_id, album_name, album_id, artwork_url,
-               duration, track_number, disc_number, media_mid, lossless_available
-        FROM track
-        """
+    /// `decodeTrack` 认的那份列序，**只此一份**。
+    ///
+    /// `prefix` 是 SQL 里 `track` 表的别名加点（`"t."`）：连接查询里 `library_album`
+    /// 有 `id`/`kind`/`artist_name` 等同名列，不加前缀 SQLite 报 ambiguous。
+    /// 抄一份带前缀的常量出来是行不通的——列序与 `decodeTrack` 的序号一一对应，
+    /// 两份哪天漂移半列，读出来的是「艺人名当标题」这种编译器抓不到的错。
+    private static func trackColumns(prefix: String = "") -> String {
+        ["id", "kind", "title", "artist_name", "artist_id", "album_name", "album_id",
+         "artwork_url", "duration", "track_number", "disc_number", "media_mid",
+         "lossless_available"].map { prefix + $0 }.joined(separator: ", ")
+    }
+
+    private static let trackSelect = "SELECT \(trackColumns()) FROM track"
 
     /// 列序就是上面那条 `SELECT` 的书写顺序（`Row` 按序号取，见它的注释）。
     ///
@@ -1406,10 +1414,15 @@ final class LibraryStore: ObservableObject {
               losslessAvailable: row.optBool(12))
     }
 
+    /// `decodeAlbum` 认的那份列序，只此一份（理由同 `trackColumns`）。
+    /// 与落库那头的 `albumColumns`（`SET` 子句）不是一回事：那份不含 `id`、多一列 `album_key`。
+    private static let albumSelectColumns = """
+        id, kind, name, artist_name, artist_id, artwork_url, publish_date, track_count,
+        description, genre, album_type, added_at
+        """
+
     private static let albumSelect = """
-        SELECT id, kind, name, artist_name, artist_id, artwork_url, publish_date, track_count,
-               description, genre, album_type, added_at
-        FROM library_album ORDER BY position
+        SELECT \(albumSelectColumns) FROM library_album ORDER BY position
         """
 
     private static func decodeAlbum(_ row: Row) -> (album: Album, addedAt: Date?) {
@@ -1511,7 +1524,54 @@ final class LibraryStore: ObservableObject {
         do {
             try db.transaction { try body(db) }
         } catch {
+            // 这一刻起表可能与内存对不上了。读路径里读表的那几条派生查询要知道
+            // 这件事，否则界面当场就是错的（见 `mirrorIsStale`）。
+            mirrorIsStale = true
             NSLog("[LibraryStore] %@ 落库失败：%@", label, String(describing: error))
+        }
+    }
+
+    /// 主库这份镜像还信不信得过。
+    ///
+    /// **这是「关系查询下沉 SQL」那一步多出来的失败形状，从前没有。** 派生查询读内存数组
+    /// 的年代，一次 `persist` 写失败（磁盘满、IO 错、库被谁设成只读）只丢持久化——
+    /// 界面当场还是对的，助手全是「按内存现值整行写」，下一次成功的写会把它补齐。
+    /// 读路径换成表之后，同一次写失败会让**这一屏当场就是错的**：刚入库的碟不出现在
+    /// 艺人页上、刚删掉的歌还列着，不用等重启。写库失败从「只丢持久化」变成了
+    /// 「连当场的正确性一起丢」，而 `persist` 是**吞错只记日志**的（见它自己的注释），
+    /// 用户连一声都听不到。
+    ///
+    /// 处置：写失败就把这一位竖起来，几条读表的派生查询一律退回内存那份现算。
+    /// **内存数组仍然是真值，SQL 只是加速器。**
+    ///
+    /// 为什么是这个处置而不是别的：
+    ///
+    /// - **退回内存不是为这条失败形状新造的机关。** 读路径本来就得有个兜底——库没开
+    ///   起来（`AmberDatabase.shared` 失败时 `database` 就是 nil）、查询抛错，都得答得
+    ///   出东西来。兜底答什么是唯一的选择题，而「答空数组」是把一次写失败放大成
+    ///   「资料库看着像空的」。既然非有不可，就让它答对的那份。
+    /// - **不自愈、也不重试。** 要让表追上内存，得把内存整份重新镜像一遍，而那正是
+    ///   阶段 3 拆掉的「整份重写」——为一条错误路径把它请回来，等于给这次改造最主要的
+    ///   那条动机留了个后门。持久化这一头的损失照旧由下一次成功的写补齐（写失败多半
+    ///   不是一次性的：磁盘满就是满着），当场的正确性这一头由这一位兜住。
+    /// - **不向界面报错。** 24 个改动点全是「用户点了一下」的路径，界面层对
+    ///   「落库失败」没有任何有意义的处置，这一条与 `persist` 吞错是同一个判断。
+    ///
+    /// 于是这一步之后的口径与这一步之前逐字相同：**写库失败只丢持久化，不丢当场的正确性。**
+    private(set) var mirrorIsStale = false
+
+    /// 派生查询走 SQL 那条路的唯一入口：走得通答结果，走不通答 nil。
+    ///
+    /// 三种走不通：这一程写失败过（表可能陈旧，见 `mirrorIsStale`）、库根本没开起来、
+    /// 查询抛错。调用方收到 nil 就退回内存那份现算——那份是语义的定义，SQL 是加速器。
+    private func derived<T>(_ sql: String, _ binds: [any SQLBindable],
+                            _ decode: (Row) -> T) -> [T]? {
+        guard !mirrorIsStale, let db = database?.sqlite else { return nil }
+        do {
+            return try db.query(sql, binds, decode)
+        } catch {
+            NSLog("[LibraryStore] 派生查询失败，这一次退回内存现算：%@", String(describing: error))
+            return nil
         }
     }
 
@@ -1833,6 +1893,27 @@ final class LibraryStore: ObservableObject {
     /// 早先是「id 相同 **或** 专辑名相同」，那个 `||` 会把同名碟整个串起来：
     /// 资料库里两张《太阳之子》（本地导入的一张、QQ 的一张）时，
     /// 艺人页上两个《太阳之子》块各自列的都是**两张碟的曲目并集**。
+    ///
+    /// ## 这一条还没有下沉 SQL，是有意留着的
+    ///
+    /// 旁边三条（`libraryArtists()` / `albums(byArtist:)` / `tracks(byArtist:)`）都换成
+    /// 读表了，这条没换：它有**三个逐行调用点**，而「一次绘制一行就查一次库」是明令
+    /// 不许出现的形状——
+    ///
+    /// - `LibraryArtistsViewController.tableView(_:heightOfRow:)`：`reloadData` 会对
+    ///   **每一行**问一次高度，一屏 40 张碟就是 40 次；
+    /// - 同一个类的 `tableView(_:viewFor:row:)`：滚动时每滚进一行问一次；
+    /// - `ArtistPageCards.ArtistReleaseCardView.apply(_:)`：集合视图的条目复用点，
+    ///   同样是滚一行走一次。
+    ///
+    /// 要下沉得先把它从这三处提出来（在 `updateDetailContent()` 建 `detailRows` 时
+    /// 一次算好、连着行一起带下去），而那是改资料库 VC 的 refresh 结构——
+    /// 这次改造明确不碰的东西。**先提再沉，顺序反了就是把一次查询塞进滚动路径。**
+    ///
+    /// 顺带记一笔免得被当成「反正现在也慢」：今天这条是 `libraryTracks` 全扫，
+    /// 没有 `albumId` 的曲目每首还要现算一次 `fallbackKey`（trim + lowercase + join），
+    /// 所以逐行调用**今天就已经是 O(曲目总数)**。下沉之后走的是 `track_album_id`
+    /// 索引，量大了反而更快——这三处要修的是形状，不是「SQL 比内存慢」。
     func tracks(in album: Album) -> [Track] {
         let tracks = libraryTracks.filter { Self.belongs($0, to: album) }
         if tracks.isEmpty { return tracks }
@@ -1850,22 +1931,46 @@ final class LibraryStore: ObservableObject {
     /// `ITArtistsSplitViewModel.buildArtistArray` 同一语义）。Amber 没有独立艺人条目，
     /// 更没有本地艺人照——头像由界面层按艺人名向音源解析（LibraryArtistsPage 与
     /// 搜索页资料库范围同法），这里一律给 nil，**不能**拿专辑封面顶替。
+    ///
+    /// **候选从哪儿来交给 SQL，去重与排序留在这儿。** 最后那一道
+    /// `localizedStandardCompare` 是自然序 + 本地化，SQLite 的 `ORDER BY` 给不出来
+    /// （理由见 `sortedByTitleWithinGroups`），所以 SQL 只负责按入库先后把
+    /// 「专辑的艺人名在前、单曲的在后」这份候选序列吐出来。
     func libraryArtists() -> [Artist] {
-        var names: [String] = []
-        var kinds: [String: ProviderKind] = [:]
-        for album in libraryAlbums {
-            let name = album.artistName
-            guard !name.isEmpty else { continue }
-            if kinds[name] == nil {
-                kinds[name] = album.kind
-                names.append(name)
-            }
+        guard let candidates = derived(Self.artistCandidatesSelect, [], {
+            (name: $0.text(0), kind: ProviderKind(rawValue: $0.text(1)) ?? .netease)
+        }) else {
+            return Self.artists(from: libraryAlbums.map { ($0.artistName, $0.kind) }
+                                + libraryTracks.map { ($0.artistName, $0.kind) })
         }
-        for track in libraryTracks {
-            let name = track.artistName
-            guard !name.isEmpty, kinds[name] == nil else { continue }
-            kinds[name] = track.kind
-            names.append(name)
+        return Self.artists(from: candidates)
+    }
+
+    /// 艺人候选：入库专辑在前（`tier = 0`）、资料库曲目在后，各自按 `position`。
+    ///
+    /// 空艺人名不在 SQL 里筛掉——`artists(from:)` 本来就跳过它们，
+    /// 筛在哪一头是个选择，而**让两条路吃同一份规则**比省几行扫描重要。
+    private static let artistCandidatesSelect = """
+        SELECT name, kind FROM (
+            SELECT artist_name AS name, kind, 0 AS tier, position AS ord FROM library_album
+            UNION ALL
+            SELECT t.artist_name, t.kind, 1, lt.position
+              FROM library_track lt JOIN track t ON t.id = lt.track_id
+        ) ORDER BY tier, ord
+        """
+
+    /// 候选序列 →（首次出现者赢的去重、按名称排序、成型）。
+    ///
+    /// **SQL 那条路与内存那条路共用这一段**，两条路的差别只剩「候选从哪儿来」。
+    /// 抄成两份的话，哪天改了去重口径（比如改成大小写无关）就会出现「表里那份艺人页
+    /// 与写失败之后那份艺人页不一样」这种查无可查的不一致。
+    private static func artists(from candidates: [(name: String, kind: ProviderKind)]) -> [Artist] {
+        var kinds: [String: ProviderKind] = [:]
+        var names: [String] = []
+        for candidate in candidates {
+            guard !candidate.name.isEmpty, kinds[candidate.name] == nil else { continue }
+            kinds[candidate.name] = candidate.kind
+            names.append(candidate.name)
         }
         return names
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -1879,12 +1984,51 @@ final class LibraryStore: ObservableObject {
     }
 
     /// 某位艺人在资料库里的专辑（艺人名匹配），保持「最近添加」在前。
+    ///
+    /// SQLite 的 `=` 是逐字节比，Swift 的 `==` 是 Unicode 规范等价——分解式的 `é`
+    /// 与预组合的 `é` 在 Swift 里相等、在 SQL 里不等。这里两头的名字都来自同一份数据
+    /// （`libraryArtists()` 派生出来的名字就是 `library_album.artist_name` 本身），
+    /// 字节一样，所以这道差别落不到实处；真要有一天名字来自用户输入，
+    /// 得在**写入时**归一化成一列，而不是在 SQL 里折（见 `SQLiteDatabase` 的第 4 条要点）。
     func albums(byArtist name: String) -> [Album] {
-        libraryAlbums.filter { $0.artistName == name }
+        derived(Self.albumsByArtistSelect, [name], { Self.decodeAlbum($0).album })
+            ?? libraryAlbums.filter { $0.artistName == name }
     }
 
+    private static let albumsByArtistSelect = """
+        SELECT \(albumSelectColumns) FROM library_album WHERE artist_name = ? ORDER BY position
+        """
+
     /// 某位艺人在资料库里的全部曲目（含未随整张碟入库的单曲），碟内按曲序、碟间按添加先后。
+    ///
+    /// 排序切成两半：**SQL 排碟序与碟内曲序，标题那一级在 Swift 里**——
+    /// 为什么非这么切不可，见 `sortedByTitleWithinGroups`。
     func tracks(byArtist name: String) -> [Track] {
+        guard let rows = derived(Self.tracksByArtistSelect, [name], {
+            (track: Self.decodeTrack($0), albumOrder: $0.optInt(13))
+        }) else { return tracksByArtistInMemory(name) }
+        return Self.sortedByTitleWithinGroups(rows)
+    }
+
+    /// 碟序那一道的三种情形照 `tracksByArtistInMemory` 逐字对：
+    ///
+    /// - 两边都落在资料库专辑上 → 按 `library_album.position` 比；
+    /// - 一边落不上（没有 `albumId`，或那张碟不在资料库里）→ **落不上的排在前面**。
+    ///   `ORDER BY (a.position IS NOT NULL)` 给 NULL 那边 0、有值那边 1，正是这个方向。
+    ///   （内存那份是 `case (.some, .none): return false` / `(.none, .some): return true`，
+    ///   看着反直觉，但它是现行行为，这次只搬家不改语义。）
+    private static let tracksByArtistSelect = """
+        SELECT \(trackColumns(prefix: "t.")), a.position
+          FROM library_track lt
+          JOIN track t ON t.id = lt.track_id
+          LEFT JOIN library_album a ON a.id = t.album_id
+         WHERE t.artist_name = ?
+         ORDER BY (a.position IS NOT NULL), a.position,
+                  COALESCE(t.disc_number, 0), COALESCE(t.track_number, 0)
+        """
+
+    /// SQL 走不通时的那条路，同时也是上面那条查询的**语义定义**。
+    private func tracksByArtistInMemory(_ name: String) -> [Track] {
         let albumOrder = Dictionary(uniqueKeysWithValues:
             libraryAlbums.enumerated().map { ($1.id, $0) })
         return libraryTracks
@@ -1904,5 +2048,48 @@ final class LibraryStore: ObservableObject {
                 if leftNumber != rightNumber { return leftNumber < rightNumber }
                 return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
+    }
+
+    /// 补上最后一道比较子：**标题**。入参必须已经按前几道（碟序、碟号、音轨号）排好。
+    ///
+    /// ## 为什么标题这一级不能交给 SQLite
+    ///
+    /// 原来的第三道比较子是 `lhs.title.localizedStandardCompare(rhs.title)`
+    /// ——**自然序 + 本地化**：数字按值比（「第 2 首」排在「第 10 首」前面）、
+    /// 中文按本地化规则。SQLite 的 `ORDER BY title` 是按 UTF-8 **字节序**，
+    /// 「第 10 首」会跑到「第 2 首」前面。
+    ///
+    /// 危险的不是它错，是它**大部分歌看起来还对**：音轨号一路唯一时第三道比较子
+    /// 根本不出场，只有「同碟、同号、不同名」的那几首才轮得到它说话——碟号缺失的
+    /// 导入碟、音源没给曲号的歌单碟，正是这种。这一类改坏了没有人会报 bug。
+    ///
+    /// 所以切法是固定的：**SQL 只排到碟号与音轨号，标题这一级在 Swift 里、
+    /// 对已经缩到「SQL 认为并列」的那一小撮做。** 每一撮通常是 1 个元素
+    /// （`sorted` 都不会调用），代价与「让 SQLite 多排一列」没有可比性。
+    private static func sortedByTitleWithinGroups(
+        _ rows: [(track: Track, albumOrder: Int64?)]) -> [Track] {
+        /// SQL 认为这两行并列吗——它认为并列的，才轮得到标题说话。
+        func tied(_ lhs: (track: Track, albumOrder: Int64?),
+                  _ rhs: (track: Track, albumOrder: Int64?)) -> Bool {
+            lhs.albumOrder == rhs.albumOrder
+                && (lhs.track.discNumber ?? 0) == (rhs.track.discNumber ?? 0)
+                && (lhs.track.trackNumber ?? 0) == (rhs.track.trackNumber ?? 0)
+        }
+        var result: [Track] = []
+        result.reserveCapacity(rows.count)
+        var start = rows.startIndex
+        while start < rows.endIndex {
+            var end = rows.index(after: start)
+            while end < rows.endIndex, tied(rows[start], rows[end]) { end = rows.index(after: end) }
+            if rows.index(after: start) == end {
+                result.append(rows[start].track)
+            } else {
+                result.append(contentsOf: rows[start..<end].map(\.track).sorted {
+                    $0.title.localizedStandardCompare($1.title) == .orderedAscending
+                })
+            }
+            start = end
+        }
+        return result
     }
 }
