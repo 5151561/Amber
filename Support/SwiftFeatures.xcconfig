@@ -1,0 +1,36 @@
+// 本仓所有 Swift 语言/并发/内存安全开关的唯一落点。
+//
+// 为什么集中在这里：两个 target（Amber / AmberTests）× Debug/Release 共四份
+// buildSettings，直接写进 project.pbxproj 意味着每加一个开关要手抄四处，改错一处
+// 不报错、只是那一份配置悄悄少一个开关。放进 xcconfig 之后工程级引一次、target 继承，
+// 每次改动就是这一个文本文件，diff 一眼看完，回退就是注释掉一行。
+//
+// 签名那份串在这里，所以工程级只引本文件一份。
+#include "Signing.xcconfig"
+
+// MARK: - 语言模式
+//
+// 语言模式只有 4 / 4.2 / 5 / 6 —— 编译器原话：
+//   note: valid arguments to '-language-mode' are '4', '4.2', '5', '6'
+// 「6.0」的 .0 是 Xcode 的显示格式，不是小版本。编译器本身是 Swift 6.4
+// （Xcode 27 beta / swiftlang-6.4.0.30.4），6.1→6.4 给的是下面这些 upcoming feature
+// 开关和新 API，不是新语言模式。下一个语言模式是 7，尚未开放。
+//
+// SWIFT_VERSION 与 SWIFT_STRICT_CONCURRENCY / SWIFT_APPROACHABLE_CONCURRENCY
+// 仍在 pbxproj 的 target 级，本文件只承载「本轮新加」的开关。
+
+// MARK: - Swift 7 语言模式的 upcoming feature
+//
+// 下面这些 feature 在语言模式 7 会默认打开（`swift-frontend -print-supported-features`
+// 里 enabled_in = 7）。提前开等于把那笔债现在还掉，而不是等语言模式 7 落地时一次性爆。
+
+// InternalImportsByDefault（SE-0409）：`import` 默认 internal 而非 public。
+// 对 App target 是空转（实测 0 条诊断）——App 不对外暴露 API，没有 public import 可言。
+// 开它的价值是语言模式 7 落地时不会突然冒出来。
+SWIFT_UPCOMING_FEATURE_INTERNAL_IMPORTS_BY_DEFAULT = YES
+
+// ImmutableWeakCaptures：捕获列表里的 weak 引用变成不可变。实测 0 条诊断。
+//
+// 这一个**没有对应的 Xcode build setting**（Xcode 27 的 Swift.xcspec 里查无此项），
+// 只能走 OTHER_SWIFT_FLAGS。$(inherited) 必须写：后面再叠 flag 时不写就会覆盖掉前一个。
+OTHER_SWIFT_FLAGS = $(inherited) -enable-upcoming-feature ImmutableWeakCaptures
