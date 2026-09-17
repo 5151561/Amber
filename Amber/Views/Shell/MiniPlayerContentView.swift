@@ -234,6 +234,9 @@ final class MiniPlayerContentView: NSView {
     /// [实测] `debugBgObserver`（+72）：`miniplayer_backdrop` 上的 KVO，**热生效**。
     private var backdropPreferenceObserver: NSKeyValueObservation?
 
+    /// 「减弱透明度」的观察器（审查单 §2.5-7）。Amber 自己加的一条，原版没有。
+    private var accessibilityPreferenceObserver: (any NSObjectProtocol)?
+
     /// 当前封面的 CGImage。重建底衬之后要把它重喂一遍（[实测] 尾段
     /// `largeArtwork.onAssignBlock?(artwork.currentImage)`）。
     private var currentArtwork: CGImage?
@@ -324,6 +327,18 @@ final class MiniPlayerContentView: NSView {
         ) { [weak self] _, _ in
             // KVO 回调在改偏好的那条线程上发，先回主线程再动视图树。
             Task { @MainActor in
+                guard let self else { return }
+                self.updateBackdropStyle(for: self.currState)
+            }
+        }
+        // [HIG] 「减弱透明度」同样热生效，而且两个方向都要走得通：打开时退回毛玻璃、
+        // 关掉时换回 Metal。观察点必须在**宿主**这边——打开着的时候那只 Metal 视图
+        // 根本不在场，挂在它身上的观察器等不到「关掉」那一下。
+        accessibilityPreferenceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.updateBackdropStyle(for: self.currState)
             }
@@ -503,8 +518,12 @@ final class MiniPlayerContentView: NSView {
     /// 关着，宽度被 `limitWidthToMaximum(600)` 夹住，过不了 600 那条分界线（spec §3.3），
     /// 而且 §11.4 的版式也还没做。判据照写，等版式补上就自然生效。
     private func updateBackdropStyle(for state: Int) {
-        let style = MiniPlayerStates.backdropStyle(
+        var style = MiniPlayerStates.backdropStyle(
             state: state, preference: UserDefaults.standard.miniplayer_backdrop)
+        // [HIG] 「减弱透明度」：Metal 那一支是自绘的，系统替它降级不了（理由写在
+        // `MiniPlayerBackdropMetalView.reducesTransparency` 上）。命中就退回毛玻璃那一支
+        // ——`NSVisualEffectView` 自己会在这项打开时变成实心，不必这边再定义「实心长什么样」。
+        if MiniPlayerBackdropMetalView.reducesTransparency { style = 0 }
         guard style != backdropStyle else { return }
         backdropStyle = style
         rebuildBackdrop()
@@ -1017,6 +1036,9 @@ final class MiniPlayerContentView: NSView {
         mouseStartingInterestTimer?.invalidate()
         let center = NotificationCenter.default
         focusObservers.forEach(center.removeObserver)
+        if let accessibilityPreferenceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityPreferenceObserver)
+        }
     }
 
     /// 有「兴趣」（指针在窗内、或窗口刚拿到焦点）就露出来；没有就起表，到点淡掉。
@@ -1365,7 +1387,7 @@ private final class MPArtworkBlurView: NSView {
     var sourceImage: CGImage? {
         didSet {
             guard sourceImage !== oldValue else { return }
-            renderedKey = nil
+            invalidateRender()
             renderIfNeeded()
         }
     }
@@ -1374,6 +1396,14 @@ private final class MPArtworkBlurView: NSView {
     private let dimming = CAGradientLayer()
     /// 烘好的那张图对应的输入（源图 + 像素尺寸），两者都没变就不重烘。
     private var renderedKey: (source: CGImage, size: CGSize)?
+    /// **正在后台烘**的那一档。与 `renderedKey` 分开：投递出去到贴回来之间，
+    /// 拖窗会把 `layout()` 打上几十遍，只靠 `renderedKey` 挡不住重复投递。
+    private var pendingKey: (source: CGImage, size: CGSize)?
+    /// 每次投递自增。烘好的画布拿着投递时的号回来，对不上就是过期画布，丢掉——
+    /// 实时拖窗时每一档新尺寸都投一次，后发的先回来是常态。
+    private var renderToken: UInt64 = 0
+    /// `CIContext` 是 `NS_SWIFT_SENDABLE` 的（头文件里就这么标的），可以直接交给
+    /// 后台那一路用，不必每烘一次新建一个。
     private let ciContext = CIContext()
 
     override init(frame frameRect: NSRect) {
@@ -1415,17 +1445,30 @@ private final class MPArtworkBlurView: NSView {
     /// 原样重设一遍重取一次 CGImage（模板/动态色封面才有区别）。
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        renderedKey = nil
+        invalidateRender()
         renderIfNeeded()
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        renderedKey = nil
+        invalidateRender()
         renderIfNeeded()
     }
 
+    /// 作废「已烘」与「在烘」两份记账，并把在飞的那一趟的号推过去。
+    /// 源图/外观/倍率一变，尺寸没变也必须重烘，光清 `renderedKey` 会被 `pendingKey` 挡住。
+    private func invalidateRender() {
+        renderedKey = nil
+        pendingKey = nil
+        renderToken &+= 1
+    }
+
     /// 把封面底片烘成「自上而下 0 → 满」的变半径模糊图，贴进 `layer.contents`。
+    ///
+    /// 烘这一趟（`CIMaskedVariableBlur` + `createCGImage`）**不在主线程做**：它从前挂在
+    /// `layout()` 里，实时拖窗时每一档新尺寸都要同步烘一次，拖动就是一卡一卡的。
+    /// 现在投给 `bake` 那条 `@concurrent` 的路，算完回主 actor 贴——**这期间旧画布照旧
+    /// 显示**（不清 `contents`），所以看不到中间的空窗。
     private func renderIfNeeded() {
         let scale = amberWindow?.backingScaleFactor ?? 2
         let px = CGSize(width: (bounds.width * scale).rounded(),
@@ -1433,11 +1476,46 @@ private final class MPArtworkBlurView: NSView {
         // [实测] `setFrameSize:` 里高 ≤ 0 直接跳过。
         guard px.width > 0, px.height > 0, let source = sourceImage else {
             layer?.contents = nil
-            renderedKey = nil
+            invalidateRender()
             return
         }
         if let key = renderedKey, key.source === source, key.size == px { return }
+        if let key = pendingKey, key.source === source, key.size == px { return }
 
+        renderToken &+= 1
+        let token = renderToken
+        pendingKey = (source, px)
+        // [实测] radius 10 是**点**；CI 这一路的输入是像素图，所以按 backing scale 换算。
+        let radius = M.artworkBlurRadius * scale
+        let rampEnd = M.artworkBlurRampEnd
+        let context = ciContext
+        Task { [weak self] in
+            let baked = await Self.bake(source: source, px: px, radius: radius,
+                                        rampEnd: rampEnd, context: context)
+            guard let self, self.renderToken == token, let baked else {
+                // 号对不上＝这趟的输入已经过时（拖窗时后发的先回来是常态）：
+                // 连 `pendingKey` 都不动，让当值的那一趟自己收尾。
+                if let self, self.renderToken == token { self.pendingKey = nil }
+                return
+            }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.layer?.contents = baked
+            self.layer?.contentsScale = scale
+            CATransaction.commit()
+            self.renderedKey = (source, px)
+            self.pendingKey = nil
+        }
+    }
+
+    /// 烘那一趟本身。`@concurrent`：SE-0461 之后非隔离 async 函数默认继承调用方隔离，
+    /// 不标就还是在主 actor 上跑，等于什么都没搬（同 `MusicProvider` 那 17 处的理由）。
+    ///
+    /// 入参全是 `Sendable` 的：`CGImage` 与 `CIContext` 头文件里就标着；
+    /// `CIFilter` 不是，所以滤镜在这一路里现建。
+    @concurrent
+    private nonisolated static func bake(source: CGImage, px: CGSize, radius: CGFloat,
+                                         rampEnd: CGFloat, context: CIContext) async -> CGImage? {
         // ① 底片：[实测] `contentsRect = (0, 0, 1, h/w)`——源图最下面、与本视图同宽高比的那一条。
         let fraction = min(1, px.height / px.width)
         let sliceHeight = max(1, (CGFloat(source.height) * fraction).rounded())
@@ -1445,7 +1523,7 @@ private final class MPArtworkBlurView: NSView {
                           width: CGFloat(source.width), height: sliceHeight)
         guard let slice = source.cropping(to: crop),
               let gradient = CIFilter(name: "CILinearGradient"),
-              let blur = CIFilter(name: "CIMaskedVariableBlur") else { return }
+              let blur = CIFilter(name: "CIMaskedVariableBlur") else { return nil }
 
         // ② 拉到本视图的像素尺寸（原版靠 `contentsGravity = .resizeAspectFill` 做同一件事）。
         let source0 = CIImage(cgImage: slice)
@@ -1456,28 +1534,20 @@ private final class MPArtworkBlurView: NSView {
         // ③ 遮罩：CI 的原点在左下，所以白（满半径）在**下沿**，往上到
         //    `artworkBlurRampEnd` 那一档转黑（不糊）；`CILinearGradient` 两端各自延伸出去，
         //    正好等价于原版那张「画到 2/3 处再把末色铺满」的渐变图。
-        gradient.setValue(CIVector(x: 0, y: px.height * (1 - M.artworkBlurRampEnd)), forKey: "inputPoint0")
+        gradient.setValue(CIVector(x: 0, y: px.height * (1 - rampEnd)), forKey: "inputPoint0")
         gradient.setValue(CIColor.white, forKey: "inputColor0")
         gradient.setValue(CIVector(x: 0, y: px.height), forKey: "inputPoint1")
         gradient.setValue(CIColor.black, forKey: "inputColor1")
         // ★ 遮罩必须裁成有限矩形：`CILinearGradient` 的输出 extent 是无限的，
         //   直接喂进去输出也无限，合成器渲染不出来——那一块就成了一个纯透明的洞
         //   （用户实机打回：「这个框内容都没了」）。
-        guard let mask = gradient.outputImage?.cropped(to: rect) else { return }
+        guard let mask = gradient.outputImage?.cropped(to: rect) else { return nil }
 
         blur.setValue(scaled.clampedToExtent(), forKey: kCIInputImageKey)
         blur.setValue(mask, forKey: "inputMask")
-        // [实测] radius 10 是**点**；CI 这一路的输入是像素图，所以按 backing scale 换算。
-        blur.setValue(M.artworkBlurRadius * scale, forKey: kCIInputRadiusKey)
-        guard let output = blur.outputImage?.cropped(to: rect),
-              let baked = ciContext.createCGImage(output, from: rect) else { return }
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer?.contents = baked
-        layer?.contentsScale = scale
-        CATransaction.commit()
-        renderedKey = (source, px)
+        blur.setValue(radius, forKey: kCIInputRadiusKey)
+        guard let output = blur.outputImage?.cropped(to: rect) else { return nil }
+        return context.createCGImage(output, from: rect)
     }
 }
 
@@ -1557,25 +1627,44 @@ private final class MPCoverView: NSView {
         // 封面会留在层上（同 `MiniArtworkView.setArtwork`）。
         guard request != requestedURL || request == nil else { return }
         requestedURL = request
+        loadTask?.cancel()
+        loadTask = nil
+        // 内存里已经有就当场贴，**不先置空**：哪怕图早就在 `NSCache` 里，
+        // 「先 `contents = nil` → 下一轮微任务回填」也必定让顶块白一帧，换歌时那下
+        // 闪动就是它（`ImageCache.memoryCachedImage` 的头注写的正是这条路）。
+        // 底衬与模糊层跟着 `onAssign` 走，命中时同样不必先收到一个 nil 再收真图。
+        if let cached = ImageCache.shared.memoryCachedImage(for: request) {
+            show(cached)
+            return
+        }
         artwork.contents = nil
         artwork.isHidden = true
         placeholderGlyph.isHidden = false
         onAssign?(nil)
-        loadTask?.cancel()
         loadTask = Task { [weak self] in
             let image = await ImageCache.shared.image(for: request)
             guard let self, !Task.isCancelled, self.requestedURL == request,
                   let image else { return }
-            // 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
-            let cgImage = image.amberCGImage
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.artwork.contents = cgImage ?? image
-            self.artwork.isHidden = false
-            CATransaction.commit()
-            self.placeholderGlyph.isHidden = true
-            self.onAssign?(cgImage)
+            self.show(image)
         }
+    }
+
+    /// 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
+    private func show(_ image: NSImage) {
+        let cgImage = image.amberCGImage
+        let contents: Any
+        if let cgImage {
+            contents = cgImage
+        } else {
+            contents = image
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        artwork.contents = contents
+        artwork.isHidden = false
+        CATransaction.commit()
+        placeholderGlyph.isHidden = true
+        onAssign?(cgImage)
     }
 }
 
