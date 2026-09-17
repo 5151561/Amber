@@ -78,12 +78,9 @@ final class ArtistDetailViewController: CatalogPageViewController {
         // 内容到位后把封面喂给背景层。hero 那件卡上已经不装图了
         // （图钉在背景层，不随文稿滚），宽幅页头图优先、退回方头像——
         // 取哪张的逻辑与数据源对齐：见 `ArtistPageModel.backdropArtworkURL`。
-        pageModel.statePublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                guard case .content = state, let backdrop = self?.backdrop else { return }
-                backdrop.setArtwork(url: self?.pageModel.backdropArtworkURL)
-            }
-            .store(in: &cancellables)
+        observers.observeNow({ [pageModel] in pageModel.state }) { [weak self] state in
+            guard case .content = state, let backdrop = self?.backdrop else { return }
+            backdrop.setArtwork(url: self?.pageModel.backdropArtworkURL)
+        }
     }
 }

@@ -5,7 +5,7 @@ import SwiftUI
 /// 目录页（主页/新发现/广播）的一个条目，对应 Music 的 MappedItem → *LockupComponentItem
 /// 一张卡片（`lockup 规格` §1 的组件家族）。Music 的样式由服务端 MappedItem 字段决定；
 /// Amber 数据源固定，由各页的组装函数直接落 kind（HomePages.swift，标 [推]）。
-struct CatalogItem: Identifiable {
+struct CatalogItem: Identifiable, Sendable {
     enum Kind {
         /// 3:4 海报，白字压图（主页「专属推荐」的 Flowcase/Poster 卡）
         case poster
@@ -60,11 +60,11 @@ struct CatalogItem: Identifiable {
     /// 副标题（如艺人）的独立点击落点；支持点击直接进入艺人详情
     var subtitleRoute: Route? = nil
     /// 悬浮播放键
-    var onPlay: (() -> Void)? = nil
+    var onPlay: (@MainActor @Sendable () -> Void)? = nil
     /// 没有 `Route` 可推、点了却要跳转的卡的落点（资料库派生的艺人：跳回资料库
     /// 「艺人」页并选中那一行）。与 `onPlay` 分开是因为`onPlay` 会让卡片悬浮时
     /// 浮出一颗播放键，而艺人卡本来就不该有播放键。主点击顺序：`route` → `onOpen` → `onPlay`。
-    var onOpen: (() -> Void)? = nil
+    var onOpen: (@MainActor @Sendable () -> Void)? = nil
     /// `onOpen` 那一路在右键菜单里的项名（如「前往艺人」）。没有`route` 的卡
     /// 菜单本来是空的，这一条把同一个落点也摆进菜单。
     var openMenuTitle: String? = nil
@@ -84,7 +84,7 @@ struct CatalogItem: Identifiable {
 /// 目录页的一个分段。Music 的「货架还是网格、几行」是服务端下发的 presentation 字段
 /// （`lockup 规格` §0：shelf(numberOfRows:)/grid/adaptive/list 四 case）；
 /// Amber 由各页组装时直接定。多行货架在 Music 里是列优先排（radio.json：同列三行连续）。
-struct CatalogSection: Identifiable {
+struct CatalogSection: Identifiable, Sendable {
     enum Layout {
         case posters
         /// rows = 货架行数（列优先填充）
@@ -144,7 +144,7 @@ struct CatalogSection: Identifiable {
 
 /// CatalogPagePresenter.State 的三 case（`catalogpage 规格` §2.1 [TYPE]：
 /// content / error / loading，AppKit 宿主用 overlayViewController 呈现后两态）。
-enum CatalogPageState {
+enum CatalogPageState: Sendable {
     case loading
     case content(title: String, sections: [CatalogSection])
     case error(String)

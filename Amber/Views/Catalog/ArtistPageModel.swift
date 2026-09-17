@@ -25,9 +25,10 @@ import Foundation
 /// （网易 eapi `/api/artist/playlists` 实测 400），交不出来就整段省掉——
 /// 与目录页同一条规矩。
 @MainActor
-final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
+@Observable
+final class ArtistPageModel: CatalogPageModelProviding {
 
-    @Published private(set) var state: CatalogPageState = .loading
+    private(set) var state: CatalogPageState = .loading
 
     /// 艺人页不摆页面大标题（`CatalogPageViewController.showsPageTitle` 给 false），
     /// 这里给艺人名只是让协议有个说得通的值。
@@ -35,11 +36,11 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
     let emptyMessage = "这位艺人暂时没有可显示的内容。"
     let emptyImage = "music.mic"
 
-    var statePublisher: AnyPublisher<CatalogPageState, Never> { $state.eraseToAnyPublisher() }
-
     private let appState: AppState
     private let artist: Artist
-    private var reloadTask: Task<Void, Never>?
+    /// 任务句柄不是状态，参与观察只会白记一次依赖；而且 `deinit` 是 nonisolated 的，
+    /// 走观察访问器就碰不到它。
+    @ObservationIgnored private var reloadTask: Task<Void, Never>?
     /// 相似艺人单独取（见 `performReload`）；空就没有那一段。
     private var similarArtists: [Artist] = []
 
@@ -126,6 +127,12 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
     /// 白底 ▶ 播全部热门歌曲。
     private func heroSection(_ detail: ArtistDetail) -> CatalogSection {
         let tracks = detail.hotTracks
+        // 显式标类型：`onPlay` 现在是 `(@MainActor @Sendable () -> Void)?`，
+        // 三元里混着 `nil` 和闭包字面量时类型检查器推不出来（报的是
+        // 「failed to produce diagnostic for expression」这种它自己也说不清的错）。
+        let play: (@MainActor @Sendable () -> Void)? = tracks.isEmpty
+            ? nil
+            : { @MainActor @Sendable [appState] in appState.player.play(tracks) }
         let item = CatalogItem(
             id: "artist-hero-\(detail.artist.id)", kind: .artistHero,
             title: detail.artist.name,
@@ -134,7 +141,7 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
             artworkURL: detail.artist.bannerURL ?? detail.artist.avatarURL,
             description: detail.artist.description,
             route: .artist(detail.artist),
-            onPlay: tracks.isEmpty ? nil : { [appState] in appState.player.play(tracks) })
+            onPlay: play)
         return CatalogSection(id: "artist-hero", layout: .artistHero, items: [item])
     }
 
@@ -325,8 +332,7 @@ final class ArtistPageModel: ObservableObject, CatalogPageModelProviding {
 // MARK: - 主页 / 新发现 / 广播那台模型也走同一个协议
 
 /// `CatalogFeedModel` 的`title` / `emptyMessage` / `emptyImage` / `state` / `reload()`
-/// 本来就是这几样，只差一条把 `@Published` 抹成普通 publisher 的桥（协议里写不了
-/// `@Published`）。写成扩展是为了不动那个文件。
+/// 本来就是这几样。（以前这里还要补一条把 `@Published` 抹成 publisher 的桥，
+/// 换 `@Observable` 之后协议直接要求 `state` 本身，那条桥没了。）
 extension CatalogFeedModel: CatalogPageModelProviding {
-    var statePublisher: AnyPublisher<CatalogPageState, Never> { $state.eraseToAnyPublisher() }
 }

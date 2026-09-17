@@ -77,9 +77,10 @@ import SwiftUI
 /// 目录页引擎认的数据源。`CatalogFeedModel`（主页/新发现/广播）与
 /// `ArtistPageModel`（艺人页）都实现它，页面控制器只认这个协议。
 ///
-/// 两边都是 `ObservableObject + @Published var state`，但协议里不能直接写
-/// `@Published`，所以另开一条`statePublisher`（实现里就是`$state.eraseToAnyPublisher()`）。
-/// `@Published` 在 **willSet** 发布，订阅方一律`receive(on:)` 落到下一轮再读别的属性。
+/// 两边都是 `@Observable`。以前这里还有一条 `statePublisher`，是因为协议里写不了
+/// `@Published`、只好另开一条 `$state.eraseToAnyPublisher()` 的桥；`@Observable` 之后
+/// 观察的是属性本身，那条桥连同它要求的 `receive(on:)`（`@Published` 在 willSet 发布，
+/// 当场读别的属性会读到旧值）一起没了。
 @MainActor
 protocol CatalogPageModelProviding: AnyObject {
     /// 页面大标题（`showsPageTitle` 为假的页面不摆，只用于空态文案上下文）
@@ -87,7 +88,6 @@ protocol CatalogPageModelProviding: AnyObject {
     var emptyMessage: String { get }
     var emptyImage: String { get }
     var state: CatalogPageState { get }
-    var statePublisher: AnyPublisher<CatalogPageState, Never> { get }
     /// 换音源 / 首次上屏 / 错误页点「重试」
     func reload()
     /// 本地资料库那几段（最近播放 / 音乐回忆）变了：只重算它们，不发音源请求。
@@ -465,10 +465,7 @@ class CatalogPageViewController: ContentPageController {
             .sink { [weak self] in self?.refreshLibraryStateCards() }
             .store(in: &cancellables)
 
-        model.statePublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in self?.apply(state) }
-            .store(in: &cancellables)
+        observers.observeNow({ [model] in model.state }) { [weak self] state in self?.apply(state) }
 
         // 纵向滚动时把箭头跟着货架挪、卡片悬浮态跟着鼠标下面那张走、
         // 艺人页的钉住封面按滚动位置淡清晰层。滚轮不产生 mouseMoved，

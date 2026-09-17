@@ -23,17 +23,18 @@ import Foundation
 
 /// 结果页的数据源：把 `SearchResults` 折成目录页引擎认的分区。
 @MainActor
-final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
+@Observable
+final class SearchResultsModel: CatalogPageModelProviding {
 
     // MARK: 对外（结果页引擎 + 落地页看这三条）
 
     /// 目录页引擎的三态。搜索页**从不摆加载态**：新词条提交后旧结果原地留着，
     /// 等新结果到了再换（与 SwiftUI 版 `results` 只在拿到数据时赋值同一语义）。
-    @Published private(set) var state: CatalogPageState = .content(title: "搜索", sections: [])
+    private(set) var state: CatalogPageState = .content(title: "搜索", sections: [])
     /// 词条为空 = 落地页（SwiftUI 版 `committedTerm.isEmpty` 那一支）。
-    @Published private(set) var showsLanding = true
+    private(set) var showsLanding = true
     /// 最近搜索（落地页那一段）。
-    @Published private(set) var recentSearches: [String] = []
+    private(set) var recentSearches: [String] = []
 
     /// 结果页不摆页面大标题（`SearchResultsViewController.showsPageTitle` 给 false），
     /// 这一条只是让协议有个说得通的值。
@@ -41,8 +42,6 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
     /// 无结果时的居中空态（Music 实测「无结果 / 检查拼写或尝试新搜索词。」）。
     let emptyMessage = "无结果\n检查拼写或尝试新搜索词。"
     let emptyImage = "magnifyingglass"
-
-    var statePublisher: AnyPublisher<CatalogPageState, Never> { $state.eraseToAnyPublisher() }
 
     // MARK: 内部状态（原来是 `SearchView` 的 @State，一条不多一条不少）
 
