@@ -525,8 +525,7 @@ final class MiniPlayerView: NSView {
         track = newTrack
 
         if let newTrack {
-            artworkView.setArtwork(url: newTrack.artworkURL,
-                                   tint: NSColor(Color.tint(for: newTrack.kind)))
+            artworkView.setArtwork(url: newTrack.artworkURL)
             titleField.stringValue = newTrack.title
             subtitleField.stringValue = newTrack.albumName.isEmpty
                 ? newTrack.artistName
@@ -882,6 +881,7 @@ private final class MiniArtworkView: NSView {
         layer?.masksToBounds = true
         placeholder.startPoint = CGPoint(x: 0, y: 1)
         placeholder.endPoint = CGPoint(x: 1, y: 0)
+        ArtworkPlaceholder.fill(placeholder, for: self)
         layer?.addSublayer(placeholder)
         artwork.contentsGravity = .resizeAspectFill
         artwork.masksToBounds = true
@@ -890,7 +890,7 @@ private final class MiniArtworkView: NSView {
 
         placeholderGlyph.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        placeholderGlyph.contentTintColor = NSColor(white: 1, alpha: 0.75)
+        placeholderGlyph.contentTintColor = .amberArtworkPlaceholderGlyph
         addSubview(placeholderGlyph)
 
         dim.wantsLayer = true
@@ -927,9 +927,13 @@ private final class MiniArtworkView: NSView {
         expandGlyph.frame = bounds
     }
 
-    func setArtwork(url: String?, tint: NSColor) {
-        placeholder.colors = [tint.withAlphaComponent(0.85).cgColor,
-                              NSColor(Color.amberPurple).withAlphaComponent(0.55).cgColor]
+    /// 灰底是动态色，`cgColor` 解析一次就定死了，浅深切换要重铺。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        ArtworkPlaceholder.fill(placeholder, for: self)
+    }
+
+    func setArtwork(url: String?) {
         let request = ArtworkSize.url(url, points: ArtworkSize.row)
         // 「没有封面」这一路每次都走到底，别拿 `nil == nil` 当「没变」——那样上一首的封面
         // 会留在层上（同 `CatalogArtworkView.setArtwork`）。
