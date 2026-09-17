@@ -11,7 +11,7 @@ import AppKit
 /// 过渡切换动画用 crossfade，不做滑动：Music 的前进/后退也没有横向位移，
 /// 而且滑动会把还在拉数据的页面拖出一段空白。
 @MainActor
-final class ContentNavigationController: NSViewController {
+final class ContentNavigationController: NSViewController, NavigationIntentReceiving {
 
     private let appState: AppState
     private var stack: [StackEntry] = []
@@ -44,24 +44,46 @@ final class ContentNavigationController: NSViewController {
             self?.rebuildProviderRoots()
         }
 
-        // 「前往专辑 / 前往艺人」、目录卡片的 `NavigationLink` 垫片都只登记意图，
-        // 入栈在这里做（逻辑与旧 `MainView.onChange(of: appState.pendingRoute)` 相同）。
-        //
-        // **这里以前必须多挂一跳 `receive(on:)`**：`@Published` 在 **willSet** 发布，
-        // `appState.push(route)` 那次赋值的顺序是「发布 → 订阅同步跑完 → 外层赋值才把
-        // route 写进存储」，于是下面那句 `pendingRoute = nil` 写完立刻被外层赋值覆盖掉，
-        // 字段永远停在最后一条路由上（`.trackGrid` 能带上百个 `Track`，
-        // 见 design-ref/reactive-ui-review.md §2.1）。
-        //
-        // `Observations` 在值**落定之后**才发，这个坑从根上没了，那一跳也就不需要了。
-        //
-        // 但**仍然不是终态**：计划 §2 铁律 4 的终态是导航意图走响应链冒泡（或者至少换成
-        // 一条事件通道），别把「可变状态当一次性信箱」这条路留下来。
-        observers.observe({ [appState] in appState.pendingRoute }) { [weak self] route in
-            guard let self, let route else { return }
-            self.push(route)
-            self.appState.pendingRoute = nil
+        // 「前往专辑 / 前往艺人」那条不再在这里订阅——它现在沿响应链下来，
+        // 见下面的 `amberOpenRoute(_:)`。
+    }
+
+    // MARK: - 导航意图（响应链）
+
+    /// 「前往专辑 / 前往艺人」、目录卡片的落点、待播清单分区头的「来自《…》」——
+    /// 整个 App 的导航意图都经这一条进来。发起方是 `AppState.push` / `goToAlbum` /
+    /// `goToArtist` / `openLibraryArtist`，它们只 `sendAction`、不留状态
+    /// （`AGENTS.md` 界面层铁律 4）。
+    ///
+    /// 这里从前订的是 `appState.pendingRoute`：一个可变字段当一次性信箱，收到就入栈
+    /// 再写回 nil。删掉它的直接理由是 `.trackGrid` 那种落点能带上百个 `Track` 常驻在
+    /// 字段上（design-ref/reactive-ui-review.md §2.1「事件当状态存」）；顺带也把
+    /// 「`@Published` 在 willSet 发布，`= nil` 写完立刻被外层赋值覆盖」那个老坑的
+    /// 最后一点残留一起收了——`Observations` 早已把它从根上消掉，但信箱本身还在。
+    @objc func amberOpenRoute(_ sender: Any?) {
+        guard let intent = sender as? NavigationIntent else { return }
+        switch intent.destination {
+        case .route(let route):
+            push(route)
+        case .libraryArtist(let id):
+            openLibraryArtist(id: id)
         }
+    }
+
+    /// 跳到资料库「艺人」根页并选中某一行。**不是 push**：那一页是侧栏「艺人」的根页。
+    ///
+    /// `setRoot` 在这里**同步**调一次，而不是只写侧栏选中项等那条观察：`Observations`
+    /// 要到下一轮才到，而选中要交给的正是这一次换出来的那一页。侧栏高亮照旧写一份，
+    /// 它那条观察随后还会再调一次 `setRoot(for: .artists)`——同一份缓存根页，
+    /// `install` 只把它提到最前，幂等。
+    ///
+    /// **与信箱版的一处行为差**：艺人页上面压着二级页（艺人 → 专辑）时，从前
+    /// `sidebarSelection` 已经是 `.artists`、不换根，于是选中悄悄落在被压住的那一页上，
+    /// 用户还停在专辑页；现在换根会把压着的页出栈，真的跳过去——这才是这条意图的字面意思。
+    private func openLibraryArtist(id: String) {
+        appState.sidebarSelection = .artists
+        setRoot(for: .artists)
+        (top as? any LibraryArtistSelecting)?.selectLibraryArtist(id: id)
     }
 
     // MARK: - 栈
@@ -300,4 +322,13 @@ final class ContentNavigationController: NSViewController {
         page.view.alphaValue = 1
         page.removeFromParent()
     }
+}
+
+/// 资料库「艺人」页接「选中某位艺人」这一条。由 `LibraryArtistsViewController` 实现。
+///
+/// 走协议而不是 `as? LibraryArtistsViewController`：导航栈只认 `ContentPageController`，
+/// 不该反过来认识具体是哪一页（与 `AboutPanelPresenting` 同形）。
+@MainActor
+protocol LibraryArtistSelecting: AnyObject {
+    func selectLibraryArtist(id: String)
 }
