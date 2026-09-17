@@ -1,0 +1,749 @@
+WINDOW NSWindow title="" frame=[9, 22, 1450, 900] contentLayoutRect=[0, 0, 1450, 848] key=true
+  TOOLBAR items=1 visible=true
+    ITEM amber.panel-separator hidden=false label="" view=- frame=-
+  NSThemeFrame [0, 0, 1450, 900]
+    NSVisualEffectView [0, 0, 1450, 900] material=18 blend=1
+    NSVisualEffectView [0, 0, 1450, 900] material=18 blend=1
+      NSView [0, 0, 1450, 900]
+        NSSplitView [0, 0, 1450, 900] dividers=2
+          _NSSplitViewItemViewWrapper [202.5, 0, 1247.5, 900]
+            NSView [202.5, 0, 1247.5, 900]
+              NSView [202.5, 0, 1247.5, 900]
+                NSScrollView [202.5, 0, 1247.5, 900] docBounds=[0, 0, 1247.5, 5622] clipOrigin=(0, -52)
+                  _NSCollectionViewColorFillView [202.5, 0, 1247.5, 900]
+                  BackdropView [202.5, 0, 1247.5, 52] id=Background source for 0x00000077df70cf00
+                  NSClipView [202.5, 0, 1247.5, 900]
+                    CatalogShelfCollectionView [202.5, 52, 1247.5, 5622]
+                      CatalogShelfArrowButton [222.5, 649.8, 28, 52] hidden alpha=0.00
+                        NSVisualEffectView [222.5, 649.8, 28, 52] alpha=0.95 material=13 blend=1
+                        NSView [222.5, 649.8, 28, 52]
+                        NSImageView [230.5, 661.8, 13, 28]
+                          _NSImageViewSimpleImageView [230.5, 661.8, 13, 28]
+                      CatalogShelfArrowButton [1402, 649.8, 28, 52]
+                        NSVisualEffectView [1402, 649.8, 28, 52] alpha=0.95 material=13 blend=1
+                        NSView [1402, 649.8, 28, 52]
+                        NSImageView [1410, 661.8, 13, 28]
+                          _NSImageViewSimpleImageView [1410, 661.8, 13, 28]
+                      _NSCollectionScrollView [202.5, 877.5, 1247.5, 252.5] docBounds=[0, 825.5, 2874, 252.5] clipOrigin=(0, 0)
+                        NSClipView [202.5, 877.5, 1247.5, 252.5]
+                          _NSCollectionViewNestedDocumentView [202.5, 877.5, 2874, 252.5]
+                            CatalogSquareCardView [1414, 877.5, 215.5, 252.5]
+                              CatalogArtworkView [1414, 877.5, 215.5, 215.5]
+                                NSImageView [1414, 877.5, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [1514, 975, 15, 20]
+                                CatalogLabel [1414, 1077, 4, 16] hidden text="我来书写我的名" font=17.0
+                                  NSTextFieldSimpleLabel [1414, 1077, 4, 16]
+                                CatalogPlayButton [1587.5, 1051, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1604, 1067.5, 1, 1]
+                                  NSVisualEffectView [1587.5, 1051, 34, 34] material=13 blend=1
+                                  NSImageView [1587.5, 1051, 34, 34]
+                                    _NSImageViewSimpleImageView [1598.5, 1060, 13, 15]
+                              CatalogLabel [1412, 1097, 94.3, 16] text="我来书写我的名" font=13.0
+                                NSTextFieldSimpleLabel [1412, 1097, 94.3, 16]
+                              CatalogLabel [1412, 1115, 219.5, 16] text="王铮亮" font=13.0
+                                NSTextFieldSimpleLabel [1412, 1115, 219.5, 16]
+                              NSButton [1414, 1130, 0, 0] hidden
+                              CatalogExplicitBadge [1414, 1130, 0, 0] hidden
+                                CatalogLabel [1411.2, 1125, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [1411.2, 1125, 5.5, 10]
+                            CatalogSquareCardView [1178.5, 877.5, 215.5, 252.5]
+                              CatalogArtworkView [1178.5, 877.5, 215.5, 215.5]
+                                NSImageView [1178.5, 877.5, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [1278.5, 975, 15, 20]
+                                CatalogLabel [1178.5, 1077, 4, 16] hidden text="Crossfire (feat. Rich The Kid)" font=17.0
+                                  NSTextFieldSimpleLabel [1178.5, 1077, 4, 16]
+                                CatalogPlayButton [1352, 1051, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1368.5, 1067.5, 1, 1]
+                                  NSVisualEffectView [1352, 1051, 34, 34] material=13 blend=1
+                                  NSImageView [1352, 1051, 34, 34]
+                                    _NSImageViewSimpleImageView [1363, 1060, 13, 15]
+                              CatalogLabel [1176.5, 1097, 178.9, 16] text="Crossfire (feat. Rich The Kid)" font=13.0
+                                NSTextFieldSimpleLabel [1176.5, 1097, 178.9, 16]
+                              CatalogLabel [1176.5, 1115, 219.5, 16] text="张艺兴 / Rich The Kid" font=13.0
+                                NSTextFieldSimpleLabel [1176.5, 1115, 219.5, 16]
+                              NSButton [1178.5, 1130, 0, 0] hidden
+                              CatalogExplicitBadge [1178.5, 1130, 0, 0] hidden
+                                CatalogLabel [1175.8, 1125, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [1175.8, 1125, 5.5, 10]
+                            CatalogSquareCardView [472, 877.5, 215.5, 252.5]
+                              CatalogArtworkView [472, 877.5, 215.5, 215.5]
+                                NSImageView [472, 877.5, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [572, 975, 15, 20]
+                                CatalogLabel [472, 1077, 4, 16] hidden text="守夜人" font=17.0
+                                  NSTextFieldSimpleLabel [472, 1077, 4, 16]
+                                CatalogPlayButton [645.5, 1051, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [662, 1067.5, 1, 1]
+                                  NSVisualEffectView [645.5, 1051, 34, 34] material=13 blend=1
+                                  NSImageView [645.5, 1051, 34, 34]
+                                    _NSImageViewSimpleImageView [656.5, 1060, 13, 15]
+                              CatalogLabel [470, 1097, 42.7, 16] text="守夜人" font=13.0
+                                NSTextFieldSimpleLabel [470, 1097, 42.7, 16]
+                              CatalogLabel [470, 1115, 219.5, 16] text="张云雷" font=13.0
+                                NSTextFieldSimpleLabel [470, 1115, 219.5, 16]
+                              NSButton [472, 1130, 0, 0] hidden
+                              CatalogExplicitBadge [472, 1130, 0, 0] hidden
+                                CatalogLabel [469.2, 1125, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [469.2, 1125, 5.5, 10]
+                            CatalogSquareCardView [236.5, 877.5, 215.5, 252.5]
+                              CatalogArtworkView [236.5, 877.5, 215.5, 215.5]
+                                NSImageView [236.5, 877.5, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [336.5, 975, 15, 20]
+                                CatalogLabel [236.5, 1077, 4, 16] hidden text="礼拜四" font=17.0
+                                  NSTextFieldSimpleLabel [236.5, 1077, 4, 16]
+                                CatalogPlayButton [410, 1051, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [426.5, 1067.5, 1, 1]
+                                  NSVisualEffectView [410, 1051, 34, 34] material=13 blend=1
+                                  NSImageView [410, 1051, 34, 34]
+                                    _NSImageViewSimpleImageView [421, 1060, 13, 15]
+                              CatalogLabel [234.5, 1097, 42.7, 16] text="礼拜四" font=13.0
+                                NSTextFieldSimpleLabel [234.5, 1097, 42.7, 16]
+                              CatalogLabel [234.5, 1115, 219.5, 16] text="HENDERY (黄冠亨)" font=13.0
+                                NSTextFieldSimpleLabel [234.5, 1115, 219.5, 16]
+                              NSButton [236.5, 1130, 0, 0] hidden
+                              CatalogExplicitBadge [236.5, 1130, 0, 0] hidden
+                                CatalogLabel [233.8, 1125, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [233.8, 1125, 5.5, 10]
+                            CatalogSquareCardView [943, 877.5, 215.5, 252.5]
+                              CatalogArtworkView [943, 877.5, 215.5, 215.5]
+                                NSImageView [943, 877.5, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [1043, 975, 15, 20]
+                                CatalogLabel [943, 1077, 4, 16] hidden text="一瓯春 电视剧原声带" font=17.0
+                                  NSTextFieldSimpleLabel [943, 1077, 4, 16]
+                                CatalogPlayButton [1116.5, 1051, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1133, 1067.5, 1, 1]
+                                  NSVisualEffectView [1116.5, 1051, 34, 34] material=13 blend=1
+                                  NSImageView [1116.5, 1051, 34, 34]
+                                    _NSImageViewSimpleImageView [1127.5, 1060, 13, 15]
+                              CatalogLabel [941, 1097, 123.7, 16] text="一瓯春 电视剧原声带" font=13.0
+                                NSTextFieldSimpleLabel [941, 1097, 123.7, 16]
+                              CatalogLabel [941, 1115, 219.5, 16] text="周深 / 鹭卓 / 小阿七 / 康子奇" font=13.0
+                                NSTextFieldSimpleLabel [941, 1115, 219.5, 16]
+                              NSButton [943, 1130, 0, 0] hidden
+                              CatalogExplicitBadge [943, 1130, 0, 0] hidden
+                                CatalogLabel [940.2, 1125, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [940.2, 1125, 5.5, 10]
+                            CatalogSquareCardView [707.5, 877.5, 215.5, 252.5]
+                              CatalogArtworkView [707.5, 877.5, 215.5, 215.5]
+                                NSImageView [707.5, 877.5, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [807.5, 975, 15, 20]
+                                CatalogLabel [707.5, 1077, 4, 16] hidden text="第一颂" font=17.0
+                                  NSTextFieldSimpleLabel [707.5, 1077, 4, 16]
+                                CatalogPlayButton [881, 1051, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [897.5, 1067.5, 1, 1]
+                                  NSVisualEffectView [881, 1051, 34, 34] material=13 blend=1
+                                  NSImageView [881, 1051, 34, 34]
+                                    _NSImageViewSimpleImageView [892, 1060, 13, 15]
+                              CatalogLabel [705.5, 1097, 42.7, 16] text="第一颂" font=13.0
+                                NSTextFieldSimpleLabel [705.5, 1097, 42.7, 16]
+                              CatalogLabel [705.5, 1115, 219.5, 16] text="龚琳娜" font=13.0
+                                NSTextFieldSimpleLabel [705.5, 1115, 219.5, 16]
+                              NSButton [707.5, 1130, 0, 0] hidden
+                              CatalogExplicitBadge [707.5, 1130, 0, 0] hidden
+                                CatalogLabel [704.8, 1125, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [704.8, 1125, 5.5, 10]
+                        NSScroller [102.5, 777.5, 1247.5, 17] hidden
+                      _NSCollectionScrollView [202.5, 568, 1247.5, 252.5] docBounds=[0, 516, 2874, 252.5] clipOrigin=(0, 0)
+                        NSClipView [202.5, 568, 1247.5, 252.5]
+                          _NSCollectionViewNestedDocumentView [202.5, 568, 2874, 252.5]
+                            CatalogSquareCardView [1414, 568, 215.5, 252.5]
+                              CatalogArtworkView [1414, 568, 215.5, 215.5]
+                                NSImageView [1414, 568, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [1514, 665.5, 15, 20]
+                                CatalogLabel [1414, 767.5, 4, 16] hidden text="矩由墨取喜欢的音乐" font=17.0
+                                  NSTextFieldSimpleLabel [1414, 767.5, 4, 16]
+                                CatalogPlayButton [1587.5, 741.5, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1604, 758, 1, 1]
+                                  NSVisualEffectView [1587.5, 741.5, 34, 34] material=13 blend=1
+                                  NSImageView [1587.5, 741.5, 34, 34]
+                                    _NSImageViewSimpleImageView [1598.5, 750.5, 13, 15]
+                              CatalogLabel [1412, 787.5, 120.1, 16] text="矩由墨取喜欢的音乐" font=13.0
+                                NSTextFieldSimpleLabel [1412, 787.5, 120.1, 16]
+                              CatalogLabel [1412, 805.5, 219.5, 16] text="冬日森林" font=13.0
+                                NSTextFieldSimpleLabel [1412, 805.5, 219.5, 16]
+                              NSButton [1414, 820.5, 0, 0] hidden
+                              CatalogExplicitBadge [1414, 820.5, 0, 0] hidden
+                                CatalogLabel [1411.2, 815.5, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [1411.2, 815.5, 5.5, 10]
+                            CatalogSquareCardView [1178.5, 568, 215.5, 252.5]
+                              CatalogArtworkView [1178.5, 568, 215.5, 215.5]
+                                NSImageView [1178.5, 568, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [1278.5, 665.5, 15, 20]
+                                CatalogLabel [1178.5, 767.5, 4, 16] hidden text="2023.05.01" font=17.0
+                                  NSTextFieldSimpleLabel [1178.5, 767.5, 4, 16]
+                                CatalogPlayButton [1352, 741.5, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1368.5, 758, 1, 1]
+                                  NSVisualEffectView [1352, 741.5, 34, 34] material=13 blend=1
+                                  NSImageView [1352, 741.5, 34, 34]
+                                    _NSImageViewSimpleImageView [1363, 750.5, 13, 15]
+                              CatalogLabel [1176.5, 787.5, 71.5, 16] text="2023.05.01" font=13.0
+                                NSTextFieldSimpleLabel [1176.5, 787.5, 71.5, 16]
+                              CatalogLabel [1176.5, 805.5, 219.5, 16] text="冬日森林" font=13.0
+                                NSTextFieldSimpleLabel [1176.5, 805.5, 219.5, 16]
+                              NSButton [1178.5, 820.5, 0, 0] hidden
+                              CatalogExplicitBadge [1178.5, 820.5, 0, 0] hidden
+                                CatalogLabel [1175.8, 815.5, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [1175.8, 815.5, 5.5, 10]
+                            CatalogSquareCardView [472, 568, 215.5, 252.5]
+                              CatalogArtworkView [472, 568, 215.5, 215.5]
+                                NSImageView [472, 568, 215.5, 215.5]
+                                  _NSImageViewSimpleImageView [572, 665.5, 15, 20]
+                                CatalogLabel [472, 767.5, 4, 16] hidden text="Evolve" font=17.0
+                                  NSTextFieldSimpleLabel [472, 767.5, 4, 16]
+                                CatalogPlayButton [645.5, 741.5, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [662, 758, 1, 1]
+                                  NSVisualEffectView [645.5, 741.5, 34, 34] material=13 blend=1
+                                  NSImageView [645.5, 741.5, 34, 34]
+                                    _NSImageViewSimpleImageView [656.5, 750.5, 13, 15]
+                              CatalogLabel [470, 787.5, 43.3, 16] text="Evolve" font=13.0
+                                NSTextFieldSimpleLabel [470, 787.5, 43.3, 16]
+                              CatalogLabel [470, 805.5, 219.5, 16] text="Imagine Dragons" font=13.0
+                                NSTextFieldSimpleLabel [470, 805.5, 219.5, 16]
+                              NSButton [472, 820.5, 0, 0] hidden
+                              CatalogExplicitBadge [472, 820.5, 0, 0] hidden
+                                CatalogLabel [469.2, 815.5, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [469.2, 815.5, 5.5, 10]
+                            CatalogSquareCardView [236.5, 568, 215.5, 252.5]
+                              CatalogArtworkView [236.5, 568, 215.5, 215.5]
+                                NSImageView [236.5, 568, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [336.5, 665.5, 15, 20]
+                                CatalogLabel [236.5, 767.5, 4, 16] hidden text="Jackrabbit" font=17.0
+                                  NSTextFieldSimpleLabel [236.5, 767.5, 4, 16]
+                                CatalogPlayButton [410, 741.5, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [426.5, 758, 1, 1]
+                                  NSVisualEffectView [410, 741.5, 34, 34] material=13 blend=1
+                                  NSImageView [410, 741.5, 34, 34]
+                                    _NSImageViewSimpleImageView [421, 750.5, 13, 15]
+                              CatalogLabel [234.5, 787.5, 67.8, 16] text="Jackrabbit" font=13.0
+                                NSTextFieldSimpleLabel [234.5, 787.5, 67.8, 16]
+                              CatalogLabel [234.5, 805.5, 219.5, 16] text="San Fermin" font=13.0
+                                NSTextFieldSimpleLabel [234.5, 805.5, 219.5, 16]
+                              NSButton [236.5, 820.5, 0, 0] hidden
+                              CatalogExplicitBadge [236.5, 820.5, 0, 0] hidden
+                                CatalogLabel [233.8, 815.5, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [233.8, 815.5, 5.5, 10]
+                            CatalogSquareCardView [943, 568, 215.5, 252.5]
+                              CatalogArtworkView [943, 568, 215.5, 215.5]
+                                NSImageView [943, 568, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [1043, 665.5, 15, 20]
+                                CatalogLabel [943, 767.5, 4, 16] hidden text="猜你喜欢" font=17.0
+                                  NSTextFieldSimpleLabel [943, 767.5, 4, 16]
+                                CatalogPlayButton [1116.5, 741.5, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1133, 758, 1, 1]
+                                  NSVisualEffectView [1116.5, 741.5, 34, 34] material=13 blend=1
+                                  NSImageView [1116.5, 741.5, 34, 34]
+                                    _NSImageViewSimpleImageView [1127.5, 750.5, 13, 15]
+                              CatalogLabel [941, 787.5, 55.6, 16] text="猜你喜欢" font=13.0
+                                NSTextFieldSimpleLabel [941, 787.5, 55.6, 16]
+                              CatalogLabel [941, 805.5, 219.5, 16] text="电台" font=13.0
+                                NSTextFieldSimpleLabel [941, 805.5, 219.5, 16]
+                              NSButton [943, 820.5, 0, 0] hidden
+                              CatalogExplicitBadge [943, 820.5, 0, 0] hidden
+                                CatalogLabel [940.2, 815.5, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [940.2, 815.5, 5.5, 10]
+                            CatalogSquareCardView [707.5, 568, 215.5, 252.5]
+                              CatalogArtworkView [707.5, 568, 215.5, 215.5]
+                                NSImageView [707.5, 568, 215.5, 215.5] hidden
+                                  _NSImageViewSimpleImageView [807.5, 665.5, 15, 20]
+                                CatalogLabel [707.5, 767.5, 4, 16] hidden text="我们就像那些要命的傻瓜" font=17.0
+                                  NSTextFieldSimpleLabel [707.5, 767.5, 4, 16]
+                                CatalogPlayButton [881, 741.5, 34, 34]
+                                  NSButtonImageView [897.5, 758, 1, 1]
+                                  NSVisualEffectView [881, 741.5, 34, 34] material=13 blend=1
+                                  NSImageView [881, 741.5, 34, 34]
+                                    _NSImageViewSimpleImageView [892, 750.5, 13, 15]
+                              CatalogLabel [705.5, 787.5, 145.9, 16] text="我们就像那些要命的傻瓜" font=13.0
+                                NSTextFieldSimpleLabel [705.5, 787.5, 145.9, 16]
+                              CatalogLabel [705.5, 805.5, 219.5, 16] text="告五人" font=13.0
+                                NSTextFieldSimpleLabel [705.5, 805.5, 219.5, 16]
+                              NSButton [707.5, 820.5, 0, 0] hidden
+                              CatalogExplicitBadge [707.5, 820.5, 0, 0] hidden
+                                CatalogLabel [704.8, 815.5, 5.5, 10] text="E" font=8.0
+                                  NSTextFieldSimpleLabel [704.8, 815.5, 5.5, 10]
+                        NSScroller [102.5, 468, 1247.5, 17] hidden
+                      _NSCollectionScrollView [202.5, 145, 1247.5, 366] docBounds=[0, 93, 2992, 366] clipOrigin=(0, 0)
+                        NSClipView [202.5, 145, 1247.5, 366]
+                          _NSCollectionViewNestedDocumentView [202.5, 145, 2992, 366]
+                            CatalogPosterCardView [1414, 145, 274.5, 366]
+                              CatalogArtworkView [1414, 145, 274.5, 366]
+                                NSImageView [1414, 145, 274.5, 366] hidden
+                                  _NSImageViewSimpleImageView [1544, 318, 15, 20]
+                                CatalogLabel [1428, 464, 246.5, 14] text="专属推荐" font=11.0
+                                  NSTextFieldSimpleLabel [1428, 464, 246.5, 14]
+                                CatalogLabel [1428, 480, 246.5, 16] text="抖音神曲" font=13.0
+                                  NSTextFieldSimpleLabel [1428, 480, 246.5, 16]
+                                CatalogLabel [1414, 495, 4, 16] hidden text="" font=11.0
+                                  NSTextFieldSimpleLabel [1414, 495, 4, 16]
+                                CatalogPlayButton [1646.5, 469, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1663, 485.5, 1, 1]
+                                  NSVisualEffectView [1646.5, 469, 34, 34] material=13 blend=1
+                                  NSImageView [1646.5, 469, 34, 34]
+                                    _NSImageViewSimpleImageView [1657.5, 478, 13, 15]
+                            CatalogPosterCardView [531, 145, 274.5, 366]
+                              CatalogArtworkView [531, 145, 274.5, 366]
+                                NSImageView [531, 145, 274.5, 366] hidden
+                                  _NSImageViewSimpleImageView [661, 318, 15, 20]
+                                CatalogLabel [545, 464, 246.5, 14] text="专属推荐" font=11.0
+                                  NSTextFieldSimpleLabel [545, 464, 246.5, 14]
+                                CatalogLabel [545, 480, 246.5, 16] text="随心听" font=13.0
+                                  NSTextFieldSimpleLabel [545, 480, 246.5, 16]
+                                CatalogLabel [531, 495, 4, 16] hidden text="" font=11.0
+                                  NSTextFieldSimpleLabel [531, 495, 4, 16]
+                                CatalogPlayButton [763.5, 469, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [780, 485.5, 1, 1]
+                                  NSVisualEffectView [763.5, 469, 34, 34] material=13 blend=1
+                                  NSImageView [763.5, 469, 34, 34]
+                                    _NSImageViewSimpleImageView [774.5, 478, 13, 15]
+                            CatalogPosterCardView [236.5, 145, 274.5, 366]
+                              CatalogArtworkView [236.5, 145, 274.5, 366]
+                                NSImageView [236.5, 145, 274.5, 366] hidden
+                                  _NSImageViewSimpleImageView [366.5, 318, 15, 20]
+                                CatalogLabel [250.5, 464, 246.5, 14] text="专属推荐" font=11.0
+                                  NSTextFieldSimpleLabel [250.5, 464, 246.5, 14]
+                                CatalogLabel [250.5, 480, 246.5, 16] text="猜你喜欢" font=13.0
+                                  NSTextFieldSimpleLabel [250.5, 480, 246.5, 16]
+                                CatalogLabel [236.5, 495, 4, 16] hidden text="" font=11.0
+                                  NSTextFieldSimpleLabel [236.5, 495, 4, 16]
+                                CatalogPlayButton [469, 469, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [485.5, 485.5, 1, 1]
+                                  NSVisualEffectView [469, 469, 34, 34] material=13 blend=1
+                                  NSImageView [469, 469, 34, 34]
+                                    _NSImageViewSimpleImageView [480, 478, 13, 15]
+                            CatalogPosterCardView [1119.5, 145, 274.5, 366]
+                              CatalogArtworkView [1119.5, 145, 274.5, 366]
+                                NSImageView [1119.5, 145, 274.5, 366] hidden
+                                  _NSImageViewSimpleImageView [1249.5, 318, 15, 20]
+                                CatalogLabel [1133.5, 464, 246.5, 14] text="心情歌单推荐" font=11.0
+                                  NSTextFieldSimpleLabel [1133.5, 464, 246.5, 14]
+                                CatalogLabel [1133.5, 480, 246.5, 16] text="忧伤" font=13.0
+                                  NSTextFieldSimpleLabel [1133.5, 480, 246.5, 16]
+                                CatalogLabel [1119.5, 495, 4, 16] hidden text="" font=11.0
+                                  NSTextFieldSimpleLabel [1119.5, 495, 4, 16]
+                                CatalogPlayButton [1352, 469, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1368.5, 485.5, 1, 1]
+                                  NSVisualEffectView [1352, 469, 34, 34] material=13 blend=1
+                                  NSImageView [1352, 469, 34, 34]
+                                    _NSImageViewSimpleImageView [1363, 478, 13, 15]
+                            CatalogPosterCardView [825.5, 145, 274.5, 366]
+                              CatalogArtworkView [825.5, 145, 274.5, 366]
+                                NSImageView [825.5, 145, 274.5, 366] hidden
+                                  _NSImageViewSimpleImageView [955.5, 318, 15, 20]
+                                CatalogLabel [839.5, 464, 246.5, 14] text="最新发行" font=11.0
+                                  NSTextFieldSimpleLabel [839.5, 464, 246.5, 14]
+                                CatalogLabel [839.5, 480, 246.5, 16] text="礼拜四" font=13.0
+                                  NSTextFieldSimpleLabel [839.5, 480, 246.5, 16]
+                                CatalogLabel [825.5, 495, 4, 16] hidden text="" font=11.0
+                                  NSTextFieldSimpleLabel [825.5, 495, 4, 16]
+                                CatalogPlayButton [1058, 469, 34, 34] hidden alpha=0.00
+                                  NSButtonImageView [1074.5, 485.5, 1, 1]
+                                  NSVisualEffectView [1058, 469, 34, 34] material=13 blend=1
+                                  NSImageView [1058, 469, 34, 34]
+                                    _NSImageViewSimpleImageView [1069, 478, 13, 15]
+                        NSScroller [102.5, 45, 1247.5, 17] hidden
+                      CatalogSectionHeaderView [236.5, 820.5, 1179.5, 57] id=CatalogSectionHeaderView
+                        CatalogHeaderRow [236.5, 845.5, 1179.5, 19]
+                          NSImageView [236.5, 855, 0, 0] hidden
+                            _NSImageViewSimpleImageView [236.5, 855, 0, 0]
+                          NSStackView [236.5, 845.5, 74.5, 19]
+                            NSTextField [234.5, 845.5, 4, 16] hidden text="" font=13.0
+                              NSTextFieldSimpleLabel [234.5, 845.5, 4, 16]
+                            NSStackView [236.5, 845.5, 74.5, 19]
+                              NSTextField [234.5, 845.5, 78.5, 19] text="华语流行乐" font=15.0
+                                NSTextFieldSimpleLabel [234.5, 845.5, 78.5, 19]
+                              NSImageView [236.5, 843.5, 9, 12] hidden
+                                _NSImageViewSimpleImageView [236.5, 843.5, 9, 12]
+                      CatalogSectionHeaderView [236.5, 90, 1179.5, 55] id=CatalogSectionHeaderView
+                        CatalogHeaderRow [236.5, 113, 1179.5, 19]
+                          NSImageView [236.5, 122.5, 0, 0] hidden
+                            _NSImageViewSimpleImageView [236.5, 122.5, 0, 0]
+                          NSStackView [236.5, 113, 89.5, 19]
+                            NSTextField [234.5, 113, 4, 16] hidden text="" font=13.0
+                              NSTextFieldSimpleLabel [234.5, 113, 4, 16]
+                            NSStackView [236.5, 113, 89.5, 19]
+                              NSTextField [234.5, 113, 93.5, 19] text="专属精选推荐" font=15.0
+                                NSTextFieldSimpleLabel [234.5, 113, 93.5, 19]
+                              NSImageView [236.5, 111, 9, 12] hidden
+                                _NSImageViewSimpleImageView [236.5, 111, 9, 12]
+                      CatalogSectionHeaderView [236.5, 511, 1179.5, 57] id=CatalogSectionHeaderView
+                        CatalogHeaderRow [236.5, 536, 1179.5, 19]
+                          NSImageView [236.5, 545.5, 0, 0] hidden
+                            _NSImageViewSimpleImageView [236.5, 545.5, 0, 0]
+                          NSStackView [236.5, 536, 73.5, 19]
+                            NSTextField [234.5, 536, 4, 16] hidden text="" font=13.0
+                              NSTextFieldSimpleLabel [234.5, 536, 4, 16]
+                            NSStackView [236.5, 536, 73.5, 19]
+                              NSTextField [234.5, 536, 64, 19] text="最近播放" font=15.0
+                                NSTextFieldSimpleLabel [234.5, 536, 64, 19]
+                              NSImageView [301.5, 539.5, 9, 12]
+                                _NSImageViewSimpleImageView [301.5, 539.5, 9, 12]
+                      CatalogPageTitleView [236.5, 52, 1179.5, 38] id=CatalogPageTitleView
+                        NSTextField [234.5, 52, 65, 38] text="主页" font=32.0
+                          NSTextFieldSimpleLabel [234.5, 52, 65, 38]
+                  NSScrollPocket [202.5, 0, 1247.5, 52]
+                    PocketMask [202.5, 52, 0, 0] hidden alpha=0.00
+                      NSView [202.5, 52, 0, 0]
+                        NSView [202.5, 52, 0, 0] hidden id=shapeView
+                    PocketBlur [202.5, 52, 0, 0] hidden alpha=0.00
+                      PortalView [202.5, 52, 0, 0]
+                    NSHardPocketView [202.5, 52, 0, 0] hidden
+                      _NSLayerBasedFillColorView [202.5, 51, 0, 1]
+                    LuminanceAdjustment [202.5, 52, 0, 0] hidden
+                      NSView [202.5, 52, 0, 0]
+                        NSView [202.5, 52, 0, 0] alpha=0.00
+                          BackdropView [202.5, 52, 0, 0] alpha=0.60 id=backgroundReplay
+                          _NSScrollViewContentBackgroundView [202.5, 52, 0, 0] alpha=0.60 id=backgroundColorReplay
+                        NSView [202.5, 52, 0, 0] alpha=0.00
+                          NSView [202.5, 52, 0, 0] alpha=0.00 id=darkeningView
+                          NSView [202.5, 52, 0, 0] alpha=0.00 id=lighteningView
+                      PortalView [202.5, 52, 0, 0]
+                  NSScroller [1433, 52, 17, 767]
+                CatalogOverlayView [202.5, 0, 1247.5, 900] hidden
+                  NSProgressIndicator [810.5, 250, 32, 32] hidden
+                  NSStackView [800, 250, 52.5, 92] hidden
+                    NSImageView [800, 238.5, 53, 48]
+                      _NSImageViewSimpleImageView [800, 238.5, 53, 48]
+                    NSTextField [822.5, 290, 8, 16] text="" font=13.0
+                      NSTextFieldSimpleLabel [822.5, 290, 8, 16]
+                    NSButton [801.5, 318, 50, 24] title="重试"
+                      _NSCoreHostingView<AppKitButton> [801.5, 318, 50, 24]
+          NSTitlebarBackgroundView [0, 0, 202.5, 52] hidden
+          NSTitlebarBackgroundView [202.5, 0, 1247.5, 52] hidden
+          NSTitlebarBackgroundView [1450, 0, 0, 52] hidden
+          _NSSplitViewItemViewWrapper [0, 0, 202.5, 900]
+            NSGlassEffectView [0, 0, 202.5, 900]
+              ContentHolderView [0, 0, 202.5, 900]
+                NSView [0, 0, 202.5, 900]
+                  NSView [0, 0, 202.5, 900]
+                    NSScrollView [0, 52, 202.5, 791] docBounds=[0, 0, 202.5, 1152] clipOrigin=(0, 0)
+                      BackdropView [0, 52, 0, 0] id=Background source for 0x00000077df70d400
+                      NSClipView [0, 52, 202.5, 791]
+                        SidebarOutlineView [0, 52, 202.5, 1152] rows=36 rowH=24.0 sel=1
+                          SidebarRowView [0, 52, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 52, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 52, 33, 32]
+                                _NSImageViewSimpleImageView [27, 58, 21, 20]
+                              NSTextField [54, 60, 131.5, 16] text="搜索" font=13.0
+                                NSTextFieldSimpleLabel [54, 60, 131.5, 16]
+                          SidebarRowView [0, 84, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 84, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 84, 33, 32]
+                                _NSImageViewSimpleImageView [26, 89, 24, 21]
+                              NSTextField [54, 92, 131.5, 16] text="主页" font=13.0
+                                NSTextFieldSimpleLabel [54, 92, 131.5, 16]
+                          SidebarRowView [0, 116, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 116, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 116, 33, 32]
+                                _NSImageViewSimpleImageView [28, 122, 20, 19]
+                              NSTextField [54, 124, 131.5, 16] text="新发现" font=13.0
+                                NSTextFieldSimpleLabel [54, 124, 131.5, 16]
+                          SidebarRowView [0, 148, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 148, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 148, 33, 32]
+                                _NSImageViewSimpleImageView [25, 154, 25, 19]
+                              NSTextField [54, 156, 131.5, 16] text="广播" font=13.0
+                                NSTextFieldSimpleLabel [54, 156, 131.5, 16]
+                          SidebarRowView [0, 180, 202.5, 32] id=SidebarRow
+                            SidebarGroupCellView [0, 180, 202.5, 32] id=SidebarGroup
+                              NSTextField [15, 195.5, 177.5, 14] text="资料库" font=11.0
+                                NSTextFieldSimpleLabel [15, 195.5, 177.5, 14]
+                          SidebarRowView [0, 212, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 212, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 212, 33, 32]
+                                _NSImageViewSimpleImageView [28, 218, 20, 20]
+                              NSTextField [54, 220, 131.5, 16] text="最近添加" font=13.0
+                                NSTextFieldSimpleLabel [54, 220, 131.5, 16]
+                          SidebarRowView [0, 244, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 244, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 244, 33, 32]
+                                _NSImageViewSimpleImageView [27, 249, 21, 21]
+                              NSTextField [54, 252, 131.5, 16] text="艺人" font=13.0
+                                NSTextFieldSimpleLabel [54, 252, 131.5, 16]
+                          SidebarRowView [0, 276, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 276, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 276, 33, 32]
+                                _NSImageViewSimpleImageView [28, 280, 20, 24]
+                              NSTextField [54, 284, 131.5, 16] text="专辑" font=13.0
+                                NSTextFieldSimpleLabel [54, 284, 131.5, 16]
+                          SidebarRowView [0, 308, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 308, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 308, 33, 32]
+                                _NSImageViewSimpleImageView [30, 314, 15, 20]
+                              NSTextField [54, 316, 131.5, 16] text="歌曲" font=13.0
+                                NSTextFieldSimpleLabel [54, 316, 131.5, 16]
+                          SidebarRowView [0, 340, 202.5, 32] id=SidebarRow
+                            SidebarGroupCellView [0, 340, 202.5, 32] id=SidebarGroup
+                              NSTextField [15, 355.5, 177.5, 14] text="播放列表" font=11.0
+                                NSTextFieldSimpleLabel [15, 355.5, 177.5, 14]
+                          SidebarRowView [0, 372, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 372, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 372, 33, 32]
+                                _NSImageViewSimpleImageView [27, 378, 21, 19]
+                              NSTextField [54, 380, 131.5, 16] text="所有播放列表" font=13.0
+                                NSTextFieldSimpleLabel [54, 380, 131.5, 16]
+                          SidebarRowView [0, 404, 202.5, 32] id=SidebarRow
+                            SidebarItemCellView [0, 404, 202.5, 32] id=SidebarItem
+                              NSImageView [21, 404, 33, 32]
+                                _NSImageViewSimpleImageView [28, 410, 20, 19]
+                              NSTextField [54, 412, 131.5, 16] text="心水歌曲" font=13.0
+                                NSTextFieldSimpleLabel [54, 412, 131.5, 16]
+                          SidebarRowView [0, 436, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 436, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 436, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 468, 0, 0]
+                              NSTextField [54, 444, 131.5, 16] text="忧伤" font=13.0
+                                NSTextFieldSimpleLabel [54, 444, 131.5, 16]
+                              NSView [21, 436, 33, 32]
+                                NSHostingView<AnyView> [28, 442.5, 19, 19]
+                          SidebarRowView [0, 468, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 468, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 468, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 500, 0, 0]
+                              NSTextField [54, 476, 131.5, 16] text="我喜欢" font=13.0
+                                NSTextFieldSimpleLabel [54, 476, 131.5, 16]
+                              NSView [21, 468, 33, 32]
+                                NSHostingView<AnyView> [28, 474.5, 19, 19]
+                          SidebarRowView [0, 500, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 500, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 500, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 532, 0, 0]
+                              NSTextField [54, 508, 131.5, 16] text="矩由墨取喜欢的音乐" font=13.0
+                                NSTextFieldSimpleLabel [54, 508, 131.5, 16]
+                              NSView [21, 500, 33, 32]
+                                NSHostingView<AnyView> [28, 506.5, 19, 19]
+                          SidebarRowView [0, 532, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 532, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 532, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 564, 0, 0]
+                              NSTextField [54, 540, 131.5, 16] text="1207" font=13.0
+                                NSTextFieldSimpleLabel [54, 540, 131.5, 16]
+                              NSView [21, 532, 33, 32]
+                                NSHostingView<AnyView> [28, 538.5, 19, 19]
+                          SidebarRowView [0, 564, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 564, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 564, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 596, 0, 0]
+                              NSTextField [54, 572, 131.5, 16] text="Drive" font=13.0
+                                NSTextFieldSimpleLabel [54, 572, 131.5, 16]
+                              NSView [21, 564, 33, 32]
+                                NSHostingView<AnyView> [28, 570.5, 19, 19]
+                          SidebarRowView [0, 596, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 596, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 596, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 628, 0, 0]
+                              NSTextField [54, 604, 131.5, 16] text="2023.05.01" font=13.0
+                                NSTextFieldSimpleLabel [54, 604, 131.5, 16]
+                              NSView [21, 596, 33, 32]
+                                NSHostingView<AnyView> [28, 602.5, 19, 19]
+                          SidebarRowView [0, 628, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 628, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 628, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 660, 0, 0]
+                              NSTextField [54, 636, 131.5, 16] text="2022年度歌单" font=13.0
+                                NSTextFieldSimpleLabel [54, 636, 131.5, 16]
+                              NSView [21, 628, 33, 32]
+                                NSHostingView<AnyView> [28, 634.5, 19, 19]
+                          SidebarRowView [0, 660, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 660, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 660, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 692, 0, 0]
+                              NSTextField [54, 668, 131.5, 16] text="冬日森林" font=13.0
+                                NSTextFieldSimpleLabel [54, 668, 131.5, 16]
+                              NSView [21, 660, 33, 32]
+                                NSHostingView<AnyView> [28, 666.5, 19, 19]
+                          SidebarRowView [0, 692, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 692, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 692, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 724, 0, 0]
+                              NSTextField [54, 700, 131.5, 16] text="布袋戏" font=13.0
+                                NSTextFieldSimpleLabel [54, 700, 131.5, 16]
+                              NSView [21, 692, 33, 32]
+                                NSHostingView<AnyView> [28, 698.5, 19, 19]
+                          SidebarRowView [0, 724, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 724, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 724, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 756, 0, 0]
+                              NSTextField [54, 732, 131.5, 16] text="歇斯底里的2019年度歌单" font=13.0
+                                NSTextFieldSimpleLabel [54, 732, 131.5, 16]
+                              NSView [21, 724, 33, 32]
+                                NSHostingView<AnyView> [28, 730.5, 19, 19]
+                          SidebarRowView [0, 756, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 756, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 756, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 788, 0, 0]
+                              NSTextField [54, 764, 131.5, 16] text="Nujabes&Shing02" font=13.0
+                                NSTextFieldSimpleLabel [54, 764, 131.5, 16]
+                              NSView [21, 756, 33, 32]
+                                NSHostingView<AnyView> [28, 762.5, 19, 19]
+                          SidebarRowView [0, 788, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 788, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 788, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 820, 0, 0]
+                              NSTextField [54, 796, 131.5, 16] text="冬日森林的每日30首" font=13.0
+                                NSTextFieldSimpleLabel [54, 796, 131.5, 16]
+                              NSView [21, 788, 33, 32]
+                                NSHostingView<AnyView> [28, 794.5, 19, 19]
+                          SidebarRowView [0, 820, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 820, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 820, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 852, 0, 0]
+                              NSTextField [54, 828, 131.5, 16] text="2010-2019最佳华语金曲" font=13.0
+                                NSTextFieldSimpleLabel [54, 828, 131.5, 16]
+                              NSView [21, 820, 33, 32]
+                                NSHostingView<AnyView> [28, 826.5, 19, 19]
+                          SidebarRowView [0, 852, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 852, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 852, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 884, 0, 0]
+                              NSTextField [54, 860, 131.5, 16] text="死亡搁浅2+1音乐播放器" font=13.0
+                                NSTextFieldSimpleLabel [54, 860, 131.5, 16]
+                              NSView [21, 852, 33, 32]
+                                NSHostingView<AnyView> [28, 858.5, 19, 19]
+                          SidebarRowView [0, 884, 202.5, 32] id=SidebarRow
+                            SidebarPlaylistCellView [0, 884, 202.5, 32] id=SidebarPlaylist
+                              NSImageView [21, 884, 33, 32] hidden
+                                _NSImageViewSimpleImageView [21, 916, 0, 0]
+                              NSTextField [54, 892, 131.5, 16] text="小心赵英俊，他写的歌会洗脑" font=13.0
+                                NSTextFieldSimpleLabel [54, 892, 131.5, 16]
+                              NSView [21, 884, 33, 32]
+                                NSHostingView<AnyView> [28, 890.5, 19, 19]
+                      NSScrollPocket [0, 52, 0, 0]
+                        PocketMask [0, 52, 0, 0] hidden alpha=0.00
+                          NSView [0, 52, 0, 0]
+                            NSView [0, 52, 0, 0] hidden id=shapeView
+                        PocketBlur [0, 52, 0, 0] hidden alpha=0.00
+                          PortalView [0, 52, 0, 0]
+                        NSHardPocketView [0, 52, 0, 0] hidden
+                          _NSLayerBasedFillColorView [0, 51, 0, 1]
+                        LuminanceAdjustment [0, 52, 0, 0] hidden
+                          NSView [0, 52, 0, 0]
+                            NSView [0, 52, 0, 0] alpha=0.00
+                              BackdropView [0, 52, 0, 0] alpha=0.60 id=backgroundReplay
+                              _NSScrollViewContentBackgroundView [0, 52, 0, 0] alpha=0.60 id=backgroundColorReplay
+                            NSView [0, 52, 0, 0] alpha=0.00
+                              NSView [0, 52, 0, 0] alpha=0.00 id=darkeningView
+                              NSView [0, 52, 0, 0] alpha=0.00 id=lighteningView
+                          PortalView [0, 52, 0, 0]
+                      NSScroller [185.5, 52, 17, 791]
+                    NSView [0, 843, 202.5, 57]
+                      SidebarAccountAvatarView [18, 854, 28, 28]
+                      NSButton [52, 860.5, 52, 15] title="冬日森林"
+                        NSButtonTextField [50, 860.5, 56, 15] text="冬日森林" font=13.0
+                          NSTextFieldSimpleLabel [50, 860.5, 56, 15]
+              _NSCoreHostingView<RootView> [0, 0, 202.5, 900]
+          _NSSplitViewItemViewWrapper [0, 0, 258, 0] hidden
+          NSSplitDividerView [202, 0, 0.5, 900]
+          NSSplitDividerView [0, 0, 0.5, 900] hidden
+          _NSSplitViewCollapsedInteractionsView [0, 0, 15, 900]
+          _NSSplitViewCollapsedInteractionsView [1435, 0, 15, 900]
+      MiniPlayerView [476.5, 827, 700, 54]
+        NSGlassEffectView [476.5, 827, 700, 54]
+          ContentHolderView [476.5, 827, 700, 54]
+            NSView [476.5, 827, 700, 54]
+              MiniIconButton [485.5, 840, 28, 28]
+              MiniIconButton [513.5, 840, 28, 28]
+              MiniIconButton [541.5, 836, 36, 36]
+              MiniIconButton [577.5, 840, 28, 28]
+              MiniIconButton [605.5, 840, 28, 28]
+              NSView [642.5, 827, 369, 54]
+                NSView [642.5, 827, 369, 54] hidden
+                  MiniArtworkView [650.5, 837, 34, 34]
+                    NSImageView [650.5, 837, 34, 34]
+                      _NSImageViewSimpleImageView [662.5, 847, 11, 14]
+                    NSView [650.5, 837, 34, 34] hidden
+                    NSImageView [650.5, 837, 34, 34] hidden
+                      _NSImageViewSimpleImageView [659.5, 846, 16, 15]
+                  NSTextField [690.5, 838, 4, 16] text="" font=13.0
+                    NSTextFieldSimpleLabel [690.5, 838, 4, 16]
+                  NSTextField [690.5, 854, 4, 16] text="" font=13.0
+                    NSTextFieldSimpleLabel [690.5, 854, 4, 16]
+                  MiniIconButton [692.5, 838, 16, 16] hidden
+                  MiniIconButton [931.5, 836, 36, 36]
+                  MiniIconButton [967.5, 836, 36, 36]
+                MiniIconButton [810, 837, 34, 34]
+                MiniTimeLabel [648.5, 846, 176.5, 16] alpha=0.00 text="" font=13.0
+                  NSTextFieldSimpleLabel [648.5, 846, 176.5, 16]
+                MiniTimeLabel [829, 846, 176.5, 16] alpha=0.00 text="" font=13.0
+                  NSTextFieldSimpleLabel [829, 846, 176.5, 16]
+                MiniProgressView [642.5, 863, 369, 18] hidden
+              MiniIconButton [1020.5, 836, 36, 36]
+              MiniIconButton [1057.5, 836, 36, 36]
+              MiniRoutePickerView [1094.5, 836, 36, 36]
+                AVRoutePickerButton [1094.5, 836, 36, 36] title="按钮"
+                  NSButtonImageView [1112, 853.5, 1, 1]
+                  NSImageView [1102.5, 837, 20, 33]
+                    _NSImageViewSimpleImageView [1102.5, 843.8, 20, 19.2]
+              MiniIconButton [1131.5, 836, 36, 36]
+          _NSCoreHostingView<RootView> [476.5, 827, 700, 54]
+      NowPlayingContainerView [0, 900, 1450, 900] alpha=0.00
+        NSView [0, 900, 1450, 900]
+        MiniPlayerBackdropMetalView [0, 900, 1450, 900]
+        NSHostingView<AnyView> [522, 1069, 406, 567.5]
+        NSView [725, 988, 673, 748] hidden
+          PanelRootView [725, 988, 673, 748]
+            NSView [725, 988, 673, 748]
+              NSTextField [970.5, 1353.5, 182, 17] text="播放歌曲并在此处查看歌词。" font=14.0
+                NSTextFieldSimpleLabel [970.5, 1353.5, 182, 17]
+        NowPlayingChromeView [0, 900, 1450, 900]
+          NSGlassEffectContainerView [0, 900, 1450, 900]
+            NSView [0, 900, 1450, 900]
+              NSGlassEffectView [100.5, 908, 76, 36]
+                ContentHolderView [100.5, 908, 76, 36]
+                  NSView [100.5, 908, 76, 36]
+                    NowPlayingIconButton [102.5, 908, 36, 36]
+                    NowPlayingIconButton [138.5, 908, 36, 36]
+                _NSCoreHostingView<RootView> [100.5, 908, 76, 36]
+              NSGlassEffectView [1225, 908, 217, 36]
+                ContentHolderView [1225, 908, 217, 36]
+                  NSView [1225, 908, 217, 36]
+                    NowPlayingRoutePickerView [1225, 908, 40, 36]
+                      AVRoutePickerButton [1225, 908, 40, 36] title="按钮"
+                        NSButtonImageView [1244.5, 925.5, 1, 1]
+                        NSImageView [1235, 909, 20.5, 33]
+                          _NSImageViewSimpleImageView [1235, 915.4, 20.5, 19.6]
+                    NSView [1265, 917, 1, 18]
+                    NowPlayingVolumeBar [1277.2, 920, 114, 12]
+                    NowPlayingIconButton [1397.4, 908, 36, 36]
+                _NSCoreHostingView<RootView> [1225, 908, 217, 36]
+              NSGlassEffectView [10, 1752.5, 36, 36]
+                ContentHolderView [10, 1752.5, 36, 36]
+                  NSView [10, 1752.5, 36, 36]
+                    NowPlayingIconButton [10, 1752.5, 36, 36]
+                    NowPlayingEmojiButton [10, 1752.5, 36, 36] hidden
+                    NowPlayingEmojiButton [46, 1752.5, 36, 36] hidden
+                    NowPlayingEmojiButton [82, 1752.5, 36, 36] hidden
+                    NowPlayingEmojiButton [118, 1752.5, 36, 36] hidden
+                    NowPlayingEmojiButton [154, 1752.5, 36, 36] hidden
+                    NowPlayingEmojiButton [190, 1752.5, 36, 36] hidden
+                _NSCoreHostingView<RootView> [10, 1752.5, 36, 36]
+              NSGlassEffectView [1368, 1752.5, 72, 36]
+                ContentHolderView [1368, 1752.5, 72, 36]
+                  NSView [1368, 1752.5, 72, 36]
+                    NowPlayingIconButton [1368, 1752.5, 36, 36]
+                    NowPlayingIconButton [1404, 1752.5, 36, 36]
+                _NSCoreHostingView<RootView> [1368, 1752.5, 72, 36]
+              NSGlassEffectView [1326, 1752.5, 36, 36] hidden
+                ContentHolderView [1326, 1752.5, 36, 36]
+                  NSHostingView<AnyView> [1326, 1752.5, 36, 36]
+                _NSCoreHostingView<RootView> [1326, 1752.5, 36, 36]
+            _NSCoreHostingView<RootView> [0, 900, 1450, 900]
+          ReactionEffectView [0, 900, 1450, 900]
+      ToastView [707, 44, 36, 35] hidden alpha=0.00 material=13 blend=1
+        NSTextField [721, 54, 8, 15] text="" font=12.0
+          NSTextFieldSimpleLabel [721, 54, 8, 15]
+    NSTitlebarContainerView [0, 0, 1450, 52]
+      NSTitlebarView [0, 0, 1450, 52]
+        NSView [0, 0, 1450, 52]
+        NSTextField [-2, 900, 4, 0] hidden text="" font=13.0
+          NSTextFieldSimpleLabel [-2, 900, 4, 0]
+        NSToolbarView [0, 0, 1450, 52]
+          NSGlassContainerView [0, 0, 1450, 52]
+            NSView [0, 0, 1450, 52]
+            _NSCoreHostingView<RootView> [0, 0, 1450, 52]
+        _NSThemeCloseWidget [19, 19, 14, 14] title="按钮"
+          _NSCoreHostingView<ThemeWidgetView> [19, 19, 14, 14]
+        _NSThemeZoomWidget [65, 19, 14, 14] title="按钮"
+          _NSCoreHostingView<ThemeWidgetView> [65, 19, 14, 14]
+        _NSThemeWidget [42, 19, 14, 14] title="按钮"
+          _NSCoreHostingView<ThemeWidgetView> [42, 19, 14, 14]
+      _NSTitlebarDecorationView [0, 0, 1450, 52]
+      NSTitlebarContainerBlockingView [200, 0, 5.5, 52]
+      NSTitlebarContainerBlockingView [0, 0, 0, 52]
