@@ -181,7 +181,9 @@ final class ReactionEmitter {
         timer = nil
     }
 
-    deinit {
+    /// `Timer` 不是 `Sendable`，非隔离的 `deinit` 取不到它。标`isolated`：
+    /// 主线程上释放时照旧同步跑完，停发射的时机不变。
+    isolated deinit {
         timer?.invalidate()
     }
 }

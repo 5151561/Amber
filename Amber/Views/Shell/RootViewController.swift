@@ -169,12 +169,15 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
             completion?()
             return
         }
+        // 完成回调的类型是 `@Sendable`，而收尾闭包是调用方给的普通（非 Sendable）闭包。
+        // `NSAnimationContext` 保证回调在主线程，这一条按不检查处理。
+        nonisolated(unsafe) let finish = completion
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             view.animator().alphaValue = alpha
         } completionHandler: {
-            completion?()
+            finish?()
         }
     }
 
@@ -297,12 +300,14 @@ private final class ToastView: NSVisualEffectView {
             completion?()
             return
         }
+        // 同上：收尾闭包不是 `Sendable`，但回调必在主线程，按不检查处理。
+        nonisolated(unsafe) let finish = completion
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             animator().alphaValue = alpha
         } completionHandler: {
-            completion?()
+            finish?()
         }
     }
 }
