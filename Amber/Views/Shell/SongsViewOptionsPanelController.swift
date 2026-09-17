@@ -16,8 +16,8 @@ final class SongsViewOptionsPanelController: NSWindowController {
 
     init(appState: AppState) {
         let host = NSHostingController(rootView: SongsViewOptionsView()
-            .environmentObject(appState.songsTable)
-            .environmentObject(appState.listViewSize))
+            .environment(appState.songsTable)
+            .environment(appState.listViewSize))
         let panel = NSPanel(contentViewController: host)
         // 不含 .resizable：Music 那扇也拖不动大小
         panel.styleMask = [.titled, .closable, .utilityWindow]

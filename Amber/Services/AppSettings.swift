@@ -421,11 +421,12 @@ extension DolbyAtmosMode {
 ///
 /// 视图从环境里拿（`@EnvironmentObject`）；`LibraryStore` 这类非视图代码走`shared`。
 @MainActor
-final class AppSettings: ObservableObject {
+@Observable
+final class AppSettings {
 
     static let shared = AppSettings()
 
-    @Published var values: SettingsValues {
+    var values: SettingsValues {
         didSet { persist() }
     }
 

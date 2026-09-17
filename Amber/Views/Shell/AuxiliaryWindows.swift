@@ -228,13 +228,13 @@ extension View {
         environmentObject(appState)
             .environmentObject(appState.player)
             .environmentObject(appState.library)
-            .environmentObject(appState.downloads)
+            .environment(appState.downloads)
             .environment(appState.qqLogin)
             .environment(appState.neteaseLogin)
             .environment(appState.providerSettings)
             .environmentObject(appState.player.clock)
-            .environmentObject(appState.songsTable)
-            .environmentObject(appState.listViewSize)
-            .environmentObject(AppSettings.shared)
+            .environment(appState.songsTable)
+            .environment(appState.listViewSize)
+            .environment(AppSettings.shared)
     }
 }

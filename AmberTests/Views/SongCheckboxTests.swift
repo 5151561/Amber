@@ -152,7 +152,7 @@ final class SongCheckboxTests: XCTestCase {
     }
 
     /// 开关是从 `AppSettings` 镜像进来的，改了要转成列变化（表格靠列前后相等与否重建）。
-    func testSettingsMirrorsCheckboxSwitch() {
+    func testSettingsMirrorsCheckboxSwitch() async {
         let suite = "SongCheckboxTests.mirror"
         UserDefaults.standard.removePersistentDomain(forName: suite)
         let defaults = UserDefaults(suiteName: suite)!
@@ -162,6 +162,7 @@ final class SongCheckboxTests: XCTestCase {
         XCTAssertFalse(settings.columns.showsCheckboxes)
 
         AppSettings.shared.values.songListCheckboxes = true
+        await settleObservations()
         XCTAssertTrue(settings.columns.showsCheckboxes)
         XCTAssertTrue(settings.columns.visible.contains { $0.key == .checked })
 

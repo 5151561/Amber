@@ -48,8 +48,9 @@ enum ListViewSize: Int, CaseIterable, Identifiable {
 /// 全局的列表尺寸偏好。跟 Music 一样是**应用级**的一条设置，不属于哪一张表，
 /// 所以单独一个 store，而不是塞进 SongsTableSettings。
 @MainActor
-final class ListViewSizeStore: ObservableObject {
-    @Published var size: ListViewSize {
+@Observable
+final class ListViewSizeStore {
+    var size: ListViewSize {
         didSet { defaults.set(size.rawValue, forKey: Self.key) }
     }
 
@@ -74,8 +75,9 @@ final class ListViewSizeStore: ObservableObject {
 /// （AX 实测 AXWindow 286×655、标题「显示选项」，由 `ViewNSMenuHelper.doShowHideViewOptions:`
 /// 打开），跟表格不在同一棵视图树里；两边要改的是同一份状态，只能抬到共享对象上。
 @MainActor
-final class SongsTableSettings: ObservableObject {
-    @Published var columns = SongsTableColumns()
+@Observable
+final class SongsTableSettings {
+    var columns = SongsTableColumns()
     /// 排序列与升降序跨启动保留。
     ///
     /// Music 把它存在播放列表自己的 columnSet 里：`loadColumnsFromSet:`（`[实测]`）
@@ -83,14 +85,14 @@ final class SongsTableSettings: ObservableObject {
     /// `sortDescriptorPrototype`，再按存档里的升序标志决定
     /// 要不要换成 `NSSortDescriptor(key:ascending:false)`。
     /// 也就是说排序列与方向都是持久状态，不是每次开表都回到出厂值。
-    @Published var sort = SongsTableSort() { didSet { saveSort() } }
+    var sort = SongsTableSort() { didSet { saveSort() } }
     /// 筛选同样不是一次性的：`setCurrentFilterCategories:`（`[实测]`）把当前分类
     /// 连同 viewMode 写回播放列表对象，下次由 `updateFilteringState` 重新套上。
     /// Amber 没有播放列表对象承载它，落到偏好里。
-    @Published var filter = SongsTableFilter.all { didSet { saveFilter() } }
+    var filter = SongsTableFilter.all { didSet { saveFilter() } }
 
     /// 「显示插图」：表格改成按专辑分组，最左多出一条 230pt 的插图列。
-    @Published var showArtwork = false {
+    var showArtwork = false {
         didSet {
             columns.showsArtwork = showArtwork
             // 打开插图那一下把专辑排序模式抬到「按艺人排列专辑」：参照页未开插图时专辑列头是
@@ -103,15 +105,15 @@ final class SongsTableSettings: ObservableObject {
     }
     /// 「始终显示」：曲目行不够高也把封面整块画出来（组会被撑高）。
     /// Music 里它在「显示插图」关着时是灰的。
-    @Published var alwaysShowArtwork = false { didSet { saveArtwork() } }
+    var alwaysShowArtwork = false { didSet { saveArtwork() } }
     /// 「插图大小」：滑杆三档 0/1/2
-    @Published var artworkSize = 0 {
+    var artworkSize = 0 {
         didSet { columns.artworkSize = artworkSize; saveArtwork() }
     }
     /// 「显示曲目插图」：每行左边多一张小封面，行高顶到 54。
     /// 对应控制器上的 `showTrackArtwork`（`[实测]` `setShowTrackArtwork:`：
     /// 置位后把曲目封面列的 hidden 取反，并把表格样式切成 Plain）。
-    @Published var showTrackArtwork = false {
+    var showTrackArtwork = false {
         didSet { columns.showsTrackArtwork = showTrackArtwork; saveArtwork() }
     }
 
@@ -126,7 +128,7 @@ final class SongsTableSettings: ObservableObject {
     /// 通用页「显示 › 星级评分」「显示 › 歌曲列表复选框」两条的订阅：它们不在这张表
     /// 自己的状态里，改了要转成列变化，表格才知道该重建列
     /// （`SongsTableController` 是拿`columns` 前后相等与否判断的）。
-    private var appSettingsObserver: AnyCancellable?
+    private let observers = TaskBag()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -134,7 +136,10 @@ final class SongsTableSettings: ObservableObject {
         // 先把星级开关镜像进来，下面恢复排序列时才会把已经藏起来的评分列算作不可选
         columns.showsStarRatings = AppSettings.shared.values.showStarRatings
         columns.showsCheckboxes = AppSettings.shared.values.songListCheckboxes
-        appSettingsObserver = AppSettings.shared.$values.sink { [weak self] values in
+        // 用 `observe`（丢首值）不是 `observeNow`：上面两行已经把当前值同步镜像进来了。
+        // 首值靠播种而不是靠订阅，这样刚 init 出来的实例当场就是对的——`observeNow`
+        // 的首值要过一跳，中间那一拍列是没镜像的。
+        observers.observe({ AppSettings.shared.values }) { [weak self] values in
             self?.applyStarRatings(values.showStarRatings)
             self?.applyCheckboxes(values.songListCheckboxes)
         }
@@ -231,7 +236,7 @@ final class SongsTableSettings: ObservableObject {
 /// Music 在弹出菜单与分组之间还有「显示插图／始终显示／插图大小」三件——那是给插图列用的，
 /// Amber 的表格没有插图列，摆上去就是三个点不动的控件，故不做；其余照实录补齐。
 struct SongsViewOptionsView: View {
-    @EnvironmentObject private var settings: SongsTableSettings
+    @Environment(SongsTableSettings.self) private var settings
     /// 折叠状态只是窗口自己的显示态，不跟着列设置落盘。
     /// 出厂时「文件／分类／其他」是收起来的（Music 实测就这三组收起）。
     @State private var collapsed: Set<String> = ["文件", "分类", "其他"]
@@ -258,7 +263,10 @@ struct SongsViewOptionsView: View {
 
     /// 「排序方式：」+ 弹出菜单（AX：标签 x=604、菜单 x=694 宽 122 高 20）
     private var sortRow: some View {
-        HStack(spacing: M.sortLabelGap) {
+        // `@Environment` 拿到的是实例本身，取 Binding 要经一层 `@Bindable`
+        // （`@ObservedObject` 时代 `$settings` 是 wrapper 直接给的）。
+        @Bindable var settings = settings
+        return HStack(spacing: M.sortLabelGap) {
             Text("排序方式：")
             Picker("", selection: $settings.sort.column) {
                 ForEach(settings.columns.sortableColumns, id: \.self) {
@@ -276,7 +284,10 @@ struct SongsViewOptionsView: View {
     /// 插图三件（[AX] 勾选框 x=638、滑杆 605 宽 282）。
     /// 「始终显示」跟着「显示插图」启停——Music 里前者关着时它是灰的。
     private var artworkRows: some View {
-        VStack(alignment: .leading, spacing: M.artworkRowSpacing) {
+        // `@Environment` 拿到的是实例本身，取 Binding 要经一层 `@Bindable`
+        // （`@ObservedObject` 时代 `$settings` 是 wrapper 直接给的）。
+        @Bindable var settings = settings
+        return VStack(alignment: .leading, spacing: M.artworkRowSpacing) {
             Toggle("显示插图", isOn: $settings.showArtwork)
             Toggle("始终显示", isOn: $settings.alwaysShowArtwork)
                 .disabled(!settings.showArtwork)

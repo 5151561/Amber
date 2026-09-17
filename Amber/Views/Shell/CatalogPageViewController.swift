@@ -457,10 +457,15 @@ class CatalogPageViewController: ContentPageController {
         //
         // 只挑 `.release` / `.artistHero` 两种卡型：别的卡一笔都不画入库/下载态，
         // 跟着 `downloads.$states` 走的话主页一屏几十张专辑卡会随下载进度每百分点重配一轮。
-        Publishers.MergeMany(
+        // 原来是 Publishers.MergeMany 合三路。`downloads` 已经是 @Observable，
+        // `library` 还不是（批 8），所以这里暂时两条路：一条 observeAny 盯下载态，
+        // 一条仍走 Combine 盯资料库那两项。批 8 之后并成一条 observeAny。
+        observers.observe({ [appState] in appState.downloads.states }) { [weak self] _ in
+            self?.refreshLibraryStateCards()
+        }
+        Publishers.Merge(
             appState.library.$libraryAlbums.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            appState.library.$favoriteArtistIDs.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            appState.downloads.$states.dropFirst().map { _ in () }.eraseToAnyPublisher())
+            appState.library.$favoriteArtistIDs.dropFirst().map { _ in () }.eraseToAnyPublisher())
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.refreshLibraryStateCards() }
             .store(in: &cancellables)

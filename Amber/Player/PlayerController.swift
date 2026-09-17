@@ -249,7 +249,8 @@ final class PlayerController: ObservableObject {
     private var other: PlaybackDeck { current === deckA ? deckB : deckA }
 
     private var endObserver: (any NSObjectProtocol)?
-    private var settingsCancellable: AnyCancellable?
+    /// 设置相关的三条观察（音频偏好 / 过渡 / 自动连播）都挂这里。
+    private let observers = TaskBag()
     private var shuffleOrder: [Int] = []
     private var shuffleCursor = 0
     /// 连续取流失败的次数。整队都放不出来时用它兜底，避免一路空跳到队尾。
@@ -276,11 +277,9 @@ final class PlayerController: ObservableObject {
     /// 「歌曲过渡」的缓存副本。tick 是 10 Hz，不能每跳都去拷一份几十个字段的
     /// `SettingsValues` 出来问一个 Bool。
     private var crossfadeEnabled = false
-    private var crossfadeCancellable: AnyCancellable?
 
     /// 「自动连播」开关的缓存副本，来源同上（`SettingsValues.playQueueAutoplay`）。
     private var autoplayOn = false
-    private var autoplayCancellable: AnyCancellable?
     /// 正在补的那一批。换歌/换队列时取消，见 `refillAutoplayIfNeeded`。
     private var autoplayTask: Task<Void, Never>?
     /// 「这一轮已经按这首补过了」。**按种子曲目 id 去重**，不是按次数：
@@ -314,24 +313,17 @@ final class PlayerController: ObservableObject {
         }
 
         // 设置窗一按「好」就整份写回，`removeDuplicates` 之后只有音频那三项真变了才推给 tap。
-        settingsCancellable = AppSettings.shared.$values
-            .map(AudioPrefs.init)
-            .removeDuplicates()
-            .sink { [weak self] prefs in
+        observers.observeNow({ AudioPrefs(AppSettings.shared.values) }) { [weak self] prefs in
                 guard let self else { return }
                 self.audioPrefs = prefs
                 self.deckA.mix?.tap?.apply(prefs)
                 self.deckB.mix?.tap?.apply(prefs)
             }
-        crossfadeCancellable = AppSettings.shared.$values
-            .map(\.crossfade)
-            .removeDuplicates()
-            .sink { [weak self] in self?.crossfadeEnabled = $0 }
+        observers.observeNow({ AppSettings.shared.values.crossfade }) { [weak self] in
+            self?.crossfadeEnabled = $0
+        }
         // 「自动连播」翻开就立刻补一批（不等下一次换歌），翻关就把已经补进来的清掉。
-        autoplayCancellable = AppSettings.shared.$values
-            .map(\.playQueueAutoplay)
-            .removeDuplicates()
-            .sink { [weak self] on in
+        observers.observeNow({ AppSettings.shared.values.playQueueAutoplay }) { [weak self] on in
                 guard let self else { return }
                 self.autoplayOn = on
                 if on { self.refillAutoplayIfNeeded() } else { self.clearAutoplayItems() }

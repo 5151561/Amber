@@ -70,6 +70,7 @@ final class PlayQueueModel: ObservableObject {
     private let appState: AppState
     private var player: PlayerController { appState.player }
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     /// 四个分区。任何一个为空，面板就不 append 那个分区
     /// （[实测] playqueue spec §3.4：四对 `(tag, 数组)` 逐对判空，空的不进快照）。
@@ -138,14 +139,11 @@ final class PlayQueueModel: ObservableObject {
             .store(in: &cancellables)
 
         // 顶部两颗按钮读的是设置（见 `mixingEnabled` / `autoplayEnabled`）——属于「数据」。
-        AppSettings.shared.$values
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.objectWillChange.send()
-                self.dataDidChange.send()
-            }
-            .store(in: &cancellables)
+        observers.observe({ AppSettings.shared.values }) { [weak self] _ in
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.dataDidChange.send()
+        }
 
         recompute()
     }

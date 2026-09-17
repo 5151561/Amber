@@ -38,18 +38,29 @@ extension TaskBag {
     ///    以前靠「读到的还是旧值」写的代码要重新核对。
     /// 2. **同一 tick 连写会合并**，只收到最后一个值。靠「每次赋值收到一次」
     ///    数事件的消费方会漏；关心「现在是什么」的消费方不受影响。
-    /// 3. **Equatable 自带相邻去重**，`.removeDuplicates()` 可以直接删。
-    ///    非 Equatable 不去重，那些要自己用 AsyncAlgorithms 的 `removeDuplicates(by:)`。
+    /// 3. **自带相邻去重**（Equatable），`.removeDuplicates()` 可以直接删。
     ///
-    /// 首个当前值按 `dropFirst()` 丢掉，对应 Combine 那边到处写的 `$prop.dropFirst()`：
-    /// AppKit 侧初值一律在 `viewDidLoad` 里直接读，不靠订阅补。要初值就用 `observeNow`。
-    func observe<Value: Sendable>(
+    /// 当前值不发，对应 Combine 那边到处写的 `$prop.dropFirst()`：AppKit 侧初值一律
+    /// 在 `viewDidLoad` 里直接读，不靠订阅补。要初值就用 `observeNow`。
+    ///
+    /// **为什么不是简单的 `dropFirst()`**：订阅登记之后、`Task` 第一次跑起来之前的那段
+    /// 窗口里如果值就变了，`Observations` 的首个元素已经是**新值**，`dropFirst()` 会把它
+    /// 整个吞掉，这条改动就永久丢了。Combine 的 `.sink` 是同步登记的，没有这段窗口。
+    /// 所以这里在**调用点同步**取一份基线，首个元素与基线不同就照发。
+    func observe<Value: Sendable & Equatable>(
         _ value: @escaping @MainActor @Sendable () -> Value,
         onChange: @escaping @MainActor (Value) -> Void
     ) {
+        let baseline = value()
         add(Task { @MainActor in
-            for await next in Observations(value).dropFirst() {
+            var isFirst = true
+            for await next in Observations(value) {
                 if Task.isCancelled { return }
+                if isFirst {
+                    isFirst = false
+                    // 与登记那一刻相同 ＝ 期间没人改过，这就是要丢掉的「当前值」。
+                    if next == baseline { continue }
+                }
                 onChange(next)
             }
         })
@@ -77,8 +88,10 @@ extension TaskBag {
     ///
     /// 用法：`observers.observeAny({ (model.items, model.sort, model.filter) }) { … }`
     ///
-    /// 元组没有 Equatable，所以**不会去重**——与 `objectWillChange` 同口径。
-    /// 要去重就单独 `observe` 那一项。
+    /// 元组没有 Equatable，所以：**不会去重**（与 `objectWillChange` 同口径），
+    /// 也**没有** `observe` 那道基线保护——登记到首次跑起来之间的改动会被当成「当前值」丢掉。
+    /// 这里的消费方都是 `setNeedsRefresh()` 这种幂等合批入口，页面自己的首次加载另有其路，
+    /// 漏掉启动那一下没有后果；要是哪天用在别处，先想清楚这一条。
     func observeAny<Snapshot: Sendable>(
         _ snapshot: @escaping @MainActor @Sendable () -> Snapshot,
         onChange: @escaping @MainActor () -> Void

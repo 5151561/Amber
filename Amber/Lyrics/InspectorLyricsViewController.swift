@@ -589,12 +589,9 @@ final class InspectorLyricsViewController: NSViewController {
 
         // 设置 › 通用 ›「更大字体」。从前是 `SyncedLyricsView` 上的`@ObservedObject`，
         // 骨架换成 AppKit 之后落在这条唯一的读取点上。
-        AppSettings.shared.$values
-            .map(\.largerText)
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.syncController() }
-            .store(in: &cancellables)
+        observers.observe({ AppSettings.shared.values.largerText }) { [weak self] _ in
+            self?.syncController()
+        }
 
         // 翻译 / 发音两条副行的显隐。从前是两个 `@AppStorage`；AppKit 这边直接听
         // `UserDefaults` 的变更通知再读那两个键（`LyricsTranslationOptions`），
