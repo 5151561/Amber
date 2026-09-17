@@ -23,7 +23,7 @@ import SwiftUI
 final class LibrarySongsViewController: ContentPageController {
 
     private let model = SongsPageModel()
-    private lazy var binder = SearchFieldBinder(text: model.$search.values) { [weak self] text in
+    private lazy var binder = SearchFieldBinder(text: { [model] in model.search }) { [weak self] text in
         self?.model.search = text
     }
     private lazy var menuController = SongsFilterMenuController(settings: appState.songsTable)
@@ -224,12 +224,10 @@ final class LibrarySongsViewController: ContentPageController {
         // 改搜索词是**用户主动换了看法**，这一类才滚回选中行——排序与筛选那两条
         // `SongsTableController` 自己看得见，搜索词它够不着，由这里置位
         // （见 `SongsTableController.scrollsToSelectionOnNextUpdate`）。
-        model.$search
-            .sink { [weak self] _ in
-                self?.controller.scrollsToSelectionOnNextUpdate = true
-                self?.setNeedsRefresh()
-            }
-            .store(in: &cancellables)
+        observers.observeNow({ [model] in model.search }) { [weak self] _ in
+            self?.controller.scrollsToSelectionOnNextUpdate = true
+            self?.setNeedsRefresh()
+        }
     }
 
     /// 合批 + 可见性闸。导航容器把访问过的根页全缓存着、切页只切 `isHidden`

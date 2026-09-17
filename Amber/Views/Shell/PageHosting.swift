@@ -225,10 +225,11 @@ class ContentPageController: NSViewController, ContentPageToolbarProviding {
 /// 所以提成一个小 `ObservableObject`：页面 VC 建一份，交给 SwiftUI 页与工具栏两边。
 /// （这是过渡形态；各页换成 `NSCollectionView` 时它就成了那一页的视图模型。）
 @MainActor
-final class LibraryPageModel: ObservableObject {
-    @Published var favoritesOnly = false
-    @Published var search = ""
-    @Published var sort = LibraryGridSort()
+@Observable
+final class LibraryPageModel {
+    var favoritesOnly = false
+    var search = ""
+    var sort = LibraryGridSort()
     // 标题栏标题的覆盖值**不在这里**。那一位只有「最近添加」写（跟着滚动联动当前段名），
     // 挂在四页共用的模型上就是把一次性显示态摆进共享状态：谁再把 `objectWillChange`
     // 接成刷新，「滚过一个段头 = 整页重灌」就复发一次（批 A 只切断了页面那条订阅）。
@@ -259,8 +260,9 @@ final class LibraryPageModel: ObservableObject {
 /// 歌曲页标题栏的取值。筛选与排序本来就在 `AppState.songsTable`（跟「显示选项」窗共享），
 /// 这里只多一个搜索词。
 @MainActor
-final class SongsPageModel: ObservableObject {
-    @Published var search = ""
+@Observable
+final class SongsPageModel {
+    var search = ""
 }
 
 /// 搜索页标题栏的取值：词条与范围。
@@ -269,17 +271,18 @@ final class SongsPageModel: ObservableObject {
 /// 换成 AppKit 工具栏之后必须提到页面外面。词条的**提交**逻辑仍在 SwiftUI 页里
 /// （去抖、同词去重、最近搜索），这里只负责传值和「取消」这一个动作。
 @MainActor
-final class SearchPageModel: ObservableObject {
-    @Published var query = ""
-    @Published var scope: SearchScopeTab
+@Observable
+final class SearchPageModel {
+    var query = ""
+    var scope: SearchScopeTab
     /// 「把焦点放回搜索框」的信号（Esc 之后、上屏时）。
-    @Published var focusToken = 0
+    var focusToken = 0
     /// 「立刻搜，别等去抖」的信号（回车提交，§4.1.4 searchFieldDidCommitString:）。
-    @Published var submitToken = 0
+    var submitToken = 0
     /// Option-Enter 切换在线音源并提交的信号（§4.1.4 searchFieldSwitchToStoreAndSearch: 的 Amber 映射）。
-    @Published var submitOptionToken = 0
+    var submitOptionToken = 0
     /// Esc / ⓧ 清除：清词条回落地页。由 SwiftUI 页安装。
-    var onCancel: () -> Void = {}
+    @ObservationIgnored var onCancel: () -> Void = {}
 
     init(scope: SearchScopeTab) {
         self.scope = scope

@@ -86,12 +86,8 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
         // `reloadData()` 一次。现在那一位已经搬回这一页自己身上，标题那条链
         // 工具栏直接订 `displayTitleSource`（`ContentToolbar`），页面这条本来就是多余的。
         // 这一页没有排序菜单（`hasSort: false`），所以 `sort` 也不订。
-        model.$search
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
-        model.$favoritesOnly
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        observers.observeNow({ [model] in model.search }) { [weak self] _ in self?.setNeedsRefresh() }
+        observers.observeNow({ [model] in model.favoritesOnly }) { [weak self] _ in self?.setNeedsRefresh() }
     }
 
     /// 刷新入口：合批 + 可见性闸，写法与其余四页同一条

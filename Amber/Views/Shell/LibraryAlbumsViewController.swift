@@ -75,9 +75,10 @@ final class LibraryAlbumsViewController: LibraryPageController,
         appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums, .ratings])
             .sink { [weak self] _ in self?.setNeedsRefresh() }
             .store(in: &cancellables)
-        model.objectWillChange
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        // `@Observable` 没有 `objectWillChange` 那条「随便什么变了」的信号——这是好事，
+        // 它正是「一次入库把资料库四页全量重算一遍」的由来。这里把本页真读的三项装成
+        // 一个快照：与原来等价，而与它们无关的写入不再把这一页叫醒。
+        observers.observeAny({ [model] in (model.favoritesOnly, model.search, model.sort) }) { [weak self] in self?.setNeedsRefresh() }
     }
 
     /// 刷新入口：合批 + 可见性闸。

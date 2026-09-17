@@ -274,7 +274,7 @@ final class PlaylistDetailViewController: TrackTableViewController {
     /// 搜索框那一件要的是个 `@Published`（`SearchFieldBinder` 双向同步用），
     /// 这一页没有别的页模型，就给它一个只装一个词的小模型。
     private let pageModel = PlaylistPageModel()
-    private lazy var searchBinder = SearchFieldBinder(text: pageModel.$search.values) { [weak self] text in
+    private lazy var searchBinder = SearchFieldBinder(text: { [pageModel] in pageModel.search }) { [weak self] text in
         guard let self, filterText != text else { return }
         filterText = text
         reapplyOrder()
@@ -636,8 +636,9 @@ final class PlaylistDetailViewController: TrackTableViewController {
 
 /// 只装一个词：`SearchFieldBinder` 要一个`Published` 才能把字段与模型双向同步。
 @MainActor
-final class PlaylistPageModel: ObservableObject {
-    @Published var search = ""
+@Observable
+final class PlaylistPageModel {
+    var search = ""
 }
 
 // MARK: - ☰ 排序菜单

@@ -131,19 +131,15 @@ final class MusicSearchField: NSSearchField {
 /// 搜索框 ↔ 页模型的接线。`NSSearchField` 要一个 delegate，而页模型不是 NSObject，
 /// 所以中间放这一层。
 ///
-/// `text` 收的是**任意**元素为 `String`、不抛错的异步序列，不绑死在某一套观察机制上：
-/// 页模型还是 `@Published` 时传 `model.$search.values`，改成 `@Observable` 之后传
-/// `Observations { model.search }`，这一层一个字不用动。
+/// `text` 是「现在的搜索词是什么」的读取闭包，内部用 `Observations` 盯着它。
 @MainActor
 final class SearchFieldBinder: NSObject, NSSearchFieldDelegate {
     let field = MusicSearchField(frame: .zero)
     private let onChange: (String) -> Void
     private var sync: Task<Void, Never>?
 
-    init<Text: AsyncSequence>(
-        text: Text,
-        onChange: @escaping (String) -> Void
-    ) where Text.Element == String, Text.Failure == Never {
+    init(text: @escaping @MainActor @Sendable () -> String,
+         onChange: @escaping (String) -> Void) {
         self.onChange = onChange
         super.init()
         field.delegate = self
@@ -151,10 +147,12 @@ final class SearchFieldBinder: NSObject, NSSearchFieldDelegate {
         field.sendsWholeSearchString = false
         // 模型那边被别处改了（比如切页重建），把字段同步过来；只在真的不同才回写，
         // 否则会把输入光标顶到末尾。
-        // Task 在 @MainActor 的 init 里建，继承主 actor 隔离——序列不跨隔离域，
-        // 所以 Text 不必是 Sendable（Combine 的 AsyncPublisher 就不是）。
+        //
+        // `Observations` 在这里建而不是由调用方传进来：它的 emit 闭包带
+        // `@_inheritActorContext`，要在**隔离上下文**里构造才拿得到主 actor 隔离，
+        // 而调用点全是 `lazy var binder = …` 的属性初始化器，那里不是。
         sync = Task { [weak self] in
-            for await value in text {
+            for await value in Observations(text) {
                 guard let self, self.field.stringValue != value else { continue }
                 self.field.stringValue = value
             }
@@ -184,7 +182,7 @@ class LibraryPageController: ContentPageController {
     /// 专辑页有排序菜单；最近添加页没有（[实测] `supportedSortOptions` 返回 nil，
     /// `recents 规格` §2.2）。艺人页与所有播放列表页同样没有。
     private let hasSort: Bool
-    private lazy var binder = SearchFieldBinder(text: model.$search.values) { [weak self] text in
+    private lazy var binder = SearchFieldBinder(text: { [model] in model.search }) { [weak self] text in
         self?.model.search = text
     }
     private lazy var menuController = LibraryFilterMenuController(
@@ -362,6 +360,7 @@ final class SearchPageFieldBinder: NSObject, NSSearchFieldDelegate {
     private let model: SearchPageModel
     private let appState: AppState
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     init(model: SearchPageModel, appState: AppState) {
         self.model = model
@@ -377,19 +376,14 @@ final class SearchPageFieldBinder: NSObject, NSSearchFieldDelegate {
         updatePlaceholder()
 
         // 外部改写词条时同步给 AppKit 字段（如落地页点击最近搜索、Esc 清空）
-        model.$query
-            .removeDuplicates()
-            .sink { [weak self] query in
-                guard let self, self.field.stringValue != query else { return }
-                self.field.stringValue = query
-            }
-            .store(in: &cancellables)
+        // `removeDuplicates()` 不用写了：`Observations` 对 Equatable 自带相邻去重。
+        observers.observeNow({ [model] in model.query }) { [weak self] query in
+            guard let self, self.field.stringValue != query else { return }
+            self.field.stringValue = query
+        }
 
         // 范围或当前音乐源改变时动态更新占位符
-        model.$scope
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.updatePlaceholder() }
-            .store(in: &cancellables)
+        observers.observeNow({ [model] in model.scope }) { [weak self] _ in self?.updatePlaceholder() }
 
         appState.$selectedProvider
             .removeDuplicates()
@@ -397,10 +391,8 @@ final class SearchPageFieldBinder: NSObject, NSSearchFieldDelegate {
             .store(in: &cancellables)
 
         // 焦点请求信号（进入页面、Esc 重置后保持焦点等）
-        model.$focusToken
-            .dropFirst()
-            .sink { [weak self] _ in self?.focus() }
-            .store(in: &cancellables)
+        // focusToken 是只增的计数信号，相邻去重咬不到它。
+        observers.observe({ [model] in model.focusToken }) { [weak self] _ in self?.focus() }
     }
 
     private func updatePlaceholder() {

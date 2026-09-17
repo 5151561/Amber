@@ -65,6 +65,7 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
     /// 资料库派生艺人的真实头像缓存（艺人名 → 头像地址）。
     private var resolvedArtistAvatars: [String: String] = [:]
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     private static let recentSearchesKey = "Amber.recentSearches"
     private static let recentSearchesLimit = 8
@@ -79,44 +80,29 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
         // 工具栏那颗 ⓧ 与 Esc 走同一条（§2.3 cancelOperation:）。
         page.onCancel = { [weak self] in self?.cancelSearch() }
 
-        // 下面五条 = SwiftUI 版那五个 `.onChange`。`@Published` 在 **willSet** 发布，
-        // 订阅方直接读 `page.scope` 会读到旧值，所以一律`receive(on:)` 落到下一轮再读
-        // （与 `CatalogPageViewController` 订阅音乐源同一条规矩）。
-        page.$query
-            .dropFirst()
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] value in self?.queryChanged(value) }
-            .store(in: &cancellables)
-
-        page.$scope
-            .dropFirst()
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.segmentedControlChanged() }
-            .store(in: &cancellables)
+        // 下面四条 = SwiftUI 版那几个 `.onChange`。
+        //
+        // 原先每条都挂 `.receive(on:)`：`@Published` 在 **willSet** 发布，订阅方当场读
+        // `page.scope` 会读到旧值，得落到下一轮再读。换成 `Observations` 之后事件在值
+        // **落定之后**才到，回读就是新值，那一跳不需要了。
+        // `removeDuplicates()` 也不用写——Equatable 自带相邻去重。
+        observers.observe({ [page] in page.query }) { [weak self] value in self?.queryChanged(value) }
+        observers.observe({ [page] in page.scope }) { [weak self] _ in self?.segmentedControlChanged() }
 
         // 回车：不等 450ms 的去抖，立刻按当前词条提交。
-        page.$submitToken
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.searchGeneration += 1
-                self.commit(term: self.query, switchingScope: false)
-            }
-            .store(in: &cancellables)
+        // token 是只增的计数信号，相邻去重咬不到它。
+        observers.observe({ [page] in page.submitToken }) { [weak self] _ in
+            guard let self else { return }
+            self.searchGeneration += 1
+            self.commit(term: self.query, switchingScope: false)
+        }
 
         // Option-Enter：切换在线音乐源并立刻提交（§4.1.4 searchFieldSwitchToStoreAndSearch: 的 Amber 映射）。
-        page.$submitOptionToken
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.searchGeneration += 1
-                self.commit(term: self.query, switchingScope: true)
-            }
-            .store(in: &cancellables)
+        observers.observe({ [page] in page.submitOptionToken }) { [weak self] _ in
+            guard let self else { return }
+            self.searchGeneration += 1
+            self.commit(term: self.query, switchingScope: true)
+        }
 
         appState.$selectedProvider
             .dropFirst()

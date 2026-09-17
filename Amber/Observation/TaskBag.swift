@@ -67,4 +67,27 @@ extension TaskBag {
             }
         })
     }
+
+    /// `objectWillChange.sink { … }` 的对位物：**列出来的这些属性**里任意一个变了就调一次。
+    ///
+    /// `@Observable` 没有「随便什么变了」这一路信号——这是好事，`objectWillChange` 正是
+    /// 「一次入库把资料库四页全量重算一遍」的由来（见 design-ref/reactive-ui-review.md §2.1）。
+    /// 迁移时把消费方**真正读的那几项**装成一个元组传进来，行为与原来等价，
+    /// 而与它无关的写入不再把它叫醒。
+    ///
+    /// 用法：`observers.observeAny({ (model.items, model.sort, model.filter) }) { … }`
+    ///
+    /// 元组没有 Equatable，所以**不会去重**——与 `objectWillChange` 同口径。
+    /// 要去重就单独 `observe` 那一项。
+    func observeAny<Snapshot: Sendable>(
+        _ snapshot: @escaping @MainActor @Sendable () -> Snapshot,
+        onChange: @escaping @MainActor () -> Void
+    ) {
+        add(Task { @MainActor in
+            for await _ in Observations(snapshot).dropFirst() {
+                if Task.isCancelled { return }
+                onChange()
+            }
+        })
+    }
 }
