@@ -76,6 +76,7 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     private var lyricsTask: Task<Void, Never>?
 
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     // MARK: rollover（nowplaying spec §2.3）
 
@@ -293,10 +294,7 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
             .store(in: &cancellables)
 
         // 在「显示简介 › 歌词」里改完自定义歌词，显示口那份会换，翻译键跟着重判。
-        TrackInfoStore.shared.$infos
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.reloadLyricsIfNeeded() }
-            .store(in: &cancellables)
+        observers.observe({ TrackInfoStore.shared.infos }) { [weak self] _ in self?.reloadLyricsIfNeeded() }
     }
 
     // MARK: - 布局

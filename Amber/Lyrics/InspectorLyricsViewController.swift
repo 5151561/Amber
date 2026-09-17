@@ -121,6 +121,7 @@ final class InspectorLyricsViewController: NSViewController {
     private var translationHost: NSHostingView<AnyView>?
 
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     // MARK: - 生命周期
 
@@ -584,10 +585,7 @@ final class InspectorLyricsViewController: NSViewController {
 
         // 在「显示简介 › 歌词」里改完自定义歌词要立刻反映到面板上。
         // 键是 `LyricsStore.displayToken(for:trackInfo:)`——换歌要重取，改完自定义词也要重取。
-        TrackInfoStore.shared.$infos
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.reload() }
-            .store(in: &cancellables)
+        observers.observe({ TrackInfoStore.shared.infos }) { [weak self] _ in self?.reload() }
 
         // 设置 › 通用 ›「更大字体」。从前是 `SyncedLyricsView` 上的`@ObservedObject`，
         // 骨架换成 AppKit 之后落在这条唯一的读取点上。

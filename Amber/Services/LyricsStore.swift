@@ -20,7 +20,9 @@ import Foundation
 ///（简介面板拿它当编辑底稿），`displayLyrics(for:using:)` / `cachedDisplayLyrics(for:)`
 /// 是「面板该画的那一份」——自定义歌词优先。面板一律走后者。
 @MainActor
-final class LyricsStore: ObservableObject {
+/// 它没有任何可观察状态——一个进程级缓存而已。原先挂 `ObservableObject` 是历史遗留：
+/// 0 个 `@Published`、0 处 `objectWillChange`、也没进过 environment。这一轮直接摘掉。
+final class LyricsStore {
 
     /// 侧栏与整窗播放器的歌词面板各是一台 `InspectorLyricsViewController`，
     /// 缓存要在两处之间共用，所以本体是进程级的一份；`AppState.lyricsStore` 指的就是它。

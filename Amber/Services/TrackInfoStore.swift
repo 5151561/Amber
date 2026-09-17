@@ -299,18 +299,19 @@ struct PlaybackOverrides: Equatable, Sendable {
 ///
 /// 断点（`track_resume`）单开一张表，理由见 schema 里那段：那张是设置，这张是状态。
 @MainActor
-final class TrackInfoStore: ObservableObject {
+@Observable
+final class TrackInfoStore {
 
     static let shared = TrackInfoStore()
 
     /// 编辑过的那些曲目。键是 `track.id`。
-    /// 面板一次只开一首，改完要让歌曲表跟着重画——所以这一份是 `@Published`
+    /// 面板一次只开一首，改完要让歌曲表跟着重画——所以这一份要可观察
     /// （与 `LibraryStore.ratings` 同性质，不是逐行热查的那一类）。
     ///
     /// **内存这一份与 `track_info` 那一行逐字相同**：`title` / `artist` / `album` /
     /// `trackNumber` / `discNumber` 五项在两边都是空的，由 `info(for:)` 每次从 `Track`
     /// 现取（见 `stored(_:)`）。留在内存里就是第二份真值，而且是注定会发霉的那一份。
-    @Published private(set) var infos: [String: TrackInfo] = [:]
+    private(set) var infos: [String: TrackInfo] = [:]
 
     /// 「记住播放位置」记下的断点。**不进 `TrackInfo` 本体**：那是设置，这是状态——
     /// 混在一起的话，面板每次比对「有没有改」都会被播放进度搅成「改了」。
