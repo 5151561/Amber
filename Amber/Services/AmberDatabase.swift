@@ -14,6 +14,10 @@ import os
 ///
 /// **线程**：`@MainActor`，和四个 store 同一条线。`SQLiteDatabase` 不是 `Sendable`，
 /// 后台要干活的正确切法是后台只做文件 IO 与解析，解析出的值类型回主 actor 再写库。
+///
+/// 这一条不是「还没来得及改」，是查过之后留下的：为什么它没有变成 `actor`、
+/// 要变得先拆掉什么，全写在 `SQLiteDatabase` 那段「为什么它没有被收进 actor」里。
+/// 启动那一趟到底值多少毫秒，写在 `LibraryStore.load()` 上（有基准与曲线）。
 @MainActor
 final class AmberDatabase {
 

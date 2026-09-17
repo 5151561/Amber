@@ -1595,9 +1595,10 @@ final class LibraryStore {
     /// 「曲目全表 / 歌单与专辑 / 统计与标记」三段，越线那天在 Instruments 上直接看得出
     /// 是哪一段涨的，不用再拿基准去猜。
     private func loadFromDatabase(_ db: SQLiteDatabase) throws {
+        // 下面三条用的是**事件**不是区间：事件不成对，读到一半抛错也不会留下半条，
+        // 所以敢直接摆在几条 `try` 之间。消息里的插值在没人采样时不求值，计数是 O(1)。
         let signposter = AmberDiagnostics.launch
-        // 事件不是区间：不成对、抛错也不会留下半条，所以敢放在 `try` 之间。
-        // 消息里的插值在没人采样时不求值，计数本身是 O(1)。
+
         // 曲目池：五张关系表存的都是 id，行本身只有这一份（原来是摊在五处的完整副本）。
         var pool: [String: Track] = [:]
         for track in try db.query(Self.trackSelect, [], { Self.decodeTrack($0) }) {
