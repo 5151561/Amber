@@ -209,9 +209,11 @@ extension QQAPI {
     }
 
     /// 歌手主页头那条要的 Android comm（见 `singerHomepage` 的说明）。
-    private static let androidComm: [String: Any] = [
+    // 写成计算属性而不是 `static let`：`[String: Any]` 不是 Sendable，当存储属性就是全局可变状态。
+    // 这几个键值是每条请求都要现拼进去的，没有存下来的必要。
+    private static var androidComm: [String: Any] { [
         "cv": 12060012, "ct": 11, "format": "json", "uin": 0, "g_tk": 5381,
-    ]
+    ] }
 
     // MARK: - 歌手主页各 tab
 

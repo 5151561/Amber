@@ -29,7 +29,7 @@ extension QQAPI: MusicLibraryWriting {
 
     /// 写接口的登录闸。未登录直接抛，不发请求（理由见文件头第 1 条）。
     func requireCredential() throws -> QQCredential {
-        guard let credential = credentialProvider?() else {
+        guard let credential = credential else {
             throw ProviderError.unavailable("请先登录 QQ 音乐账号")
         }
         return credential

@@ -223,7 +223,7 @@ extension NeteaseAPI {
     /// `redplus`（红钻）。这里三个都收，谁有值谁说了算，不替业务层挑。
     func vipInfo() async -> NeteaseVIPInfo? {
         // userId 传空串＝查自己（参考实现的默认）；凭证里现成有 uid 就带上，省服务端一次推断
-        let uid = credentialProvider?()?.uid
+        let uid = credential?.uid
         guard let resp = try? await eapi("/api/music-vip-membership/front/vip/info",
                                          [("userId", .string(uid.map(String.init) ?? ""))]),
               let data = resp["data"] as? [String: Any] else { return nil }

@@ -31,14 +31,37 @@ final class NeteaseAPI: MusicProvider {
 
     static let log = Logger(subsystem: "com.changlepan.Amber", category: "NeteaseAPI")
 
-    /// 登录态由 AppState 注入：返回当前凭证（可能为 nil）
-    var credentialProvider: (() -> NeteaseCredential?)?
-    /// 音质偏好由 AppState 注入
-    var qualityProvider: (() -> StreamQuality)?
+    /// 登录态、音质、过期回调三样由 AppState **推**进来。
+    ///
+    /// 以前是反过来「拉」的闭包（`credentialProvider` 直读 store 上的 `credential`）。
+    /// 改成推是因为请求要能跑在协作线程池上：继承调用方隔离域的函数里，编译器无从证明
+    /// 调用方是主 actor，`@MainActor` 闭包在那里根本调不了。三样都是 Sendable 的小值
+    /// 类型，放同一把锁后面即可——与仓库里别处的 `OSAllocatedUnfairLock` 同一手法。
+    private struct Injected: Sendable {
+        var credential: NeteaseCredential?
+        var quality: StreamQuality = .standard
+        var onCredentialExpired: (@MainActor @Sendable () -> Void)?
+    }
+    private let injected = OSAllocatedUnfairLock(initialState: Injected())
+
+    /// 当前登录凭证（可能为 nil）。AppState 订阅 store 的 `credential` 推进来。
+    var credential: NeteaseCredential? {
+        get { injected.withLock { $0.credential } }
+        set { injected.withLock { $0.credential = newValue } }
+    }
+
+    /// 全局流播放档位，已过设置窗的夹取（无损开关 / 杜比全景声）。
+    var quality: StreamQuality {
+        get { injected.withLock { $0.quality } }
+        set { injected.withLock { $0.quality = newValue } }
+    }
     /// 凭证过期回调（专用校验接口确认失效时触发）。
     /// 与 QQAPI 同样声明成主线程回调：触发点在 URLSession 的后台续体上，
     /// 接的那头要改 @Published、弹提示，跑到后台线程动 AppKit 会直接 SIGABRT。
-    var onCredentialExpired: (@MainActor @Sendable () -> Void)?
+    var onCredentialExpired: (@MainActor @Sendable () -> Void)? {
+        get { injected.withLock { $0.onCredentialExpired } }
+        set { injected.withLock { $0.onCredentialExpired = newValue } }
+    }
 
     private let session: URLSession
     /// eapi 专用会话：**关掉系统 cookie 存储**。
@@ -130,7 +153,7 @@ final class NeteaseAPI: MusicProvider {
               cookieOverride: String? = nil) async throws -> [String: Any] {
         // 用 cookieOverride 时打的是**别人的**身份（刚扫码换来的那份），
         // 它回 301 跟当前登录态无关，不能拿去注销手上的凭证。
-        let credential = (anonymous || cookieOverride != nil) ? nil : credentialProvider?()
+        let credential = (anonymous || cookieOverride != nil) ? nil : credential
         let dict = try await eapiRaw(path, body, anonymous: anonymous,
                                      cookieOverride: cookieOverride).body
         let code = dict["code"] as? Int ?? 200
@@ -155,7 +178,7 @@ final class NeteaseAPI: MusicProvider {
     func eapiRaw(_ path: String, _ body: [(String, NeteaseJSON)] = [],
                  anonymous: Bool = false,
                  cookieOverride: String? = nil) async throws -> (body: [String: Any], response: HTTPURLResponse) {
-        let credential = anonymous ? nil : credentialProvider?()
+        let credential = anonymous ? nil : credential
         // 免登录也要 320k 就得先拿匿名 token；有 MUSIC_U 时不能再带 MUSIC_A，
         // 两个身份一起发服务端只认后者、登录态白丢。
         if !anonymous, credential == nil, cookieOverride == nil {
@@ -274,8 +297,8 @@ final class NeteaseAPI: MusicProvider {
 
     // MARK: - 登录态
 
-    /// 手上有没有凭证。注入的 `credentialProvider` 直读 `NeteaseLoginStore.credential`。
-    var isLoggedIn: Bool { credentialProvider?() != nil }
+    /// 手上有没有凭证。`credential` 由 AppState 从 `NeteaseLoginStore` 推进来。
+    var isLoggedIn: Bool { credential != nil }
 
     /// 校验当前 cookie 还认不认。
     ///
@@ -286,7 +309,7 @@ final class NeteaseAPI: MusicProvider {
     /// 只判「回了 200、profile 却是空的」这一种降级。请求本身失败（断网、超时）
     /// 一律**不动**登录态——没证据说明凭证坏了，不能因为网抖一下就把人踢下线。
     func validateCredential() async {
-        guard credentialProvider?() != nil else { return }
+        guard credential != nil else { return }
         guard let profile = try? await accountProfile(verifiesCredential: true) else { return }
         if profile.uid == nil { await onCredentialExpired?() }
     }
@@ -324,7 +347,7 @@ final class NeteaseAPI: MusicProvider {
     /// 这一条只读；往账号里写是另外两套协议的事（`MusicLibraryWriting` /
     /// `MusicTasteWriting`），每一处写入都由用户在菜单上点出来。
     func accountPlaylists() async -> [Playlist] {
-        guard let credential = credentialProvider?() else { return [] }
+        guard let credential = credential else { return [] }
         // 凭证里存了登录时拿到的 uid；万一为空（老版本存下来的）再补打一次 account/get
         var resolved = credential.uid
         if resolved == nil { resolved = try? await accountProfile().uid }
@@ -689,12 +712,12 @@ final class NeteaseAPI: MusicProvider {
             return .init(items: .playlists(await highqualityPlaylists(offset: 6, limit: 24)))
 
         case .charts:
-            guard let list = await toplist() else { return .empty }
+            guard let list = await toplist()?.rows else { return .empty }
             return .init(items: .playlists(list.prefix(12).compactMap { Self.parsePlaylist($0) }))
 
         case .cityCharts:
             // 网易云没有城市榜，只有地区榜（美/英/日/韩…），落在同一格
-            guard let list = await toplist() else { return .empty }
+            guard let list = await toplist()?.rows else { return .empty }
             let regional = list.filter { (($0["name"] as? String) ?? "").contains("榜") }
             return .init(items: .playlists(Array(regional.dropFirst(12).prefix(12))
                 .compactMap { Self.parsePlaylist($0) }))
@@ -825,12 +848,24 @@ final class NeteaseAPI: MusicProvider {
     }
 
     /// 榜单目录：「排行榜」与「城市榜」两格要的是同一条，交上来的原始表也一样。
-    private func toplist() async -> [[String: Any]]? {
+    ///
+    /// 缓存里存的是**原始表**而不是解析好的 `[Playlist]`：城市榜那一格要先按名字筛、
+    /// 再 `dropFirst(12)`，筛与切都发生在原始表的下标上。先解析会让解析失败的条目
+    /// 把窗口整体挪位——那种错很安静，不值得为消一条警告去冒。
+    private func toplist() async -> RawRows? {
         await catalogCache.value(for: "ne:/api/toplist") {
             guard let resp = try? await self.get("/api/toplist"),
                   let list = resp["list"] as? [[String: Any]] else { return nil }
-            return list
+            return RawRows(rows: list)
         }
+    }
+
+    /// 一份只读的原始 JSON 行表，只为能进 `RequestCache`（那里要求 Sendable）。
+    ///
+    /// `@unchecked` 的依据是只读：`JSONSerialization` 吐出来的是不可变的 Foundation
+    /// 对象，这份表在缓存闭包里造出来之后再没有人改过它。别拿它装会被改的东西。
+    struct RawRows: @unchecked Sendable {
+        let rows: [[String: Any]]
     }
 
     private func personalized(_ path: String, limit: Int) async -> [Playlist] {
@@ -1058,7 +1093,7 @@ final class NeteaseAPI: MusicProvider {
     func trackStreamURL(track: Track, quality: StreamQuality?) async throws -> URL {
         let songID = track.id.rawID
         // 显式档位（下载）优先；没传就用全局的流播放档。
-        let level = Self.neteaseLevel(for: quality ?? qualityProvider?() ?? .standard)
+        let level = Self.neteaseLevel(for: quality ?? self.quality)
         let resp = try await eapi("/api/song/enhance/player/url/v1", [
             ("ids", .string("[\(songID)]")), ("level", .string(level)), ("encodeType", "flac"),
         ])
@@ -1072,11 +1107,11 @@ final class NeteaseAPI: MusicProvider {
         }
         // url 为空只说明「这个身份取不到」，服务端不区分「没会员」和「登录早就掉了」，
         // 措辞上得先把这两件事分开，别把过期的 cookie 说成会员等级不够。
-        if credentialProvider?() == nil {
+        if credential == nil {
             throw ProviderError.unavailable("付费或 VIP 曲目，匿名状态无法播放")
         }
         await validateCredential()
-        if credentialProvider?() == nil {
+        if credential == nil {
             throw ProviderError.unavailable("网易云音乐登录已过期，请重新登录后再播放")
         }
         throw ProviderError.unavailable("该曲目为付费/VIP 内容，当前账号无权播放")
@@ -1158,7 +1193,7 @@ final class NeteaseAPI: MusicProvider {
             ("id", .string(id)), ("r", .int(maxHeight ?? 4000)),
         ])
         guard let variant = Self.parseMVVariant(resp) else {
-            if credentialProvider?() == nil {
+            if credential == nil {
                 throw ProviderError.unavailable("这支 MV 匿名状态下取不到地址")
             }
             throw ProviderError.unavailable("这支 MV 当前账号无权观看")

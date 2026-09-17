@@ -353,7 +353,7 @@ extension NeteaseAPI: MusicLibraryWriting {
     /// 当前账号 uid。凭证里存了登录时拿到的那个；老版本存下来的可能为空，
     /// 那就补打一条 `account/get`（与 `accountPlaylists` 同一套兜底）。
     func currentUID() async -> Int? {
-        if let uid = credentialProvider?()?.uid { return uid }
+        if let uid = credential?.uid { return uid }
         return try? await accountProfile().uid
     }
 
