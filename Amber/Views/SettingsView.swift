@@ -33,12 +33,15 @@ enum SettingsTab: Hashable {
 /// 是**各自独立的一棵** SwiftUI 树，`@Binding` 没法跨树共享，所以抬成一个引用类型，
 /// 由窗口控制器建一份、注入给五张页。
 @MainActor
-final class SettingsDraftModel: ObservableObject {
-    @Published var draft = SettingsDraft()
+@Observable
+final class SettingsDraftModel {
+    var draft = SettingsDraft()
 
     /// 「取消 / 好」按完要关掉的那扇窗，由 `SettingsWindowController` 填成
     /// 「关我自己那扇」——不能就手关 key window，那可能是别人。
-    var close: () -> Void = {}
+    ///
+    /// 标 `@ObservationIgnored`：它不是状态，参与观察只会白记一次依赖。
+    @ObservationIgnored var close: () -> Void = {}
 
     /// 每次开窗重新抓一遍各 store 的当前值。
     func refresh(settings: AppSettings,
@@ -306,7 +309,7 @@ private func settingsButtonRow(_ label: String,
 
 /// 通用页。[AX] 自上而下六组：资料库 / 听歌历史 / 更大字体 / 显示+列表大小 / 通知 / 隐私链接。
 struct GeneralSettingsPane: View {
-    @ObservedObject var model: SettingsDraftModel
+    @Bindable var model: SettingsDraftModel
     @EnvironmentObject private var qqLogin: QQLoginStore
     @State private var showingPrivacy = false
 
@@ -406,7 +409,7 @@ struct GeneralSettingsPane: View {
 
 /// 播放页。[AX] 自上而下：歌曲过渡 / 声音增强器+音量平衡 / 无损音频 / 空间音频 / 视频质量。
 struct PlaybackSettingsPane: View {
-    @ObservedObject var model: SettingsDraftModel
+    @Bindable var model: SettingsDraftModel
 
     var body: some View {
         SettingsPane(model: model) {
@@ -536,7 +539,7 @@ struct PlaybackSettingsPane: View {
 
 /// 音源页（Amber 比 Music 多出来的那一张）：开关每个音源、选默认源、看各源的账号状态。
 struct ProviderSettingsPane: View {
-    @ObservedObject var model: SettingsDraftModel
+    @Bindable var model: SettingsDraftModel
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var player: PlayerController
     @EnvironmentObject private var library: LibraryStore
@@ -651,7 +654,7 @@ struct ProviderSettingsPane: View {
 
 /// 文件页。[AX] 只有一组：媒体位置面包屑 + 更改/重设 + 两条勾选 + 导入设置…
 struct FilesSettingsPane: View {
-    @ObservedObject var model: SettingsDraftModel
+    @Bindable var model: SettingsDraftModel
     @State private var showingImportSettings = false
 
     var body: some View {
@@ -900,7 +903,7 @@ private struct ImportSettingsView: View {
 /// 高级页。[AX] 三组：资料库三条 / 三颗还原键 / 窗口两条。
 /// 三颗还原键**按下即生效**，不等「好」——Music 那边也是当场就做。
 struct AdvancedSettingsPane: View {
-    @ObservedObject var model: SettingsDraftModel
+    @Bindable var model: SettingsDraftModel
     @EnvironmentObject private var appState: AppState
     /// 遥控器（iOS「遥控」App）的配对与广播。单例：这一行要显示的配对数在设置窗里
     /// 就得能看见，而设置窗这棵树上只有 `AppState`——不为一行界面逼别人的文件先长属性。

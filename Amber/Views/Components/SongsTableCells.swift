@@ -35,15 +35,18 @@ struct SongsCellData: Equatable {
 /// 选中/悬浮是行视图推下来的（＝Music 的 `tableView:setRollover:forRow:` 与
 /// `setRolloverState:`），内容是控制器在`viewFor` 里推下来的。
 @MainActor
-final class SongsCellState: ObservableObject {
-    @Published var data = SongsCellData()
-    @Published var selected = false
-    @Published var rollover = false
+@Observable
+final class SongsCellState {
+    var data = SongsCellData()
+    var selected = false
+    var rollover = false
     /// ••• 菜单的作用集：点在选中行上就是整份选中集，否则只有这一行。
     /// 菜单内容是打开时才求值的，所以这里放闭包而不是快照。
-    var menuTracks: () -> [Track] = { [] }
+    ///
+    /// 闭包标 `@ObservationIgnored`：它不是「状态」，参与观察只会白记一次依赖。
+    @ObservationIgnored var menuTracks: () -> [Track] = { [] }
     /// ••• 菜单里的「播放」＝从列表播放：队列是整份可见行，起播的是这一行。
-    var menuPlayContext: () -> TrackPlayContext? = { nil }
+    @ObservationIgnored var menuPlayContext: () -> TrackPlayContext? = { nil }
 }
 
 // MARK: - 富单元格
@@ -266,7 +269,7 @@ final class SongsTextCellView: NSTableCellView {
 /// 富单元格的 SwiftUI 内容。像素与旧的 `SongsTableRow` 一模一样，只是换了个宿主：
 /// 行/列由 NSTableView 排，这里只负责一格里画什么。
 struct SongsTableCellContent: View {
-    @ObservedObject var state: SongsCellState
+    var state: SongsCellState
 
     @EnvironmentObject private var player: PlayerController
     @EnvironmentObject private var library: LibraryStore
