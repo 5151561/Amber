@@ -131,7 +131,20 @@ enum RubyLayout {
 
     // MARK: - 分词
 
-    private static var wordStartCache: [String: Set<Int>] = [:]
+    // 下面几张表标 `nonisolated(unsafe)`，理由与代价都写在这里，别当橡皮擦看：
+    //
+    // 事实：它们只在主线程的排版路径上被摸。[实测 2026-09-17] 在歌词那 5 个
+    // `layoutSublayers` 覆写里插 `dispatchPrecondition(condition: .onQueue(.main))`，
+    // 装机后带歌词播放 35 秒，一次都没触发。
+    //
+    // 那为什么不用 `@MainActor` 把这件事写出来——试过了，走不通：调用方是
+    // `SBS_TextContentLayer` 那一族 `CALayer` 子类，而 SDK 里 `CALayer` 没有
+    // `@MainActor` 标注（`NSView` 有，所以视图层没这问题）。给子类标上之后，
+    // `layoutSublayers` / `init()` 这些覆写仍然跟着父类是非隔离的，体内一碰 `self`
+    // 就是「sending 'self'」——问题只是从这里挪到了那里。
+    //
+    // 所以 SDK 给 `CALayer` 补上 `@MainActor` 之前，这里只能是断言而不是证明。
+    nonisolated(unsafe) private static var wordStartCache: [String: Set<Int>] = [:]
 
     /// 每个词在整行里的起始 UTF-16 下标。
     ///
