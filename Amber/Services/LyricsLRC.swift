@@ -79,7 +79,7 @@ enum LyricsLRC {
         let minutes = total / 6000
         let secs = (total / 100) % 60
         let hundredths = total % 100
-        return String(format: "[%02d:%02d.%02d]", minutes, secs, hundredths)
+        return "[\(minutes.zeroPadded(to: 2)):\(secs.zeroPadded(to: 2)).\(hundredths.zeroPadded(to: 2))]"
     }
 
     /// 两端空白去掉；行内换行换成空格——一行里出现 `\n` 会把这行劈成没有时间戳的半行，

@@ -194,13 +194,19 @@ final class LoudnessStore {
         var accumulator = LoudnessMeter.Accumulator(sampleRate: format.sampleRate,
                                                     channels: channels)
         let capacity: AVAudioFrameCount = 4096
+        // 这一段三处 `unsafe` 是同一条契约：`AVAudioPCMBuffer` 的样本只能经
+        // `floatChannelData`（`UnsafePointer<UnsafeMutablePointer<Float>>?`）拿到，
+        // AVFoundation 没给出借 `Span` 的安全口子。
+        //
+        // 谁保证它安全：`buffer` 是这个函数的局部强引用，活到 `scan` 返回，指针不会悬垂；
+        // 缓冲在 `init` 时按 `frameCapacity` 一次分好，`read(into:)` 只往里填不重分配，
+        // 所以指针表在循环外取一次就够。读的范围由 `frames = buffer.frameLength` 界定，
+        // 它永远 ≤ `capacity`，是 AVFoundation 自己回报的已填帧数。
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity),
-              let data = buffer.floatChannelData else {
+              let data = unsafe buffer.floatChannelData else {
             return nil
         }
-        // 各声道的指针在 buffer 的一生里不变（缓冲在 init 时就分好了，read 只往里填），
-        // 所以指针表在循环外取一次就够，不用每读一段就造一份新数组。
-        let pointers = (0..<channels).map { UnsafePointer(data[$0]) }
+        let pointers = unsafe (0..<channels).map { unsafe UnsafePointer(data[$0]) }
         var busySince = DispatchTime.now().uptimeNanoseconds
         while file.framePosition < total {
             if cancel?.isCancelled == true { return nil }
@@ -210,7 +216,7 @@ final class LoudnessStore {
             do { try file.read(into: buffer, frameCount: want) } catch { break }
             let frames = Int(buffer.frameLength)
             if frames == 0 { break }
-            pointers.withUnsafeBufferPointer { accumulator.append($0, frames: frames) }
+            pointers.withUnsafeBufferPointer { unsafe accumulator.append($0, frames: frames) }
             if pace.idleNanoseconds > 0,
                DispatchTime.now().uptimeNanoseconds &- busySince >= pace.busyNanoseconds {
                 Thread.sleep(forTimeInterval: Double(pace.idleNanoseconds) / 1e9)

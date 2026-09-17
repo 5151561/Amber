@@ -148,7 +148,7 @@ final class ImageCache: @unchecked Sendable {
     private static func fileName(_ urlString: String) -> String {
         // SHA256 前 16 字节：31 位散列在几千张封面的量级上已经会撞，撞了就串图。
         let digest = SHA256.hash(data: Data(urlString.utf8))
-        return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        return digest.prefix(16).hexString()
     }
 
     /// 首次取图时清一次超期文件，放后台不挡取图。

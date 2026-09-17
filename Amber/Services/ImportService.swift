@@ -311,7 +311,7 @@ final class ImportService {
     }
 
     nonisolated static func sha1(_ text: String) -> String {
-        Insecure.SHA1.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        Insecure.SHA1.hash(data: Data(text.utf8)).hexString()
     }
 }
 
@@ -330,7 +330,15 @@ enum ImportWorker {
         var files: [URL] = []
         for url in urls {
             var isDirectory: ObjCBool = false
-            guard manager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
+            // `isDirectory:` 是 ObjC 的 out 参数（`UnsafeMutablePointer<ObjCBool>?`），
+            // `&isDirectory` 那一下是 inout-to-pointer，所以整句要标。不安全的只有这个
+            // 传参形式：指针指向的就是上一行这个局部变量，调用同步返回，活不出这一帧。
+            //
+            // 看着像安全替代的 `url.resourceValues(forKeys: [.isDirectoryKey])` 不等价：
+            // `fileExists` 跟着符号链接走，resource values 不跟（那是 `.isSymbolicLinkKey`
+            // 的活）。用户把一个指向文件夹的替身拖进来时两者结论相反，所以不换。
+            guard unsafe manager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            else { continue }
             if isDirectory.boolValue {
                 let enumerator = manager.enumerator(at: url, includingPropertiesForKeys: nil,
                                                     options: [.skipsHiddenFiles,
