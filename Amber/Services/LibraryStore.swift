@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// 资料库的一次改动动了哪几份数据。
 ///
@@ -243,6 +244,12 @@ final class LibraryStore {
         static let undoFavorite = "取消心水"
         static let rating = "评分"
     }
+
+    /// 这个类的四条日志（读库失败 / 落库失败 / 派生查询退回内存 / 搜索退回内存）。
+    ///
+    /// 全是**降级路径**：它们一条都不会弹到界面上（理由见`persist` 与`mirrorIsStale`），
+    /// 所以日志是用户报「搜索不好使」「删了又回来了」时唯一的现场。捞法见 `AmberDiagnostics`。
+    private static let log = AmberDiagnostics.logger("library")
 
     /// 主库连接。
     ///
@@ -1517,8 +1524,10 @@ final class LibraryStore {
         do {
             try loadFromDatabase(db)
         } catch {
-            NSLog("[LibraryStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
-                  String(describing: error))
+            Self.log.error("""
+                读库失败，这一程只读不写（库里那份一个字没动）：\
+                \(String(describing: error), privacy: .public)
+                """)
         }
     }
 
@@ -1814,7 +1823,10 @@ final class LibraryStore {
             // 这一刻起表可能与内存对不上了。读路径里读表的那几条派生查询要知道
             // 这件事，否则界面当场就是错的（见 `mirrorIsStale`）。
             mirrorIsStale = true
-            NSLog("[LibraryStore] %@ 落库失败：%@", label, String(describing: error))
+            Self.log.error("""
+                \(label, privacy: .public) 落库失败：\
+                \(String(describing: error), privacy: .public)
+                """)
         }
     }
 
@@ -1865,7 +1877,10 @@ final class LibraryStore {
         do {
             return try db.query(sql, binds, decode)
         } catch {
-            NSLog("[LibraryStore] 派生查询失败，这一次退回内存现算：%@", String(describing: error))
+            Self.log.error("""
+                派生查询失败，这一次退回内存现算：\
+                \(String(describing: error), privacy: .public)
+                """)
             return nil
         }
     }
@@ -2227,7 +2242,10 @@ final class LibraryStore {
         do {
             return .ids(try LibrarySearchIndex.matchedIDs(kind, query: query, in: db))
         } catch {
-            NSLog("[LibraryStore] 搜索查询失败，这一次退回内存筛选：%@", String(describing: error))
+            Self.log.error("""
+                搜索查询失败，这一次退回内存筛选：\
+                \(String(describing: error), privacy: .public)
+                """)
             return .substring(keyword)
         }
     }

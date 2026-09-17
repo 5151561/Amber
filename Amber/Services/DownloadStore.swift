@@ -124,6 +124,9 @@ final class DownloadStore {
     /// 排队等位的曲目，先进先出。
     @ObservationIgnored private var pending: [Track] = []
 
+    /// 读库失败与落库失败两条。与 `LibraryStore.log` 同解（都是降级路径，不弹界面）。
+    private static let log = AmberDiagnostics.logger("downloads")
+
     /// 主库连接（`local_file` 表在里面）。
     ///
     /// **nil ＝ 开库这一步就失败了**：清单照常读写，只是这一程的 external 条目没处去。
@@ -1294,8 +1297,10 @@ final class DownloadStore {
                 merged = try externalRows(from: db)
                 isLoaded = true
             } catch {
-                NSLog("[DownloadStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
-                      String(describing: error))
+                Self.log.error("""
+                    读库失败，这一程只读不写（库里那份一个字没动）：\
+                    \(String(describing: error), privacy: .public)
+                    """)
             }
         }
         let stored = Self.decodeIndex(at: indexURL)
@@ -1452,7 +1457,10 @@ final class DownloadStore {
         do {
             try db.transaction { try body(db) }
         } catch {
-            NSLog("[DownloadStore] %@ 落库失败：%@", label, String(describing: error))
+            Self.log.error("""
+                \(label, privacy: .public) 落库失败：\
+                \(String(describing: error), privacy: .public)
+                """)
         }
     }
 

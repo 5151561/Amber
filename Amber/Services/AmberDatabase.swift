@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 /// 主库：`~/Library/Application Support/Amber/library.sqlite`。
 ///
@@ -21,6 +22,10 @@ final class AmberDatabase {
 
     /// 库文件本身（`-wal` / `-shm` 是它的旁文件，见 `checkpoint()`）。
     let fileURL: URL
+
+    /// 见 `AmberDiagnostics`：这一层只有「升级前备份失败」一条日志，仍要有 category——
+    /// 它是唯一一条「照常继续、但用户以后可能会想知道」的记录。
+    private static let log = AmberDiagnostics.logger("database")
 
     private var terminationObserver: (any NSObjectProtocol)?
 
@@ -315,7 +320,7 @@ final class AmberDatabase {
             try? FileManager.default.removeItem(at: backup)
             try FileManager.default.copyItem(at: fileURL, to: backup)
         } catch {
-            NSLog("[AmberDatabase] 升级前备份失败（照常升级）：%@", String(describing: error))
+            log.error("升级前备份失败（照常升级）：\(String(describing: error), privacy: .public)")
         }
     }
 
