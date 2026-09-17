@@ -141,17 +141,34 @@ private struct LegacyTrackInfoArchive: Codable {
     var resumePositions: [String: TimeInterval]?
 }
 
-/// 旧媒体文件夹 `index.json` 里的一条。
+/// 媒体文件夹 `index.json` 里的一条。
 ///
 /// 形状照 `DownloadStore.Entry`（它是 `private`，够不着，所以这里复制一份形状）。
-/// `tagged` / `tagVersion` 必须是可选：这两格是后加的，老索引里没有这个键。
+/// 除了头三格，其余**全是后加的可选格**：老清单里根本没有这些键，
+/// 而合成的 `Decodable` 对非可选属性缺键会直接抛错（同 `LegacyTrack` 那段）。
 private struct LegacyDownloadEntry: Codable {
     var path: String
     var bytes: Int
     var date: Date
+    var mtime: Date?
     var quality: String?
+    var codec: String?
+    var sampleRate: Double?
+    var bitDepth: Int?
+    var tier: String?
     var tagged: Bool?
     var tagVersion: Int?
+}
+
+/// 阶段 5 起清单的外层形状（`DownloadStore.Manifest` 的形状快照）。
+///
+/// `manifestVersion` 这个键在这里只作**判形状**用——两种形状的区分靠它。
+/// 那一版起清单里**不再有 external 条目**，它们只住在 `local_file` 里；
+/// 也就是说「把库删了重迁」这条路恢复得回媒体夹里的那些，恢复不回原地引用的那些
+///（那是「external 是权威、没有第二处能重建它」的另一面）。
+private struct LegacyDownloadManifest: Codable {
+    var manifestVersion: Int
+    var entries: [String: LegacyDownloadEntry]
 }
 
 // MARK: - 迁移器
@@ -432,12 +449,21 @@ enum AmberDatabaseMigration {
         return decoded
     }
 
+    /// 读媒体夹的清单。**两种形状都认**，与 `DownloadStore.decodeIndex` 一致：
+    /// 阶段 5 起是 `{manifestVersion, entries}`，在那之前整份就是 `{id: Entry}`。
+    ///
+    /// 这里必须跟上新形状，否则「把 `library.sqlite` 删掉重迁一次」——一条现成的
+    /// 恢复路径，阶段 2 的实弹演习走的就是它——会在新形状的清单上解不动，
+    /// 本机文件一条都迁不过来，而且只是一句 warning。
     private static func loadDownloadIndex(
         at url: URL, warnings: inout [Warning]
     ) -> [String: LegacyDownloadEntry] {
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return [:] }
-        guard let decoded = try? JSONDecoder()
-            .decode([String: LegacyDownloadEntry].self, from: data)
+        let decoder = JSONDecoder()
+        if let manifest = try? decoder.decode(LegacyDownloadManifest.self, from: data) {
+            return manifest.entries
+        }
+        guard let decoded = try? decoder.decode([String: LegacyDownloadEntry].self, from: data)
         else {
             warnings.append(.downloadIndexUnreadable(url))
             return [:]
@@ -549,9 +575,15 @@ enum AmberDatabaseMigration {
                     scope: DownloadStore.isExternal(entry.path) ? .external : .media,
                     relativePath: entry.path,
                     bytes: entry.bytes,
-                    mtime: nil,          // 清单里没有这一格；阶段 5 换底座时由 stat 补
+                    // 老清单没有这几格（阶段 5 才加），那时一律是 nil；
+                    // 新清单里有就原样搬——它是媒体夹的自解释清单，不是只记一个路径。
+                    mtime: entry.mtime,
                     addedAt: entry.date,
                     quality: entry.quality,
+                    codec: entry.codec,
+                    sampleRate: entry.sampleRate,
+                    bitDepth: entry.bitDepth,
+                    tier: entry.tier,
                     tagged: entry.tagged,
                     tagVersion: entry.tagVersion))
             }
@@ -571,7 +603,8 @@ enum AmberDatabaseMigration {
                     // 入库时间优先用资料库记的那个；没有就退到文件自己的 mtime，
                     // 再没有才是此刻。这一列 NOT NULL，总得有个数。
                     addedAt: addedAt[track.id] ?? mtime ?? Date(),
-                    quality: nil, tagged: nil, tagVersion: nil))
+                    quality: nil, codec: nil, sampleRate: nil, bitDepth: nil, tier: nil,
+                    tagged: nil, tagVersion: nil))
             }
             return rows
         }
@@ -593,6 +626,11 @@ enum AmberDatabaseMigration {
         let mtime: Date?
         let addedAt: Date
         let quality: String?
+        /// 结构化音质四格，来自 `DownloadStore.readFormat(of:)`（清单里带着）。
+        let codec: String?
+        let sampleRate: Double?
+        let bitDepth: Int?
+        let tier: String?
         let tagged: Bool?
         let tagVersion: Int?
     }
@@ -893,16 +931,23 @@ enum AmberDatabaseMigration {
 
     private static func insertLocalFiles(_ plan: Plan, into db: SQLiteDatabase) throws {
         // codec / sample_rate / bit_depth / tier 这一轮全是 NULL：它们来自 `StreamFormat`，
-        // 要重读文件才有，属于换底座那一步的活。这里只搬清单里已经有的东西。
+        // 要重读文件才有，而这里只搬清单里已经有的东西。
+        //
+        // [阶段 5] 那四列由 `DownloadStore.readFormat(of:)` 在**本来就要读一次文件**的两条路
+        // （下载落地、「导入…」认领）上顺手填；已经在库里的老行会一直是 NULL，直到那首歌
+        // 被重下或者重新认领一次。**故意不加一趟「把所有文件重读一遍」的回填**——
+        // 那正是这四列当初选择「零额外 IO」时要躲开的开销（3000 首 × 40 MB 的冷读）。
+        // 等真有消费者（阶段 7 / 8 的按音质筛选）时再看值不值。
         let sql = """
             INSERT INTO local_file (key, scope, relative_path, volume_uuid, bytes, mtime,
                                     added_at, quality, codec, sample_rate, bit_depth, tier,
                                     tagged, tag_version)
-            VALUES (?,?,?,NULL,?,?,?,?,NULL,NULL,NULL,NULL,?,?)
+            VALUES (?,?,?,NULL,?,?,?,?,?,?,?,?,?,?)
             """
         for row in plan.localFiles {
             try db.run(sql, [row.key, row.scope.rawValue, row.relativePath, row.bytes, row.mtime,
-                             row.addedAt, row.quality, row.tagged, row.tagVersion])
+                             row.addedAt, row.quality, row.codec, row.sampleRate, row.bitDepth,
+                             row.tier, row.tagged, row.tagVersion])
         }
     }
 

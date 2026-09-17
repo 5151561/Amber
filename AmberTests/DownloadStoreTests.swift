@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Amber
 
@@ -321,7 +322,8 @@ final class DownloadStoreTests: XCTestCase {
         try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"], in: source)
         let settings = makeSettings(mediaFolder: source)
         let store = DownloadStore(directory: nil, legacyDirectory: try makeDirectory("legacy"),
-                                  settings: settings)
+                                  settings: settings,
+                                  databaseDirectory: try makeDirectory("support"))
         XCTAssertTrue(store.isDownloaded("qq:1"))
         var message: String?
         store.onMediaFolderChanged = { message = $0 }
@@ -348,7 +350,8 @@ final class DownloadStoreTests: XCTestCase {
                   index: ["qq:1": "告五人/某碟/03 傻鱼-9MnYb.flac"], in: source)
         let settings = makeSettings(mediaFolder: source)
         let store = DownloadStore(directory: nil, legacyDirectory: try makeDirectory("legacy"),
-                                  settings: settings)
+                                  settings: settings,
+                                  databaseDirectory: try makeDirectory("support"))
 
         settings.values.mediaFolderPath = target.path
 
@@ -364,7 +367,8 @@ final class DownloadStoreTests: XCTestCase {
         try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"], in: legacy)
 
         let store = DownloadStore(directory: nil, legacyDirectory: legacy,
-                                  settings: makeSettings(mediaFolder: media))
+                                  settings: makeSettings(mediaFolder: media),
+                                  databaseDirectory: try makeDirectory("support"))
 
         XCTAssertEqual(store.state(for: "qq:1"),
                        .downloaded(media.appendingPathComponent("qq_1.flac")))
@@ -381,7 +385,8 @@ final class DownloadStoreTests: XCTestCase {
         try write(file: "qq_2.flac", index: ["qq:2": "qq_2.flac"], in: media)
 
         let store = DownloadStore(directory: nil, legacyDirectory: legacy,
-                                  settings: makeSettings(mediaFolder: media))
+                                  settings: makeSettings(mediaFolder: media),
+                                  databaseDirectory: try makeDirectory("support"))
 
         XCTAssertTrue(store.isDownloaded("qq:2"))
         XCTAssertEqual(store.state(for: "qq:1"), .none)
@@ -402,7 +407,8 @@ final class DownloadStoreTests: XCTestCase {
         let settings = makeSettings(mediaFolder: try makeDirectory("media"))
         settings.values.keepMediaFolderOrganized = false
         let store = DownloadStore(directory: nil, legacyDirectory: try makeDirectory("legacy"),
-                                  settings: settings)
+                                  settings: settings,
+                                  databaseDirectory: try makeDirectory("support"))
         store.resolveRemoteURL = { _ in remote }
         let placed = expectation(description: "onDownloaded")
         var received: (String, URL)?
@@ -544,7 +550,8 @@ final class DownloadStoreTests: XCTestCase {
         let settings = makeSettings(mediaFolder: media)
         settings.values.keepMediaFolderOrganized = false
         let store = DownloadStore(directory: nil, legacyDirectory: try makeDirectory("legacy"),
-                                  settings: settings)
+                                  settings: settings,
+                                  databaseDirectory: try makeDirectory("support"))
         store.resolveRemoteURL = { _ in remote }
         let done = expectation(description: "onDownloaded")
         var placed: URL?
@@ -670,6 +677,247 @@ final class DownloadStoreTests: XCTestCase {
         XCTAssertEqual(values.downloadStreamQuality, .atmos)
     }
 
+    // MARK: - 清单与投影
+
+    /// **清单不再写 external 条目**，那一条搬进主库；清单本身换上 `manifestVersion`。
+    ///
+    /// 老清单（整份就是 `{id: Entry}`、里面还带着 external）照旧读得进来，读进来的那一刻
+    /// 就是升级：external 进 `local_file`，下一次写清单把它摘掉。
+    /// 最后那一步最要紧——**重开一份 store，那条 external 只能从主库里回来**，
+    /// 清单里已经没有它了。
+    @MainActor
+    func testManifestDropsExternalEntriesIntoTheDatabase() throws {
+        let outside = try makeDirectory("用户自己的音乐")
+        let external = outside.appendingPathComponent("原文件.flac")
+        try Data("fLaC-外部".utf8).write(to: external)
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"])
+        var entries = try readIndex()
+        entries["local:1"] = ["path": external.path, "bytes": 11, "date": 0,
+                              "quality": "无损 · 44.1 kHz 16 位 FLAC"]
+        try writeIndex(entries)
+
+        let store = DownloadStore(directory: directory)
+        XCTAssertTrue(store.isDownloaded("local:1"), "老清单里的 external 照旧认")
+
+        let manifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try readIndexData()) as? [String: Any])
+        XCTAssertEqual(manifest["manifestVersion"] as? Int, 1)
+        XCTAssertEqual(Set(try readIndex().keys), ["qq:1"],
+                       "external 不归这个文件夹管，清单里不该再有它")
+        XCTAssertEqual(try localFileRows()["local:1"]?.scope, "external")
+        XCTAssertEqual(try localFileRows()["local:1"]?.quality, "无损 · 44.1 kHz 16 位 FLAC",
+                       "搬进表里的那一行要带齐，不是只剩一个路径")
+
+        let reopened = DownloadStore(directory: directory)
+        XCTAssertEqual(reopened.state(for: "local:1"), .downloaded(external),
+                       "清单里已经没有它了，这一条只能从主库回来")
+    }
+
+    /// **「一张表 + scope 列」这个选择的核心不变量**：跑一次完整的投影重建，
+    /// external 行一个不变——行数不变，而且那几格（`quality` 一类）也不许被 UPSERT
+    /// 顺手盖掉。后者是「拆成两张表」那个方案本来也守不住的一种错。
+    @MainActor
+    func testProjectionRebuildLeavesExternalRowsAlone() throws {
+        let outside = try makeDirectory("用户自己的音乐")
+        let external = outside.appendingPathComponent("原文件.flac")
+        try Data("fLaC-外部".utf8).write(to: external)
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"])
+        let store = DownloadStore(directory: directory)
+        store.adoptLocalFile(at: external,
+                             for: makeTrack("local:1", title: "歌", artist: "人", album: "碟"),
+                             external: true)
+        let before = try XCTUnwrap(localFileRows()["local:1"])
+
+        store.rebuildMediaProjection()
+
+        let rows = try localFileRows()
+        XCTAssertEqual(rows.values.filter { $0.scope == "external" }.count, 1,
+                       "external 行一个不许少，也不许多")
+        let after = try XCTUnwrap(rows["local:1"])
+        XCTAssertEqual(after.scope, "external")
+        XCTAssertEqual(after.path, before.path)
+        XCTAssertEqual(after.bytes, before.bytes)
+        XCTAssertEqual(after.quality, before.quality, "external 的格子不许被重建顺手盖掉")
+        XCTAssertEqual(rows["qq:1"]?.scope, "media", "媒体夹那条照旧在（它就是重建出来的）")
+    }
+
+    /// 投影是**照着清单**重建的：清单里没有的行，重建完就该没了。
+    /// 卷号也要填上——迁移器写下来的那批没有卷号（它不 stat 文件），
+    /// 不捎上 `volume_uuid IS NULL` 的话它们会永远留在表里。
+    @MainActor
+    func testProjectionRebuildDropsRowsTheManifestNoLongerHas() throws {
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"])
+        let store = DownloadStore(directory: directory)
+        // 迁移器那种「没有卷号」的老行：直接插一条，再跑一次重建。
+        try database().sqlite.run("""
+            INSERT INTO local_file (key, scope, relative_path, volume_uuid, bytes, mtime,
+                                    added_at, quality, codec, sample_rate, bit_depth, tier,
+                                    tagged, tag_version)
+            VALUES ('qq:gone', 'media', '早就没了.flac', NULL, 1, NULL, 0,
+                    NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+            """)
+
+        store.rebuildMediaProjection()
+
+        let rows = try localFileRows()
+        XCTAssertEqual(Set(rows.keys), ["qq:1"], "清单里没有的行，重建完就该没了")
+        XCTAssertNotNil(rows["qq:1"]?.volume, "媒体夹那一卷的卷号要填上（阶段 9 按它驱动）")
+    }
+
+    /// `reloadFromManifest()` 就是阶段 9 那两条挂载通知的落点：重新按清单对一遍，
+    /// 状态与投影一起跟上。这里用「文件没了」模拟，断言投影跟着清单走、不是各走各的。
+    @MainActor
+    func testReloadFromManifestDropsFilesThatWentAway() throws {
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"])
+        let store = DownloadStore(directory: directory)
+        XCTAssertEqual(try localFileRows().count, 1)
+
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("qq_1.flac"))
+        store.reloadFromManifest()
+
+        XCTAssertEqual(store.state(for: "qq:1"), .none)
+        XCTAssertTrue(try localFileRows().isEmpty, "清单里没了，投影也该没了")
+        XCTAssertTrue(try readIndex().isEmpty)
+    }
+
+    /// 换「媒体」文件夹：文件整份搬过去，相对路径一个字不变，投影跟着搬——
+    /// 键与新清单逐个相同，所以旧卷那些行被 UPSERT 原地改掉，不会留下孤儿。
+    @MainActor
+    func testChangingMediaFolderKeepsProjectionRows() throws {
+        let source = try makeDirectory("A")
+        let target = try makeDirectory("B")
+        let support = try makeDirectory("support")
+        try write(file: "人/碟/歌.flac", index: ["qq:1": "人/碟/歌.flac"], in: source)
+        let settings = makeSettings(mediaFolder: source)
+        let store = DownloadStore(directory: nil, legacyDirectory: try makeDirectory("legacy"),
+                                  settings: settings, databaseDirectory: support)
+
+        settings.values.mediaFolderPath = target.path
+
+        XCTAssertTrue(store.isDownloaded("qq:1"))
+        let rows = try localFileRows(in: support)
+        XCTAssertEqual(Set(rows.keys), ["qq:1"], "搬完不该多出一行，也不该少")
+        XCTAssertEqual(rows["qq:1"]?.path, "人/碟/歌.flac", "存的是相对路径，搬完照旧成立")
+    }
+
+    // MARK: - 文件被换过
+
+    /// 容差是两头的精度（HFS+ 的 mtime 只到秒、清单还经过一趟 JSON 往返），
+    /// 不是对着某一份文件调出来的系数。两种「不知道」一律判成没换过。
+    func testWasReplacedComparesBytesAndMtime() {
+        let now = Date(timeIntervalSinceReferenceDate: 1000)
+        XCTAssertFalse(DownloadStore.wasReplaced(recordedBytes: 10, recordedMtime: now,
+                                                 bytes: 10, mtime: now))
+        XCTAssertTrue(DownloadStore.wasReplaced(recordedBytes: 10, recordedMtime: now,
+                                                bytes: 11, mtime: now), "字节数变了就是换过了")
+        XCTAssertFalse(DownloadStore.wasReplaced(recordedBytes: 10, recordedMtime: now,
+                                                 bytes: 10, mtime: now.addingTimeInterval(1.5)),
+                       "差一秒多一点是两头的精度差，不是换过了")
+        XCTAssertTrue(DownloadStore.wasReplaced(recordedBytes: 10, recordedMtime: now,
+                                                bytes: 10, mtime: now.addingTimeInterval(3)))
+        XCTAssertFalse(DownloadStore.wasReplaced(recordedBytes: 10, recordedMtime: nil,
+                                                 bytes: 10, mtime: now),
+                       "老清单没记过 mtime，不能凭这个把它的结论作废")
+        XCTAssertFalse(DownloadStore.wasReplaced(recordedBytes: 10, recordedMtime: now,
+                                                 bytes: 10, mtime: nil),
+                       "这次 stat 没拿到 mtime 也一样：宁可漏判")
+    }
+
+    /// 文件被人在背后换掉了：关于它的结论（音质、补过的标签）全部作废，
+    /// bytes 与 mtime 换成此刻这一份。不作废的话，回填会拿着一份别人的文件
+    /// 当成「已经补到当前版本」，永远不再管它。
+    @MainActor
+    func testReplacedFileInvalidatesDerivedFacts() throws {
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"],
+                  tagged: true, tagVersion: DownloadStore.tagWriterVersion)
+        _ = DownloadStore(directory: directory)   // 先把 mtime 那一格补进清单
+        try Data("fLaC-换过的一份，长度也不一样".utf8)
+            .write(to: directory.appendingPathComponent("qq_1.flac"))
+
+        _ = DownloadStore(directory: directory)
+
+        let entry = try XCTUnwrap(readIndex()["qq:1"])
+        XCTAssertNil(entry["tagged"], "换过的文件不能再算「补过标签」")
+        XCTAssertNil(entry["tagVersion"])
+        XCTAssertNil(entry["quality"], "音质是从上一份文件读出来的，不再算数")
+        XCTAssertEqual(entry["bytes"] as? Int,
+                       try Data(contentsOf: directory.appendingPathComponent("qq_1.flac")).count)
+        let row = try XCTUnwrap(localFileRows()["qq:1"])
+        XCTAssertNil(row.tagged, "表里那一行跟着走（三态：NULL ＝ 还没补过）")
+        XCTAssertNil(row.quality)
+    }
+
+    // MARK: - 结构化音质
+
+    /// `readFormat(of:)` 一次读出文案与四格结构化音质——**同一份 `StreamFormat`，
+    /// 零额外 IO**。`quality` 那行文案没法排序（「无损 / 高音质 / 高解析度无损」按字面排是错的），
+    /// 四列才能让「按音质过滤 / 排序」变成一条 INNER JOIN。
+    @MainActor
+    func testReadFormatCarriesStructuredColumns() async throws {
+        let file = try makeAIFF(at: directory.appendingPathComponent("真音频.aiff"))
+
+        let read = await DownloadStore.readFormat(of: file)
+        let format = try XCTUnwrap(read)
+
+        XCTAssertEqual(format.tier, "无损")
+        XCTAssertEqual(format.codec, "PCM")
+        XCTAssertEqual(format.sampleRate, 44_100)
+        XCTAssertEqual(format.bitDepth, 16)
+        XCTAssertEqual(format.text, "无损 · 44.1 kHz 16 位 PCM")
+    }
+
+    /// 认领一份真音频之后，那四列真的落进了 `local_file`（音质是后台读的，所以要等一下）。
+    @MainActor
+    func testAdoptFillsStructuredColumns() async throws {
+        let file = try makeAIFF(at: directory.appendingPathComponent("真音频.aiff"))
+        let store = DownloadStore(directory: directory)
+
+        store.adoptLocalFile(at: file,
+                             for: makeTrack("local:1", title: "歌", artist: "人", album: "碟"),
+                             external: false)
+
+        var row = try localFileRows()["local:1"]
+        for _ in 0..<50 where row?.codec == nil {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            row = try localFileRows()["local:1"]
+        }
+        XCTAssertEqual(row?.codec, "PCM")
+        XCTAssertEqual(row?.tier, "无损")
+        XCTAssertEqual(row?.sampleRate, 44_100)
+        XCTAssertEqual(row?.bitDepth, 16)
+    }
+
+    // MARK: - 标签回填落库
+
+    /// 回填补完一首：主库那边**只改这一行**，而且 `bytes` / `mtime` 必须跟着改——
+    /// `retag` 是故意改写文件的。不跟的话下次启动 `wasReplaced` 判它「被人换过」，
+    /// 把刚补好的那一层作废，于是**每次启动都重补一遍同一批文件**。
+    /// 最后那条断言（重开一份 store，回填不再排队）钉的就是这条回路。
+    @MainActor
+    func testBackfillUpdatesTheRowAndDoesNotLoop() async throws {
+        let m4a = try makeM4A(at: directory.appendingPathComponent("qq_1.m4a"))
+        try writeIndex(["qq:1": ["path": "qq_1.m4a", "bytes": try Data(contentsOf: m4a).count,
+                                 "date": 0]])
+        let store = DownloadStore(directory: directory)
+
+        store.backfillTags(for: [makeTrack("qq:1", title: "歌", artist: "人", album: "碟")])
+        await store.backfillTask?.value
+
+        let row = try XCTUnwrap(localFileRows()["qq:1"])
+        XCTAssertEqual(row.tagged, true)
+        XCTAssertEqual(row.tagVersion, DownloadStore.tagWriterVersion)
+        let size = try Data(contentsOf: m4a).count
+        XCTAssertEqual(row.bytes, size, "写完标签文件长度变了，这一行要跟着走")
+        let mtime = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: m4a.path)[.modificationDate]
+            as? Date)
+        XCTAssertEqual(row.mtime?.timeIntervalSinceReferenceDate ?? 0,
+                       mtime.timeIntervalSinceReferenceDate, accuracy: 0.001)
+
+        let reopened = DownloadStore(directory: directory)
+        reopened.backfillTags(for: [makeTrack("qq:1", title: "歌", artist: "人", album: "碟")])
+        XCTAssertNil(reopened.backfillTask, "补过就别再排队，否则每次启动都白改一遍用户的文件")
+    }
+
     // MARK: - 造数据
 
     @MainActor
@@ -712,7 +960,8 @@ final class DownloadStoreTests: XCTestCase {
         let settings = makeSettings(mediaFolder: try media ?? makeDirectory("media"), name)
         settings.values.keepMediaFolderOrganized = organized
         let store = DownloadStore(directory: nil, legacyDirectory: try makeDirectory("legacy"),
-                                  settings: settings)
+                                  settings: settings,
+                                  databaseDirectory: try makeDirectory("support"))
         store.resolveRemoteURL = { _ in remote }
         return store
     }
@@ -773,8 +1022,112 @@ final class DownloadStoreTests: XCTestCase {
         try data.write(to: (folder ?? directory!).appendingPathComponent("index.json"))
     }
 
+    /// 读清单里的条目。**两种形状都认**，与 `DownloadStore.decodeIndex` 一致：
+    /// 这一版是 `{manifestVersion, entries}`，用户手上那份老的整份就是 `{id: Entry}`。
+    /// 上面那个 `write(file:index:)` 故意一直写老形状——老清单还读得进来这件事得有人踩。
     private func readIndex(in folder: URL? = nil) throws -> [String: [String: Any]] {
-        let data = try Data(contentsOf: (folder ?? directory!).appendingPathComponent("index.json"))
-        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: [String: Any]])
+        let object = try JSONSerialization.jsonObject(with: try readIndexData(in: folder))
+        if let entries = (object as? [String: Any])?["entries"] as? [String: [String: Any]] {
+            return entries
+        }
+        return try XCTUnwrap(object as? [String: [String: Any]])
+    }
+
+    private func readIndexData(in folder: URL? = nil) throws -> Data {
+        try Data(contentsOf: (folder ?? directory!).appendingPathComponent("index.json"))
+    }
+
+    /// `local_file` 的一行，读回来比对用。
+    private struct LocalFileRow {
+        let scope: String
+        let path: String
+        let volume: String?
+        let bytes: Int
+        let mtime: Date?
+        let quality: String?
+        let codec: String?
+        let sampleRate: Double?
+        let bitDepth: Int?
+        let tier: String?
+        /// 三态：nil ＝ 还没补过标签，false ＝ 补过但没写成。
+        let tagged: Bool?
+        let tagVersion: Int?
+    }
+
+    /// 主库。用 `shared` 取到的**就是 store 自己那条连接**——另开一条读的是 WAL 的
+    /// 另一份快照，断言会错在「刚写进去的还没看见」上。
+    @MainActor
+    private func database(in folder: URL? = nil) throws -> AmberDatabase {
+        try AmberDatabase.shared(directory: folder ?? directory)
+    }
+
+    @MainActor
+    private func localFileRows(in folder: URL? = nil) throws -> [String: LocalFileRow] {
+        let rows = try database(in: folder).sqlite.query("""
+            SELECT key, scope, relative_path, volume_uuid, bytes, mtime, quality, codec,
+                   sample_rate, bit_depth, tier, tagged, tag_version
+            FROM local_file
+            """, [], { row -> (String, LocalFileRow) in
+            (row.text(0),
+             LocalFileRow(scope: row.text(1), path: row.text(2), volume: row.optText(3),
+                          bytes: Int(row.int(4)), mtime: row.date(5), quality: row.optText(6),
+                          codec: row.optText(7), sampleRate: row.optDouble(8),
+                          bitDepth: row.optInt(9).map(Int.init), tier: row.optText(10),
+                          tagged: row.optBool(11), tagVersion: row.optInt(12).map(Int.init)))
+        })
+        return Dictionary(uniqueKeysWithValues: rows)
+    }
+
+    /// 一秒 44.1 kHz 立体声 16 位 AIFF。要的是一份 `AVFoundation` 真解得开的文件：
+    /// 结构化音质那四格是从解码器读出来的，假字节串给不出采样率与位深。
+    @discardableResult
+    private func makeAIFF(at url: URL) throws -> URL {
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 44_100.0,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        let frames = AVAudioFrameCount(44_100)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                                    frameCapacity: frames))
+        buffer.frameLength = frames
+        if let channels = buffer.floatChannelData {
+            for frame in 0..<Int(frames) {
+                let value = Float(sin(2 * Double.pi * 440 * Double(frame) / 44_100)) * 0.5
+                for channel in 0..<Int(buffer.format.channelCount) {
+                    channels[channel][frame] = value
+                }
+            }
+        }
+        try file.write(from: buffer)
+        return url
+    }
+
+    /// 一份真 m4a（标签回填要有写入器认得的容器）。造法照 `AudioTagWriterMP4Tests`：
+    /// 机器上只有 `afconvert`，没有它就跳过——夹具造不出来不算这条规则错了。
+    private func makeM4A(at url: URL) throws -> URL {
+        let converter = "/usr/bin/afconvert"
+        guard FileManager.default.isExecutableFile(atPath: converter) else {
+            throw XCTSkip("这台机器上没有 afconvert，造不出真 m4a 夹具")
+        }
+        let aiff = try makeAIFF(at: directory.appendingPathComponent("fixture.aiff"))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: converter)
+        process.arguments = ["-f", "m4af", "-d", "aac", aiff.path, url.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("afconvert 转码失败（退出码 \(process.terminationStatus)）")
+        }
+        try FileManager.default.removeItem(at: aiff)
+        return url
     }
 }

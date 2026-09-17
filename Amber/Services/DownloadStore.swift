@@ -55,6 +55,20 @@ enum LibraryDownloadAction: Equatable {
 /// Music 的对应行为：下载过的歌在歌曲表里有一个「已下载」标记，••• 菜单第二栏是
 /// 「下载 / 移除下载」，且只对已在资料库里的曲目出现（`doDownloadCloudTrackSelection:`
 /// 的 validateMenuItem: 就是这么摘的）。歌从资料库删掉时本地那份也一起删。
+///
+/// ## 这份索引落在哪（阶段 5 起）
+///
+/// 两处，**分工不是「一份备份」**：
+///
+/// - 媒体文件夹里的 `index.json` 是**那个文件夹的自解释清单**，权威。换一台机器挂上
+///   这个文件夹，靠它就能把整夹东西解释清楚（见 `Manifest`）。
+/// - 主库 `library.sqlite` 的 `local_file` 表里，`scope='media'` 的行是**照着清单随时
+///   能重建的投影**，只读（见 `rebuildMediaProjection`）；`scope='external'` 的行
+///   （「导入…」没勾拷贝、音频留在用户自己目录里的那种）是**权威**——那些文件压根不在
+///   媒体夹里，没有第二处能重建它们，所以清单不再写它们。
+///
+/// 于是「跑一次完整的投影重建，external 行一个不变」是这张表的核心不变量，
+/// 由重建语句那句 `WHERE scope = 'media'` 保证。
 @MainActor
 final class DownloadStore: ObservableObject {
 
@@ -93,25 +107,51 @@ final class DownloadStore: ObservableObject {
     private let settings: AppSettings
     private var cancellables = Set<AnyCancellable>()
     /// id → 索引条目。`states` 是它加上「正在下的那几首」的视图。
+    ///
+    /// **内存这一份是这一程的真值**，清单与主库那张表都跟着它镜像（见 `save(changed:removed:)`）。
+    /// 歌曲表的「种类」列在逐行绘制里取扩展名，走的就是它——那条路一次查库都不许有。
     private var index: [String: Entry] = [:]
     /// 正在下载的曲目 id → 任务，用来做并发闸门与取消。
     private var running: [String: Task<Void, Never>] = [:]
     /// 排队等位的曲目，先进先出。
     private var pending: [Track] = []
 
+    /// 主库连接（`local_file` 表在里面）。
+    ///
+    /// **nil ＝ 开库这一步就失败了**：清单照常读写，只是这一程的 external 条目没处去。
+    /// 与 `LibraryStore.database` 同解。
+    private let database: AmberDatabase?
+
+    /// 主库那一侧载入成功了没有。**没成功就一个字都不许往回写**
+    ///（见 `LibraryStore.isLoaded`）：读不出 external 行的时候，
+    /// 把「清单里没有 external」当成真值写下去，等于替用户把那几条删了。
+    private var isLoaded = false
+
     /// 索引条目。路径存**相对**「媒体」文件夹的：绝对路径带用户名，换机器/改名字就整份失效；
     /// 而且用户随时能在设置里换文件夹（见 `migrate`），存相对的搬完照旧成立。
     ///
     /// **一个例外**：「文件 › 导入…」没勾「拷贝到媒体文件夹」时，音频原地留在用户自己的
     /// 目录里，那种条目存的是以 `/` 开头的**绝对**路径（见`fileURL(forPath:)`）——
-    /// 它不归「媒体」文件夹管，搬家不搬它、删歌也不删它。
+    /// 它不归「媒体」文件夹管，搬家不搬它、删歌也不删它。那种条目**只住在主库里**
+    ///（`scope='external'`），清单不写它们，见 `Manifest`。
     private struct Entry: Codable {
         var path: String
         var bytes: Int
         var date: Date
+        /// 文件自己的修改时间，落地 / 认领 / 回填那一刻 `stat` 来的。
+        /// 与 `bytes` 一起判「这份文件是不是被人换过了」，见 `wasReplaced`。
+        /// **必须是 Optional**（理由同下面 `tagged`）：这一格是后加的，老清单里没有这个键。
+        var mtime: Date?
         /// 音质文案，如「无损 · 44.1 kHz 16 位 FLAC」。落地后从文件本身读，
         /// 不是设置里选的那一档——阶梯会降级，两者常常对不上。
         var quality: String?
+        /// 结构化音质四格，与 `quality` 同一次 `StreamFormat` 读出来（见 `readFormat(of:)`），
+        /// 落进 `local_file` 的 `codec` / `sample_rate` / `bit_depth` / `tier` 四列。
+        /// 同样全是后加的可选格。
+        var codec: String?
+        var sampleRate: Double?
+        var bitDepth: Int?
+        var tier: String?
         /// 标签写进去了没有。**必须是 Optional**：这一格是后加的，用户手上的老索引里
         /// 根本没有这个键，合成的 `Decodable` 对非可选属性缺键会直接抛错
         ///（理由同 `Track.losslessAvailable`）。
@@ -122,6 +162,68 @@ final class DownloadStore: ObservableObject {
         /// 已经补过标签的老索引里只有 `tagged: true`、没有这个键。
         /// `tagged == true` 但版本对不上就要重排一次，见`needsTagBackfill`。
         var tagVersion: Int? = nil
+
+        /// 原地引用（「导入…」没勾拷贝）的那种。判据就是路径形状，见 `isExternal`。
+        var isExternal: Bool { DownloadStore.isExternal(path) }
+
+        /// 把读到的规格贴进来。读不出来（nil）就一格都不写——宁可留空，
+        /// 也不写一个猜的档位。
+        mutating func apply(_ format: FileFormat?) {
+            guard let format else { return }
+            quality = format.text
+            codec = format.codec
+            sampleRate = format.sampleRate
+            bitDepth = format.bitDepth
+            tier = format.tier
+        }
+
+        /// 「关于这份文件的结论」全部作废：文件被人换过了，之前读出来的音质、
+        /// 补过的标签都不再算数（见 `wasReplaced` 的调用点）。
+        mutating func invalidateDerivedFacts() {
+            quality = nil
+            codec = nil
+            sampleRate = nil
+            bitDepth = nil
+            tier = nil
+            tagged = nil
+            tagVersion = nil
+        }
+    }
+
+    /// 媒体文件夹里的 `index.json`——**那个文件夹的自解释清单**，不是 Amber 的存档。
+    /// 所以任何阶段都不改名（`AmberDatabaseMigration` 那份改名列表里永远没有它），
+    /// 换一台机器挂上这个文件夹，靠的就是它。
+    ///
+    /// 主库里 `scope='media'` 的行是**照着它随时能重建的投影**（见 `rebuildMediaProjection`）：
+    /// 清单是权威，投影只读。反过来 `scope='external'` 是**权威**——原地引用的文件
+    /// 压根不在这个文件夹里，没有第二处能重建它。所以从这一版起**清单不再写 external 条目**：
+    /// 它们不归这个文件夹管，跟着文件夹搬到另一台机器上也解释不了任何东西。
+    private struct Manifest: Codable {
+        /// 1 ＝ 这一版：不含 external 条目，条目里多了 `mtime` 与结构化音质四格。
+        ///
+        /// 老清单（没有这个键，整份就是 `[id: Entry]`）照旧读得进来，见 `decodeIndex`；
+        /// 读进来的 external 条目会在同一次载入里搬进主库，再由下一次写清单摘掉。
+        var manifestVersion: Int
+        var entries: [String: Entry]
+
+        static let currentVersion = 1
+    }
+
+    /// 从文件本身读到的真实规格。`readFormat(of:)` 的返回值。
+    ///
+    /// 比从前那版（只返回一行文案）多带四格：**四个值全部来自已经在算的同一份
+    /// `StreamFormat`，零额外 IO**。为什么要这四列——`quality` 只是给人看的文案，
+    /// `ORDER BY quality` 是按「无损 / 高音质 / 高解析度无损」的字面排，是错的；
+    /// 有了结构化的四列，「按音质过滤 / 排序」才能是一条 `INNER JOIN` + `ORDER BY`。
+    struct FileFormat: Equatable {
+        /// 展示文案，如「无损 · 44.1 kHz 16 位 FLAC」。
+        let text: String
+        let codec: String
+        /// `StreamFormat` 里 0 的含义是「未知」（压缩格式常常不报采样率 / 位深），
+        /// 一律记成 NULL：0 与「不知道」在按音质筛选时不是一回事。
+        let sampleRate: Double?
+        let bitDepth: Int?
+        let tier: String
     }
 
     /// 标签写入器的版本。**写入器的产物变了就要 +1**，否则用户手上已经补过的那些
@@ -138,12 +240,28 @@ final class DownloadStore: ObservableObject {
     ///
     /// `legacyDirectory` 是这条设置接线之前的老落点`~/Library/Application Support/Amber/Downloads/`：
     /// 新目录还没有索引、老目录有，就整份搬过来一次（首次启动的搬家）。测试注入它来验证这段。
-    init(directory: URL? = nil, legacyDirectory: URL? = nil, settings: AppSettings = .shared) {
+    ///
+    /// `databaseDirectory` 是**主库那个目录**，默认跟着 `directory` 走，两个都 nil 就是
+    /// `~/Library/Application Support/Amber/`——生产路径上媒体夹与主库本来就不在一起
+    ///（另外三个 store 的 `directory` 同时是这两样，只有这个 store 分得开）。
+    /// 测试里 `directory` 传 nil、让 store 跟着注入的 `settings` 跑的那几条**必须显式给一个
+    /// 临时目录**，否则开的是开发者本机那份真库。
+    init(directory: URL? = nil, legacyDirectory: URL? = nil, settings: AppSettings = .shared,
+         databaseDirectory: URL? = nil) {
         self.settings = settings
         directoryIsPinned = directory != nil
         let base = directory ?? settings.values.mediaFolder
         self.directory = base
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+
+        // 开库之前先把迁移跑到，与另外三个 store 逐字相同的理由：**谁先开库谁负责迁移**，
+        // 一个都不许在旧 JSON 还没搬完之前把空库建出来。
+        // 媒体夹这一份**显式传自己解析出来的那个**，不让它回落到 `AppSettings.shared`：
+        // 注入了 settings 的 store 跟着注入的那份跑，回落会去读开发者本机真实的媒体夹。
+        let support = databaseDirectory ?? directory
+        try? AmberDatabaseMigration.runIfNeeded(directory: support, mediaFolder: base,
+                                                renameLegacyOnSuccess: true)
+        database = try? AmberDatabase.shared(directory: support)
 
         let legacy = legacyDirectory
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -151,6 +269,10 @@ final class DownloadStore: ObservableObject {
                 .appendingPathComponent("Amber/Downloads", isDirectory: true)
         adoptLegacyIfNeeded(from: legacy)
         loadIndex()
+        // 退出前唯一要收的是「正在改用户文件的那条回填」——落盘没有欠账（每一步当场落库），
+        // 而回填那条线还在跑的话，它写的行会落在 checkpoint 之后。
+        // 与 `LoudnessStore` 停扫描是同一处登记点（全 App 只有 `AmberDatabase` 那一个观察者）。
+        database?.addTerminationTask { [weak self] in self?.backfillTask?.cancel() }
 
         // 设置窗按「好」才写回 `AppSettings`，所以这条订阅每次改路径只会响一次。
         // `dropFirst` 跳过当前值：上面已经按它开的目录。
@@ -200,16 +322,17 @@ final class DownloadStore: ObservableObject {
         }
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
         let bytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-        index[track.id] = Entry(path: path, bytes: bytes, date: Date(), quality: nil)
+        index[track.id] = Entry(path: path, bytes: bytes, date: Date(),
+                                mtime: attributes?[.modificationDate] as? Date)
         states[track.id] = .downloaded(url)
-        saveIndex()
-        // 音质文案要读文件，慢一点无所谓，别挡着导入那一串。
+        save(changed: [track.id])
+        // 音质要读文件，慢一点无所谓，别挡着导入那一串。
         Task { [weak self] in
-            guard let text = await Self.qualityText(of: url) else { return }
+            guard let format = await Self.readFormat(of: url) else { return }
             guard let self, var entry = self.index[track.id] else { return }
-            entry.quality = text
+            entry.apply(format)
             self.index[track.id] = entry
-            self.saveIndex()
+            self.save(changed: [track.id])
         }
         onDownloaded?(track, url)
     }
@@ -305,7 +428,7 @@ final class DownloadStore: ObservableObject {
             index[id] = nil
             states.removeValue(forKey: id)
         }
-        saveIndex()
+        save(removed: ids)
         pump()
     }
 
@@ -326,7 +449,7 @@ final class DownloadStore: ObservableObject {
             index[id] = nil
             states.removeValue(forKey: id)
         }
-        saveIndex()
+        save(removed: ids)
         pump()
     }
 
@@ -346,7 +469,7 @@ final class DownloadStore: ObservableObject {
             }
             states.removeValue(forKey: id)
         }
-        saveIndex()
+        save(removed: ids)
         pump()
     }
 
@@ -387,15 +510,19 @@ final class DownloadStore: ObservableObject {
                                               to: destination)
             let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path)
             let bytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-            index[track.id] = Entry(path: relative,
-                                    bytes: bytes, date: Date(),
-                                    quality: await Self.qualityText(of: destination),
-                                    tagged: tagged,
-                                    // 写砸了就别留版本号：留着等于声称「已经补到当前版本」，
-                                    // 下次启动的回填反而挑不到它。
-                                    tagVersion: tagged ? Self.tagWriterVersion : nil)
+            var entry = Entry(path: relative,
+                              bytes: bytes, date: Date(),
+                              // 标签写完才 stat：写入器动过文件，早一步取到的 mtime
+                              // 下次启动会被 `wasReplaced` 判成「被人换过」。
+                              mtime: attributes?[.modificationDate] as? Date,
+                              tagged: tagged,
+                              // 写砸了就别留版本号：留着等于声称「已经补到当前版本」，
+                              // 下次启动的回填反而挑不到它。
+                              tagVersion: tagged ? Self.tagWriterVersion : nil)
+            entry.apply(await Self.readFormat(of: destination))
+            index[track.id] = entry
             states[track.id] = .downloaded(destination)
-            saveIndex()
+            save(changed: [track.id])
             onDownloaded?(track, destination)
         } catch {
             guard !Task.isCancelled else { return }
@@ -501,7 +628,7 @@ final class DownloadStore: ObservableObject {
         // 索引里现有的路径全算被占；这一轮刚改出来的名字也要立刻算进去，
         // 否则两条同碟同名的条目会一起认领同一个新名字。
         var taken = Set(index.values.map(\.path))
-        var changed = false
+        var changed: [String] = []
         // 按键排序：同一批里两条撞到同一个新名字时，谁改到手得是稳定的，
         // 不然每次启动改出来的结果都不一样。
         for id in index.keys.sorted() {
@@ -525,9 +652,9 @@ final class DownloadStore: ObservableObject {
             index[id] = updated
             // `states` 存的是绝对 URL，跟着换一份，否则界面上那条还指着老名字。
             states[id] = .downloaded(to)
-            changed = true
+            changed.append(id)
         }
-        if changed { saveIndex() }
+        if !changed.isEmpty { save(changed: changed) }
     }
 
     /// 摘掉老命名尾巴 `-<id 短后缀>` 之后的相对路径；不是那个形状就返回 nil（＝这条不改）。
@@ -715,10 +842,26 @@ final class DownloadStore: ObservableObject {
                 else { continue }
                 fresh.tagged = true
                 fresh.tagVersion = Self.tagWriterVersion
-                fresh.bytes = Self.fileSize(of: url) ?? fresh.bytes
+                // `retag` 是**故意**改写这份文件的，bytes 与 mtime 都变了，
+                // 必须在同一步跟上：不跟的话下次启动 `wasReplaced` 判它「被人换过」，
+                // 把刚补好的那一层作废，于是每次启动都重补一遍同一批文件。
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                fresh.bytes = (attributes?[.size] as? NSNumber)?.intValue ?? fresh.bytes
+                fresh.mtime = attributes?[.modificationDate] as? Date ?? fresh.mtime
                 self.index[track.id] = fresh
                 // 逐首落盘而不是攒到最后：回填可能跑几分钟，中途退出 App 也不该白补。
-                self.saveIndex()
+                //
+                // 清单照旧整份重写——它是权威，「逐首落盘」说的就是它这一份。
+                // 主库那边**只改这一行的四格**：这才是这一步本来就想要的粒度
+                //（从前想改一首歌的 `tagged`，代价是把整份索引重写一遍）。
+                self.saveManifest()
+                self.persist("标签回填") { db in
+                    try db.run("""
+                        UPDATE local_file
+                        SET tagged = ?, tag_version = ?, bytes = ?, mtime = ?
+                        WHERE key = ?
+                        """, [true, Self.tagWriterVersion, fresh.bytes, fresh.mtime, track.id])
+                }
             }
             self?.backfillTask = nil
         }
@@ -821,7 +964,7 @@ final class DownloadStore: ObservableObject {
             index[key] = nil
         }
         states.removeValue(forKey: key)
-        saveIndex()
+        save(removed: [key])
     }
 
     private func runMV(_ mv: MV) async {
@@ -843,11 +986,13 @@ final class DownloadStore: ObservableObject {
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.moveItem(at: temp, to: destination)
             let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path)
+            // 音质那几格留空：`mv:` 的键是视频，`StreamFormat` 那套文案是给音频档位用的。
             index[key] = Entry(path: relative,
                                bytes: (attributes?[.size] as? NSNumber)?.intValue ?? 0,
-                               date: Date(), quality: nil)
+                               date: Date(),
+                               mtime: attributes?[.modificationDate] as? Date)
             states[key] = .downloaded(destination)
-            saveIndex()
+            save(changed: [key])
             onMVDownloadFinished?(mv, .success(destination))
         } catch {
             guard !Task.isCancelled else { return }
@@ -912,7 +1057,11 @@ final class DownloadStore: ObservableObject {
         // 路径是相对的，搬完照旧成立；但 `states` 里存的是绝对 URL，要按新目录重发一遍。
         // 外部条目（原地引用的导入文件）本来就没搬，按它自己的绝对路径重发。
         states = index.mapValues { .downloaded(self.fileURL(forPath: $0.path)) }
-        saveIndex()
+        // 清单跟着文件一起搬过去了（`moveContents` 最后那一手），这里写的是新目录里那份。
+        // 投影则要整趟重建：相对路径一个字没变，但**卷号可能变了**
+        //（搬到外接盘上去的那种）。见 `rebuildMediaProjection` 里对搬家路径那段注释。
+        saveManifest()
+        rebuildMediaProjection()
         if count > 0 { onMediaFolderChanged?("已把 \(count) 首下载移到新的「媒体」文件夹") }
     }
 
@@ -987,42 +1136,278 @@ final class DownloadStore: ObservableObject {
         return fileExtension(ofHeader: [UInt8](head))
     }
 
-    /// 落地后从文件本身读真实规格，复用音质气泡那套文案（`StreamFormat`）。
-    /// 读不出来就不写这一项——宁可留空，也不写一个猜的档位。
-    private static func qualityText(of url: URL) async -> String? {
+    /// 落地后从文件本身读真实规格，复用音质气泡那套算法（`StreamFormat`）。
+    /// 读不出来就返回 nil，一格都不写——宁可留空，也不写一个猜的档位。
+    ///
+    /// 返回的是整份 `FileFormat` 而不只是那行文案：结构化的四格与文案同出一次读取，
+    /// **零额外 IO**（见 `FileFormat` 头上那段「为什么要那四列」）。
+    ///
+    /// 不是 `private` 只为一件事：测试要对着一份真音频直接验这四格。
+    static func readFormat(of url: URL) async -> FileFormat? {
         guard let format = await StreamFormat.read(from: AVPlayerItem(url: url)) else { return nil }
-        return "\(format.tierName) · \(format.detail)"
+        return FileFormat(text: "\(format.tierName) · \(format.detail)",
+                          codec: StreamFormat.codecName(format.formatID),
+                          sampleRate: format.sampleRate > 0 ? format.sampleRate : nil,
+                          bitDepth: format.bitDepth > 0 ? format.bitDepth : nil,
+                          tier: format.tierName)
     }
 
-    // MARK: - 索引持久化
+    // MARK: - 文件被换过没有
 
-    /// 启动时校验文件还在，不在就把那条清掉——用户在 Finder 里删过、或者换过盘。
+    /// 这份文件被人换过没有：字节数对不上，或者 mtime 差出 2 秒以上。
+    ///
+    /// **不算 sha256，表里也没有那一列**：判「变没变」一次 `stat` 就够，而哈希的开销
+    /// 不在 CPU 在 IO——3000 首 × 40 MB 是 120 GB 的冷读，换来的信息量与这两个字段一样多。
+    ///
+    /// 2 秒不是对着某一份文件调出来的容差，是两头的精度：HFS+ 的 mtime 只到秒，
+    /// 清单里那一格还经过一趟 JSON 往返，差一秒不该当成「换过了」。
+    ///
+    /// 两种「不知道」一律判成没换过：清单里本来就没记 mtime（老清单没有这一格），
+    /// 或者这次 `stat` 没拿到 mtime。宁可漏判，也不能把一份好好的文件的结论平白作废。
+    nonisolated static func wasReplaced(recordedBytes: Int, recordedMtime: Date?,
+                                        bytes: Int, mtime: Date?) -> Bool {
+        if recordedBytes != bytes { return true }
+        guard let recordedMtime, let mtime else { return false }
+        return abs(mtime.timeIntervalSince(recordedMtime)) > 2
+    }
+
+    // MARK: - 清单与投影
+
+    /// 按清单对一遍：谁还在、谁被换过了，然后重写清单、重建投影。
+    ///
+    /// 三步，顺序不能换：
+    ///
+    /// 1. **主库里的 external 行 + 清单里的条目**合成这一程的索引。external 只住在主库里
+    ///    （清单不写它们，见 `Manifest`）；老清单里还留着的那些照旧认下来——它们是同一份
+    ///    数据，认下来之后由这一趟写进主库、再由下一次写清单摘掉，这就是清单的升级路径。
+    /// 2. 逐条 `stat`。文件不在就把那条摘掉（用户在 Finder 里删过、换过盘）；还在但
+    ///    **被换过**（见 `wasReplaced`）就把「关于这份文件的结论」全部作废。
+    /// 3. 清单有变就重写，投影整趟重建。
+    ///
+    /// 阶段 9 的挂载 / 卸载通知直接调 `reloadFromManifest()`，走的就是这一条。
     private func loadIndex() {
+        // 读不出 external 行（库开不了、SQL 出错）就只按清单跑这一程，而且一个字都不往回写：
+        // 那时「清单里没有 external」不是事实，是我们没看见。
+        var merged: [String: Entry] = [:]
+        if let db = database?.sqlite {
+            do {
+                merged = try externalRows(from: db)
+                isLoaded = true
+            } catch {
+                NSLog("[DownloadStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
+                      String(describing: error))
+            }
+        }
         let stored = Self.decodeIndex(at: indexURL)
-        guard !stored.isEmpty else { return }
+        // 清单盖在 external 行上面：同一个键两边都有，说明这首歌后来被下载 /
+        // 拷进媒体夹了，以文件夹这份为准。
+        for (id, entry) in stored { merged[id] = entry }
+
         var alive: [String: Entry] = [:]
         var restored: [String: DownloadState] = [:]
-        for (id, entry) in stored {
+        // 清单要不要重写。三种情况：有条目没了、有条目的内容变了、
+        // 以及老清单里那些该搬进主库的 external 条目。
+        var manifestChanged = stored.values.contains(where: \.isExternal) && isLoaded
+        for (id, entry) in merged {
             let url = fileURL(forPath: entry.path)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
-            alive[id] = entry
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+                // 摘掉的只是这一程的内存与清单。**external 那一行留在主库里**：
+                // 它是权威，盘没插上不等于用户不要它了（见下面 persist 那一段）。
+                manifestChanged = manifestChanged || !entry.isExternal
+                continue
+            }
+            var fresh = entry
+            let bytes = (attributes[.size] as? NSNumber)?.intValue ?? 0
+            let mtime = attributes[.modificationDate] as? Date
+            if Self.wasReplaced(recordedBytes: entry.bytes, recordedMtime: entry.mtime,
+                                bytes: bytes, mtime: mtime) {
+                fresh.bytes = bytes
+                fresh.mtime = mtime
+                fresh.invalidateDerivedFacts()
+                manifestChanged = true
+            } else if fresh.mtime == nil, mtime != nil {
+                // 老清单没有 mtime 这一格，顺手补上：补之前 `wasReplaced` 一直判不出
+                // 「被换过」，等于这道闸对老条目是关着的。
+                fresh.mtime = mtime
+                manifestChanged = true
+            }
+            alive[id] = fresh
             restored[id] = .downloaded(url)
         }
         index = alive
         states = restored
-        if alive.count != stored.count { saveIndex() }
+        if manifestChanged { saveManifest() }
+
+        // external 行：**不管文件此刻在不在，都要保证主库里有它那一行**。
+        // 清单从这一版起不写 external，主库这一行是唯一的记录；文件没插上时
+        // `states` 照旧当它不下载（与从前一致），但那一行不能跟着没。
+        persist("载入") { db in
+            for (key, entry) in merged where entry.isExternal {
+                try self.writeRow(key, entry, volume: nil, in: db)
+            }
+        }
+        rebuildMediaProjection()
     }
 
+    /// 按清单重新对一遍。
+    ///
+    /// 阶段 9 的 `NSWorkspace.didMount` / `didUnmountNotification` 直接调它：
+    /// 卷回来了就照着（此刻才读得到的）清单把投影与 `states` 一起补回来，
+    /// 拔了就整趟摘掉。这一轮没有接那两个通知，但落点就是这一条。
+    func reloadFromManifest() { loadIndex() }
+
+    /// 主库里的 external 行 → 内存条目。清单不写它们，这是唯一的来源。
+    private func externalRows(from db: SQLiteDatabase) throws -> [String: Entry] {
+        var rows: [String: Entry] = [:]
+        for row in try db.query("""
+            SELECT key, relative_path, bytes, mtime, added_at, quality, codec, sample_rate,
+                   bit_depth, tier, tagged, tag_version
+            FROM local_file WHERE scope = 'external'
+            """, [], { row -> (String, Entry) in
+            (row.text(0),
+             Entry(path: row.text(1),
+                   bytes: Int(row.int(2)),
+                   date: Date(timeIntervalSinceReferenceDate: row.double(4)),
+                   mtime: row.date(3),
+                   quality: row.optText(5),
+                   codec: row.optText(6),
+                   sampleRate: row.optDouble(7),
+                   bitDepth: row.optInt(8).map(Int.init),
+                   tier: row.optText(9),
+                   // 三态：NULL ＝ 还没补过，0 ＝ 补过但没写成。
+                   // 用 `bool()` 取会把两者压成同一件事，回填就再也挑不到「没补过」那些。
+                   tagged: row.optBool(10),
+                   tagVersion: row.optInt(11).map(Int.init)))
+        }) {
+            rows[row.0] = row.1
+        }
+        return rows
+    }
+
+    /// 读清单。**两种形状都认**：这一版的 `{manifestVersion, entries}`，
+    /// 以及用户手上那份老的——整份就是 `{id: Entry}`。
+    /// 老的读进来之后，下一次写就换成新形状（见 `saveManifest`）。
     private static func decodeIndex(at url: URL) -> [String: Entry] {
-        guard let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode([String: Entry].self, from: data)
-        else { return [:] }
-        return stored
+        guard let data = try? Data(contentsOf: url) else { return [:] }
+        let decoder = JSONDecoder()
+        if let manifest = try? decoder.decode(Manifest.self, from: data) { return manifest.entries }
+        return (try? decoder.decode([String: Entry].self, from: data)) ?? [:]
     }
 
-    private func saveIndex() {
-        guard let data = try? JSONEncoder().encode(index) else { return }
+    /// 把清单写回媒体文件夹。**只写媒体夹内的条目**：external 归主库那一行管。
+    ///
+    /// 一个例外——主库没载入成功时（`isLoaded == false`）external 照旧写进清单。
+    /// 那一程主库一个字都不写，清单这份就是唯一的记录，摘掉等于替用户把它们删了。
+    private func saveManifest() {
+        let entries = isLoaded ? index.filter { !$0.value.isExternal } : index
+        let manifest = Manifest(manifestVersion: Manifest.currentVersion, entries: entries)
+        guard let data = try? JSONEncoder().encode(manifest) else { return }
         try? data.write(to: indexURL, options: .atomic)
+    }
+
+    // MARK: - 落库
+
+    /// 一次改动的唯一出口：清单与投影**一起**落。
+    ///
+    /// 散着写的话，两边错开的表现是「重启之后这首歌又变回没下载」——编译器抓不到，
+    /// 单条用例也未必覆盖得到，只在用户重开 App 之后现形（阶段 3 那十来个
+    /// `persist` 助手买的是同一件东西）。
+    ///
+    /// 清单每次整份重写（它一直就是这么写的，一个小 JSON 文件）；表这边是按键定向写，
+    /// 不整表重灌。
+    private func save(changed: [String] = [], removed: [String] = []) {
+        saveManifest()
+        guard !changed.isEmpty || !removed.isEmpty else { return }
+        let volume = Self.volumeUUID(of: directory)
+        persist("本机文件") { db in
+            for key in removed {
+                try db.run("DELETE FROM local_file WHERE key = ?", [key])
+            }
+            for key in changed {
+                guard let entry = self.index[key] else { continue }
+                try self.writeRow(key, entry, volume: volume, in: db)
+            }
+        }
+    }
+
+    /// 写库的唯一出口：一个事务 + 出错只记一笔。
+    ///
+    /// **不把错误抛给调用方**：这些全是「用户点了一下」或者后台在跑的路径，磁盘满的时候
+    /// 让一次下载抛个异常出去，界面层没有有意义的处置。内存那份照常是对的，
+    /// 而下面全是「按内存现值整行写」，下一次成功的写自会补齐。
+    ///
+    /// `isLoaded` 那道闸见它自己的注释：**读不出来的时候一个字都不许往回写。**
+    private func persist(_ label: String, _ body: (SQLiteDatabase) throws -> Void) {
+        guard isLoaded, let db = database?.sqlite else { return }
+        do {
+            try db.transaction { try body(db) }
+        } catch {
+            NSLog("[DownloadStore] %@ 落库失败：%@", label, String(describing: error))
+        }
+    }
+
+    private static let localFileUpsert = """
+        INSERT INTO local_file (key, scope, relative_path, volume_uuid, bytes, mtime, added_at,
+                                quality, codec, sample_rate, bit_depth, tier, tagged, tag_version)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(key) DO UPDATE SET
+          scope = excluded.scope, relative_path = excluded.relative_path,
+          volume_uuid = excluded.volume_uuid, bytes = excluded.bytes, mtime = excluded.mtime,
+          added_at = excluded.added_at, quality = excluded.quality, codec = excluded.codec,
+          sample_rate = excluded.sample_rate, bit_depth = excluded.bit_depth,
+          tier = excluded.tier, tagged = excluded.tagged, tag_version = excluded.tag_version
+        """
+
+    /// 一条条目 → 一行。
+    ///
+    /// `volume` 只给媒体夹内的行填：external 的文件散在用户自己的目录里，要填得对
+    /// 就得对每一条各 `stat` 一次，而拔了盘的那几条只会把已经记下的卷号**擦成 NULL**
+    /// ——比不填更糟。等阶段 9 真按卷驱动的时候连同 external 一起想。
+    private func writeRow(_ key: String, _ entry: Entry, volume: String?,
+                          in db: SQLiteDatabase) throws {
+        try db.run(Self.localFileUpsert, [
+            key, entry.isExternal ? "external" : "media", entry.path,
+            entry.isExternal ? nil : volume,
+            entry.bytes, entry.mtime, entry.date,
+            entry.quality, entry.codec, entry.sampleRate, entry.bitDepth, entry.tier,
+            entry.tagged, entry.tagVersion,
+        ])
+    }
+
+    /// 按清单重建「媒体夹这一卷」的投影。
+    ///
+    /// **`WHERE scope = 'media'` 是这张表全部的边界。**（修正 B：一张表 + scope 列，
+    /// 不拆两张表——十几处读点问的都是同一个问题「这首歌在本机有文件吗，在哪」，
+    /// 拆表要给它们全加 UNION。）表边界没了之后，「external 不被投影重建碰掉」就全靠这条
+    /// WHERE 写对，所以 `DownloadStoreTests.testProjectionRebuildLeavesExternalRowsAlone`
+    /// 同时钉两件事：external 的**行数**一个不变，external 那几格（`quality` 一类）
+    /// 也不许被 UPSERT 顺手盖掉——后者是表边界本来也守不住的那种。
+    ///
+    /// **卷号读不到就整趟跳过**（媒体夹所在的卷没挂上、路径不在了）：那时清单也读成空的，
+    /// 照着空清单删等于把一卷文件的投影当成「用户全删了」。
+    ///
+    /// 删除捎上 `volume_uuid IS NULL` 那些：迁移器写下的行没有卷号（它不 stat 文件），
+    /// 不捎上的话清单里已经没有的那几条会永远留在表里。
+    ///
+    /// **搬家路径**（用户在设置里换了媒体文件夹）走的也是这一条：文件整份搬过去，
+    /// 相对路径一个字不变、卷号可能变。旧卷那些行**键与新清单逐个相同**，
+    /// 于是被下面的 UPSERT 原地改掉卷号，不会留下孤儿行。
+    func rebuildMediaProjection() {
+        guard let volume = Self.volumeUUID(of: directory) else { return }
+        persist("重建投影") { db in
+            try db.run("""
+                DELETE FROM local_file
+                WHERE scope = 'media' AND (volume_uuid IS ? OR volume_uuid IS NULL)
+                """, [volume])
+            for (key, entry) in self.index where !entry.isExternal {
+                try self.writeRow(key, entry, volume: volume, in: db)
+            }
+        }
+    }
+
+    /// 媒体夹所在卷的 UUID。取不到（卷没挂上、这个文件系统不报）就是 nil。
+    private static func volumeUUID(of url: URL) -> String? {
+        (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
     }
 }
 

@@ -45,14 +45,25 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         var resumePositions: [String: TimeInterval]?
     }
 
-    /// 旧 `index.json` 里的一条，同上。
+    /// `index.json` 里的一条，同上。
     private struct DownloadEntryFixture: Codable {
         var path: String
         var bytes: Int
         var date: Date
+        var mtime: Date?
         var quality: String?
+        var codec: String?
+        var sampleRate: Double?
+        var bitDepth: Int?
+        var tier: String?
         var tagged: Bool?
         var tagVersion: Int?
+    }
+
+    /// 阶段 5 起清单的外层形状。老形状（整份就是 `{id: Entry}`）由别的用例继续覆盖。
+    private struct DownloadManifestFixture: Codable {
+        var manifestVersion = 1
+        var entries: [String: DownloadEntryFixture]
     }
 
     private var archiveURL: URL { support.appendingPathComponent("library.json") }
@@ -730,6 +741,43 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(scope, "media", "以清单为准")
     }
 
+    /// 阶段 5 起清单换了形状（`{manifestVersion, entries}`），迁移器必须认得它。
+    ///
+    /// 「把 `library.sqlite` 删了重迁一次」是一条现成的恢复路径（阶段 2 的实弹演习走的
+    /// 就是它）。解不动的话本机文件一条都迁不过来，而且只是一句 warning——
+    /// 表现是「重建之后所有已下载的歌都变成没下载」。
+    ///
+    /// 顺带钉住结构化音质那四格**原样搬**：清单是媒体夹的自解释清单，
+    /// 不是只记一个路径，重建时不该把它已经知道的东西丢掉。
+    func testNewShapedManifestIsMigratedWithItsFormatColumns() throws {
+        try write(LegacyLibraryArchive(), to: archiveURL)
+        try write(DownloadManifestFixture(entries: [
+            "ne:1": DownloadEntryFixture(path: "网易云/a.flac", bytes: 10,
+                                         date: Date(timeIntervalSinceReferenceDate: 100),
+                                         mtime: Date(timeIntervalSinceReferenceDate: 200),
+                                         quality: "无损 · 44.1 kHz 16 位 FLAC",
+                                         codec: "FLAC", sampleRate: 44_100, bitDepth: 16,
+                                         tier: "无损", tagged: true, tagVersion: 2),
+        ]), to: indexURL)
+
+        XCTAssertEqual(try migrate().counts["local_file"], 1)
+
+        let database = try openDatabase()
+        let row = try database.sqlite.value("""
+            SELECT scope, mtime, codec, sample_rate, bit_depth, tier, tagged
+            FROM local_file WHERE key = 'ne:1'
+            """) { (scope: $0.text(0), mtime: $0.optDouble(1), codec: $0.optText(2),
+                    rate: $0.optDouble(3), depth: $0.optInt(4), tier: $0.optText(5),
+                    tagged: $0.optBool(6)) }
+        XCTAssertEqual(row?.scope, "media")
+        XCTAssertEqual(row?.mtime, 200)
+        XCTAssertEqual(row?.codec, "FLAC")
+        XCTAssertEqual(row?.rate, 44_100)
+        XCTAssertEqual(row?.depth, 16)
+        XCTAssertEqual(row?.tier, "无损")
+        XCTAssertEqual(row?.tagged, true)
+    }
+
     private func makeLiveFile(named name: String) throws -> URL {
         let url = media.appendingPathComponent(name)
         try Data("这是一份真的存在的文件".utf8).write(to: url)
@@ -833,8 +881,15 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         try write(infos, to: trackInfoURL)
         try write(["ne:1": LoudnessEntry(lufs: -14.2, peakDB: -1.0, measuredAt: Date())],
                   to: loudnessURL)
+        let audio = media.appendingPathComponent("ne_1.flac")
+        try Data("fLaC-真在".utf8).write(to: audio)
+        try write(["ne:1": DownloadEntryFixture(path: "ne_1.flac", bytes: 11, date: Date())],
+                  to: indexURL)
 
-        // 故意让 `LoudnessStore` 第一个开库（就是从前那个「存储属性先于 init 体」的顺序）。
+        // 故意让 `DownloadStore` 第一个开库（`AppState` 里它排在最后，也就是说这四个
+        // 谁都可能先到）。它的媒体夹与主库目录不是同一个，所以两个参数都得给。
+        let downloads = DownloadStore(directory: media, legacyDirectory: media,
+                                      databaseDirectory: support)
         let loudness = LoudnessStore(directory: support)
         let trackInfo = TrackInfoStore(directory: support)
         let library = LibraryStore(directory: support)
@@ -842,6 +897,7 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(library.libraryTracks.map(\.title), ["迁过来的"], "资料库不该是空的")
         XCTAssertEqual(trackInfo.infos["ne:1"]?.comments, "手打的注释")
         XCTAssertEqual(loudness["ne:1"]?.lufs, -14.2)
+        XCTAssertEqual(downloads.state(for: "ne:1"), .downloaded(audio))
         XCTAssertFalse(FileManager.default.fileExists(atPath: archiveURL.path),
                        "迁移真的跑过了（旧存档已经改名留底）")
     }
