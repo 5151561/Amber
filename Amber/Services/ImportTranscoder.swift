@@ -296,11 +296,18 @@ enum ImportTranscoder {
         // 的 `@Sendable` 块捕获，可它们一个都不是 `Sendable`。真正的保证在本函数末尾那条
         // 自建串行队列上：块只在它上面串行回调，四个对象从递给它那一刻起就只在块里被碰，
         // 直到 continuation 收线才交回这里。编译器看不出这层保证，逐个手工担保。
+        //
+        // 开了 strict memory safety（SE-0458）之后，`nonisolated(unsafe)` 声明的**每一次使用**
+        // 都要写 `unsafe`——本函数里 26 处，说的全是上面这一条契约，没有第二条。
+        // 这里没有 `@safe` 外壳可做：外壳只能包声明，包不了局部变量。读的时候别一处处追问
+        // 「这个 `unsafe` 是什么意思」，它们是同一句话的 26 个副本：**这个对象只在那条串行队列上被碰**。
+        // 真正该盯的是有没有人把它们带出队列——比如在块外再摸一次 `reader`，或者把 `input`
+        // 递给另一个队列。那才是违约，而且编译器同样只会给你一个一模一样的 `unsafe`。
         nonisolated(unsafe) let reader = try AVAssetReader(asset: asset)
         nonisolated(unsafe) let output = AVAssetReaderAudioMixOutput(audioTracks: [sourceTrack],
                                                                      audioSettings: spec.readerSettings)
-        guard reader.canAdd(output) else { throw ImportError.readFailed("解码设置不被支持") }
-        reader.add(output)
+        guard unsafe reader.canAdd(output) else { throw ImportError.readFailed("解码设置不被支持") }
+        unsafe reader.add(output)
 
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
@@ -308,52 +315,52 @@ enum ImportTranscoder {
         nonisolated(unsafe) let writer = try AVAssetWriter(outputURL: destination,
                                                            fileType: spec.fileType)
         // 标签必须在 `startWriting` 之前挂上，之后再改就写不进容器了。
-        if !metadata.isEmpty { writer.metadata = metadata }
+        if !metadata.isEmpty { unsafe writer.metadata = metadata }
         nonisolated(unsafe) let input = AVAssetWriterInput(mediaType: .audio,
                                                            outputSettings: spec.writerSettings)
-        input.expectsMediaDataInRealTime = false
-        guard writer.canAdd(input) else { throw ImportError.writeFailed("编码设置不被支持") }
-        writer.add(input)
+        unsafe input.expectsMediaDataInRealTime = false
+        guard unsafe writer.canAdd(input) else { throw ImportError.writeFailed("编码设置不被支持") }
+        unsafe writer.add(input)
 
-        guard reader.startReading() else {
-            throw ImportError.readFailed(reader.error?.localizedDescription ?? "无法开始读取")
+        guard unsafe reader.startReading() else {
+            throw unsafe ImportError.readFailed(reader.error?.localizedDescription ?? "无法开始读取")
         }
-        guard writer.startWriting() else {
-            throw ImportError.writeFailed(writer.error?.localizedDescription ?? "无法开始写入")
+        guard unsafe writer.startWriting() else {
+            throw unsafe ImportError.writeFailed(writer.error?.localizedDescription ?? "无法开始写入")
         }
-        writer.startSession(atSourceTime: .zero)
+        unsafe writer.startSession(atSourceTime: .zero)
 
         let queue = DispatchQueue(label: "Amber.ImportTranscoder")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             // 回调串行跑在 queue 上，`finished` 不需要另加锁（上面那段注释说的就是这条队列）。
             nonisolated(unsafe) var finished = false
-            input.requestMediaDataWhenReady(on: queue) {
-                guard !finished else { return }
-                while input.isReadyForMoreMediaData {
-                    guard let buffer = output.copyNextSampleBuffer() else {
-                        finished = true
-                        input.markAsFinished()
-                        if reader.status == .failed {
-                            writer.cancelWriting()
-                            continuation.resume(throwing: ImportError.readFailed(
+            unsafe input.requestMediaDataWhenReady(on: queue) {
+                guard unsafe !finished else { return }
+                while unsafe input.isReadyForMoreMediaData {
+                    guard let buffer = unsafe output.copyNextSampleBuffer() else {
+                        unsafe finished = true
+                        unsafe input.markAsFinished()
+                        if unsafe reader.status == .failed {
+                            unsafe writer.cancelWriting()
+                            unsafe continuation.resume(throwing: ImportError.readFailed(
                                 reader.error?.localizedDescription ?? "读取中断"))
                             return
                         }
-                        writer.finishWriting {
-                            if writer.status == .completed {
+                        unsafe writer.finishWriting {
+                            if unsafe writer.status == .completed {
                                 continuation.resume()
                             } else {
-                                continuation.resume(throwing: ImportError.writeFailed(
+                                unsafe continuation.resume(throwing: ImportError.writeFailed(
                                     writer.error?.localizedDescription ?? "写入中断"))
                             }
                         }
                         return
                     }
-                    if !input.append(buffer) {
-                        finished = true
-                        reader.cancelReading()
-                        writer.cancelWriting()
-                        continuation.resume(throwing: ImportError.writeFailed(
+                    if unsafe !input.append(buffer) {
+                        unsafe finished = true
+                        unsafe reader.cancelReading()
+                        unsafe writer.cancelWriting()
+                        unsafe continuation.resume(throwing: ImportError.writeFailed(
                             writer.error?.localizedDescription ?? "无法写入采样"))
                         return
                     }
