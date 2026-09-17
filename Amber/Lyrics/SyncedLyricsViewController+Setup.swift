@@ -471,6 +471,34 @@ extension SyncedLyricsViewController {
         guard specs.renderingMode != .static else { return }
 
         let basis = timeline.update()
+
+        // 静止闸：暂停着、且没有任何在途动作时，下面这半整个不做。
+        //
+        // **链子不停掉**。暂停态下拖歌词、拖进度条 seek 都要立刻跟手，而这两条
+        // 目前都靠这条链每帧轮询（时间源没有推送通道，`updateDisplayLink` 那道闸
+        // 也只认 `isVisible`/`isActive`/静态档）。停链会让暂停时的 seek 不刷新；
+        // 留着链、跳过工作，两头都占到——链子空转一帧只剩这道闸本身。
+        //
+        // 判活的四项就是「下一帧可能算出不同结果」的全部来源：时间轴往前走了、
+        // 视口滚了（滚轮、拖动、弹簧最后都体现为 origin 变）、弹簧还在积分、
+        // 有在途的行动画（`updateLineAlphasForViewportEdges` 读的是 **presentation**
+        // 层，动画期间时间轴不动它也每帧在变）。四项全静止时，下面每一项都必然
+        // 算出与上一帧一模一样的值。
+        //
+        // [实测 sample 2026-09-17] 少这道闸，暂停着停在歌词页上仍按 120Hz 走完全套：
+        // `updateLineAlphasForViewportEdges` 逐行 `CA::Layer::presentation_layer()`、
+        // 逐字染色逐行 `startProgress`，闲着也吃掉约两成 CPU。
+        let scrollOrigin = scrollView?.contentView.bounds.origin ?? .zero
+        let isIdle = manager?.timingProvider?.isPaused == true
+            && basis.elapsed == lastDrivenElapsed
+            && scrollOrigin == lastDrivenScrollOrigin
+            && scrollSpring == nil
+            && !isDragging
+            && currentAnimators.isEmpty
+        lastDrivenElapsed = basis.elapsed
+        lastDrivenScrollOrigin = scrollOrigin
+        guard !isIdle else { return }
+
         // 滚动那半：弹簧积分 + 焦点行推进 + 视口边缘淡出。
         let scroll = signposter.beginInterval("scroll")
         advanceScrollSpring()

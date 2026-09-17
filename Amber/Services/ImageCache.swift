@@ -26,6 +26,8 @@ final class ImageCache: @unchecked Sendable {
     private let inFlight = OSAllocatedUnfairLock<[String: Task<NSImage?, Never>]>(initialState: [:])
     /// 过期清理只在首次取图时安排一次。
     private let didSweep = OSAllocatedUnfairLock(initialState: false)
+    /// 系统内存吃紧时把内存那一份整个放掉。见 `init` 里挂它的那段注释。
+    private let memoryPressure: any DispatchSourceMemoryPressure
 
     /// 磁盘文件超过这个时长没被读过就清掉（封面地址会随目录页轮换，旧图不会再被要）。
     private static let maxAge: TimeInterval = 30 * 24 * 60 * 60
@@ -35,8 +37,29 @@ final class ImageCache: @unchecked Sendable {
         diskDirectory = caches.appendingPathComponent("Amber/Images", isDirectory: true)
         try? FileManager.default.createDirectory(at: diskDirectory, withIntermediateDirectories: true)
         // 封面是位图，按张数限不住内存，另外按像素数估的字节数封顶。
+        //
+        // 上限 2026-09-17 从 256 MB 降到 128 MB。原来那个数**比整个 App 该占的还大**，
+        // 等于没有上限：`countLimit` 400 张里只要有一半是网格档（500px = 1 MB/张）
+        // 就够撑到 256 MB，而那时进程总占用已经离谱了。
+        //
+        // 128 MB 是照实测的在场工作集定的：[实测 footprint/vmmap 2026-09-17]
+        // 一份用了十来分钟的进程，进程内已解码位图共约 45 MB（CG Image 20 + Image IO 12
+        // + `__DataStorage._bytes` 13），贴进图层之后在 WindowServer 那侧另有 259 张、
+        // 126 MB 的 IOSurface。也就是说真实用量离 128 MB 都还有距离，降下来不会开始抖，
+        // 但最坏情况从「比全进程还大」收到了一半。
         memory.countLimit = 400
-        memory.totalCostLimit = 256 * 1024 * 1024
+        memory.totalCostLimit = 128 * 1024 * 1024
+
+        // 上限只挡得住「缓存自己涨太大」，挡不住「系统已经吃紧了而我还攥着 100 MB 位图」。
+        // 这些位图磁盘上都还有一份（`diskDirectory`），放掉的代价只是下次重解码一次，
+        // 不用重新下载——是标准的可弃缓存，该在压力来时第一个让路。
+        //
+        // macOS 的 `NSCache` **不会**自己响应内存压力（那是 iOS 靠 UIKit 的内存警告，
+        // 而且只对 `NSDiscardableContent` 生效，`NSImage` 不是），所以自己挂一条。
+        memoryPressure = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        memoryPressure.setEventHandler { [memory] in memory.removeAllObjects() }
+        memoryPressure.resume()
     }
 
     /// 内存里已经有的那一张，同步取。
