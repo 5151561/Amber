@@ -94,7 +94,7 @@ final class SyncedLyricsVisualExperienceManager {
         allowAnimateToNextLineAfterScrollTimer = Timer.scheduledTimer(
             withTimeInterval: Self.allowAnimateAfterScrollDelay, repeats: false
         ) { [weak self] _ in
-            self?.returnControlToPlayback()
+            MainActor.assumeIsolated { self?.returnControlToPlayback() }
         }
     }
 
