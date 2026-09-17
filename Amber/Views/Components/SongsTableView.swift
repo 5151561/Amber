@@ -493,7 +493,7 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         guard let table = tableView else { return false }
         let picked = table.selectedRowIndexes.compactMap { track(at: $0) }
         guard !picked.isEmpty else { return false }
-        LibraryDeleteAlert.confirm(tracks: picked, in: table.window,
+        LibraryDeleteAlert.confirm(tracks: picked, in: table.amberWindow,
                                    appState: appState) { [weak self, weak table] in
             guard let self else { return }
             for track in picked { self.appState.library.removeFromLibrary(track) }
@@ -854,7 +854,7 @@ final class TrackDisplayTableView: NSTableView {
         let point = convert(event.locationInWindow, from: nil)
         if handleArtworkClick(event, at: point) { return }
         super.mouseDown(with: event)
-        if window?.firstResponder !== self { window?.makeFirstResponder(self) }
+        if amberWindow?.firstResponder !== self { amberWindow?.makeFirstResponder(self) }
     }
 
     /// 点插图块：[推] 选中这张专辑的整块行，双击块播这张专辑（从块首起）。
@@ -876,7 +876,7 @@ final class TrackDisplayTableView: NSTableView {
         guard !rows.isEmpty else { return false }
         selectRowIndexes(IndexSet(rows), byExtendingSelection: false)
         if event.clickCount == 2 { controller.play(at: start) }
-        if window?.firstResponder !== self { window?.makeFirstResponder(self) }
+        if amberWindow?.firstResponder !== self { amberWindow?.makeFirstResponder(self) }
         return true
     }
 
@@ -963,7 +963,7 @@ final class TrackDisplayTableView: NSTableView {
         // 先清掉旧记号（此刻旧行视图已经作废，`rowView(atRow:makeIfNecessary: false)` 回 nil），
         // 再按指针落一次；装配新行时 `rowViewForRow` 会照`rolloverRow` 把状态带上。
         setRollover(-1)
-        guard NSApp.isActive, let window, window.isVisible else { return }
+        guard NSApp.isActive, let window = amberWindow, window.isVisible else { return }
         let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
         guard visibleRect.contains(point) else { return }
         setRollover(row(at: point))
@@ -1002,10 +1002,10 @@ final class SongsTableRowView: NSTableRowView {
     /// **现场问表格要**，不缓存也不读模型——拖列宽时模型还是旧值，缓存的那份也不会更新，
     /// 两者都会让选中底色停在原来的位置上。
     private var artworkColumnWidth: CGFloat {
-        var view: NSView? = superview
+        var view: NSView? = amberSuperview
         while let current = view {
             if let table = current as? TrackDisplayTableView { return table.artworkColumnEdge }
-            view = current.superview
+            view = current.amberSuperview
         }
         return 0
     }

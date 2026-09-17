@@ -84,7 +84,7 @@ final class LibraryGridCollectionView: NSCollectionView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil, let clipView = enclosingScrollView?.contentView else { return }
+        guard amberWindow != nil, let clipView = enclosingScrollView?.contentView else { return }
         clipView.postsBoundsChangedNotifications = true
         // 块式观察者的闭包是 `@Sendable`；`queue: .main` 已经把投递线程钉死在主线程，
         // 所以用 `assumeIsolated` 接回主线程隔离的自己。
@@ -116,18 +116,18 @@ final class LibraryGridCollectionView: NSCollectionView {
     }
 
     private func refreshHover() {
-        guard let window, window.isKeyWindow else { clearHover(); return }
+        guard let window = amberWindow, window.isKeyWindow else { clearHover(); return }
         updateHover(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }
 
     /// `point` 是本视图（文稿）坐标。
     private func updateHover(at point: NSPoint) {
-        guard let superview, visibleRect.contains(point) else { clearHover(); return }
+        guard let superview = amberSuperview, visibleRect.contains(point) else { clearHover(); return }
         var hit = hitTest(convert(point, to: superview))
         var target: LibraryGridCardView?
         while let view = hit, view !== self {
             if let card = view as? LibraryGridCardView { target = card; break }
-            hit = view.superview
+            hit = view.amberSuperview
         }
         setHoveredCard(target)
     }

@@ -143,7 +143,7 @@ final class DetailActionButton: NSButton {
 /// 页头改成现造之后没有可挂的实例了，改成把这一问转给宿主。
 final class DetailHeaderTransparentButton: NSButton {
     override func menu(for event: NSEvent) -> NSMenu? {
-        superview?.menu(for: event) ?? super.menu(for: event)
+        amberSuperview?.menu(for: event) ?? super.menu(for: event)
     }
 }
 
@@ -754,7 +754,7 @@ final class PlaylistHeaderView: DetailHeaderView {
                 // 点 ✓ ＝移除整个歌单的下载，先问一句（`DownloadRemovalAlert`）
                 let tracks = content.tracks
                 let downloads = appState.downloads
-                DownloadRemovalAlert.confirm(count: tracks.count, in: window) { [weak self] in
+                DownloadRemovalAlert.confirm(count: tracks.count, in: amberWindow) { [weak self] in
                     downloads.removeDownload(tracks)
                     self?.refreshLibraryState()
                 }
@@ -776,7 +776,7 @@ final class PlaylistHeaderView: DetailHeaderView {
             let tracks = content.tracks
             let downloads = appState.downloads
             guard playlistAction != .done else {
-                DownloadRemovalAlert.confirm(count: tracks.count, in: window) { [weak self] in
+                DownloadRemovalAlert.confirm(count: tracks.count, in: amberWindow) { [weak self] in
                     downloads.removeDownload(tracks)
                     self?.refreshLibraryState()
                 }
@@ -1201,7 +1201,7 @@ final class AlbumHeaderView: DetailHeaderView {
             guard let self else { return }
             // 「文件去哪」那一问（spec §10.2）；碟里没有媒体文件夹里的文件时直通。
             let appState = self.appState
-            LibraryDeleteAlert.askFileDisposition(tracks: tracks, in: self.window,
+            LibraryDeleteAlert.askFileDisposition(tracks: tracks, in: self.amberWindow,
                                                   appState: appState) { [weak self] in
                 library.removeAlbumFromLibrary(album, tracks: tracks)
                 appState.showToast("已将《\(album.name)》从资料库中删除")
@@ -1292,7 +1292,7 @@ final class AlbumHeaderView: DetailHeaderView {
             // 点 ✓ ＝移除整张碟的下载，先问一句（`DownloadRemovalAlert`）
             let tracks = content.tracks
             let downloads = appState.downloads
-            DownloadRemovalAlert.confirm(count: tracks.count, in: window) { [weak self] in
+            DownloadRemovalAlert.confirm(count: tracks.count, in: amberWindow) { [weak self] in
                 downloads.removeDownload(tracks)
                 self?.refreshLibraryState()
             }

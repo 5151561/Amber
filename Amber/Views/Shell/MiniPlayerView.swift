@@ -945,7 +945,7 @@ private final class MiniArtworkView: NSView {
             guard let self, !Task.isCancelled, self.requestedURL == request,
                   let image else { return }
             // 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
-            let contents: Any = image.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? image
+            let contents: Any = image.amberCGImage ?? image
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             self.artwork.contents = contents

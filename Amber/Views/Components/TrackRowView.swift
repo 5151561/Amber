@@ -637,7 +637,7 @@ final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
     }
 
     private func syncHoverFromMouse() {
-        guard NSApp.isActive, let window, window.isVisible else {
+        guard NSApp.isActive, let window = amberWindow, window.isVisible else {
             hovering = false
             return
         }
@@ -687,7 +687,7 @@ final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
             appState.showToast("已添加到资料库")
         } else if action == .done {
             // 点已下载那枚图标＝删掉本地那份，先问一句（`DownloadRemovalAlert`）
-            DownloadRemovalAlert.confirm(count: 1, in: window) { [weak self] in
+            DownloadRemovalAlert.confirm(count: 1, in: amberWindow) { [weak self] in
                 appState.downloads.removeDownload([track])
                 self?.refreshLibraryState()
             }
@@ -706,10 +706,10 @@ final class TrackRowView: NSTableRowView, TrackRowViewConfigurable {
     // MARK: - 菜单
 
     private var tableView: NSTableView? {
-        var view: NSView? = superview
+        var view: NSView? = amberSuperview
         while let current = view {
             if let table = current as? NSTableView { return table }
-            view = current.superview
+            view = current.amberSuperview
         }
         return nil
     }

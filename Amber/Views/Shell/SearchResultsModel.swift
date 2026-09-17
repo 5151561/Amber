@@ -501,6 +501,7 @@ final class SearchResultsModel: CatalogPageModelProviding {
     private static func durationBadge(_ seconds: TimeInterval) -> String? {
         guard seconds > 0 else { return nil }
         let total = Int(seconds)
-        return "\(total / 60):" + String(format: "%02d", total % 60)
+        // 同 `TopSearchLockupView.durationText`，补零走共用的 `zeroPadded`。
+        return "\(total / 60):\((total % 60).zeroPadded(to: 2))"
     }
 }

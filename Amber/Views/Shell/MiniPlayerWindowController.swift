@@ -185,7 +185,7 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
         self.window = window
         // spec §2：`self.nextResponder = NSApp`。菜单命令实现在 AppDelegate 上（NSApp 之后），
         // 这一句让迷你窗当 key 时命令照样送得到。
-        nextResponder = NSApp
+        amberNextResponder = NSApp
 
         installWidthConstraints()
         // 竖向也有下限：Music 的迷你横条拖不动比它更矮（[PX] 实拍那扇最小窗 = 320 × 153.5）。
@@ -744,7 +744,7 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
         guard let window else { return }
         let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
             .compactMap { window.standardWindowButton($0) }
-        let targets: [NSView] = buttons.first?.superview.map { [$0] } ?? buttons
+        let targets: [NSView] = buttons.first?.amberSuperview.map { [$0] } ?? buttons
         guard !targets.isEmpty else { return }
         let alpha: CGFloat = visible ? 1 : 0
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {

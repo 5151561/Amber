@@ -208,6 +208,7 @@ struct MVCard: View {
         guard seconds > 0 else { return "" }
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
-        return "\(m):\(String(format: "%02d", s))"
+        // 补零走共用的 `zeroPadded`（`Models.swift`），与从前的 `%02d` 逐字符等价。
+        return "\(m):\(s.zeroPadded(to: 2))"
     }
 }

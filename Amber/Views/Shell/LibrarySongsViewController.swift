@@ -184,8 +184,8 @@ final class LibrarySongsViewController: ContentPageController {
         tableView.scrollRowToVisible(0)
         // 进页面就把焦点给表格，不用先点一下才能用键盘
         DispatchQueue.main.async { [weak tableView] in
-            guard let tableView, tableView.window?.firstResponder !== tableView else { return }
-            tableView.window?.makeFirstResponder(tableView)
+            guard let tableView, tableView.amberWindow?.firstResponder !== tableView else { return }
+            tableView.amberWindow?.makeFirstResponder(tableView)
         }
     }
 

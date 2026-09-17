@@ -1616,7 +1616,7 @@ private final class LibraryArtistAlbumBlockCell: NSTableCellView {
         } else if blockAction == .done {
             // 点 ✓ ＝移除整张碟的下载，先问一句（`DownloadRemovalAlert`）
             let tracks = self.tracks
-            DownloadRemovalAlert.confirm(count: tracks.count, in: window) { [weak self] in
+            DownloadRemovalAlert.confirm(count: tracks.count, in: amberWindow) { [weak self] in
                 appState.downloads.removeDownload(tracks)
                 self?.refreshLibraryState()
             }
@@ -2031,7 +2031,7 @@ private final class LibraryArtistTrackRowView: NSView {
             appState.downloads.download([track])
         case .downloaded:
             // 点已完成的图标＝删除下载，先问一句（`DownloadRemovalAlert`）
-            DownloadRemovalAlert.confirm(count: 1, in: window) {
+            DownloadRemovalAlert.confirm(count: 1, in: amberWindow) {
                 appState.downloads.removeDownload([track])
             }
         case .downloading:
@@ -2186,7 +2186,7 @@ private final class LibraryArtistCloudView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         switch state {
         case .none where revealed, .downloaded, .failed:
-            return bounds.contains(convert(point, from: superview)) ? self : nil
+            return bounds.contains(convert(point, from: amberSuperview)) ? self : nil
         default:
             return nil
         }

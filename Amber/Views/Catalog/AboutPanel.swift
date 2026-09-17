@@ -90,7 +90,7 @@ extension NSView {
         var responder: NSResponder? = self
         while let current = responder {
             if let host = current as? any AboutPanelPresenting { return host }
-            responder = current.nextResponder
+            responder = current.amberNextResponder
         }
         return nil
     }

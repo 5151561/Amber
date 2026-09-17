@@ -910,7 +910,11 @@ struct InfoPanelFacts {
             // [RES] 185/7 `%S kHz`；spec §4.6 的样例是`44.100 kHz` / `48.000 kHz`
             // / `96.000 kHz`，即固定三位小数。
             guard let rate = file?.format?.sampleRate, rate > 0 else { return "" }
-            return String(format: "%.3f kHz", rate / 1000)
+            // 采样率是整数赫兹，「固定三位小数的 kHz」就是从右边数三位点一刀：
+            // 44100 → `44.100`。这样既躲开 `String(format:)` 的可变参数（strict memory
+            // safety 判它不安全），也不经过 locale——`%.3f` 从前也不看 locale。
+            let hz = Int(rate.rounded())
+            return "\(hz / 1000).\((hz % 1000).zeroPadded(to: 3)) kHz"
         case .channels:
             // [RES] 185/4「单声道」、185/5「立体声」；多声道那条 [RES] 5002/23。
             // spec §4.6 写的就是「立体声 / 多声道」这个口径，不报具体声道数。

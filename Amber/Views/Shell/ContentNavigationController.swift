@@ -223,7 +223,7 @@ final class ContentNavigationController: NSViewController {
         page.view.translatesAutoresizingMaskIntoConstraints = true
         page.view.frame = view.bounds
         page.view.autoresizingMask = [.width, .height]
-        if page.view.superview === view {
+        if page.view.amberSuperview === view {
             // 已经在场的（缓存根、被压在下面的页）只提到最前，不摘、不重挂。
             view.addSubview(page.view, positioned: .above, relativeTo: nil)
         } else {
@@ -242,7 +242,7 @@ final class ContentNavigationController: NSViewController {
             page.view.isHidden = true
         }
 
-        guard let outgoing, outgoing !== page, outgoing.view.superview === view,
+        guard let outgoing, outgoing !== page, outgoing.view.amberSuperview === view,
               // 「减弱动态效果」开着就不动画。
               animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             reveal(page)
@@ -258,7 +258,8 @@ final class ContentNavigationController: NSViewController {
         reveal(page)
         // 完成回调的类型是 `@Sendable`，而这里的收尾闭包捕获的是主线程隔离的
         // 视图控制器。AppKit 保证这个回调在主线程调用，所以用 `assumeIsolated` 接回来，
-        // 闭包本身按不检查处理。
+        // 闭包本身按不检查处理。`nonisolated(unsafe)` 本身就是一句不安全声明，
+        // 下面调它的那一下跟着标 `unsafe`——保证它安全的就是上面这条「必在主线程」。
         nonisolated(unsafe) let finish = completion
         NSAnimationContext.runAnimationGroup { context in
             context.allowsImplicitAnimation = false
@@ -269,7 +270,7 @@ final class ContentNavigationController: NSViewController {
                 page.view.alphaValue = 1
                 self?.conceal(outgoing)
                 outgoing.view.alphaValue = 1
-                finish?()
+                unsafe finish?()
             }
         }
         // 工具栏立刻换（不等淡入淡出跑完）：Music 的返回键与页面项也是随点随变。

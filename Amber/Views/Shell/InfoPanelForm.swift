@@ -447,7 +447,7 @@ final class InfoPanelFormView: NSView {
     private func isEditing(_ view: NSView?) -> Bool {
         if let control = view as? NSControl { return control.currentEditor() != nil }
         if let scroll = view as? NSScrollView, let textView = scroll.documentView as? NSTextView {
-            return textView.window?.firstResponder === textView
+            return textView.amberWindow?.firstResponder === textView
         }
         return false
     }
@@ -599,8 +599,11 @@ final class InfoPanelFormView: NSView {
         let secs = total - Double(minutes * 60)
         let whole = Int(secs)
         let millis = Int((secs - Double(whole)) * 1000 + 0.5)
-        if millis == 0 { return String(format: "%d:%02d", minutes, whole) }
-        return String(format: "%d:%02d.%03d", minutes, whole, millis)
+        // 补零走共用的 `zeroPadded`（`Models.swift` 的「数字成串」一节）：宽度是写死的，
+        // 与从前的 `%02d` / `%03d` 逐字符等价，位数超了照样不截断——`millis` 万一进位到
+        // 1000 时行为与从前一致。
+        if millis == 0 { return "\(minutes):\(whole.zeroPadded(to: 2))" }
+        return "\(minutes):\(whole.zeroPadded(to: 2)).\(millis.zeroPadded(to: 3))"
     }
 
     /// `m:ss` / `m:ss.mmm` / `ss` 都收。整句解不出来就返回 nil（保持原值）。

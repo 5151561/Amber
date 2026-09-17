@@ -405,9 +405,9 @@ final class SearchPageFieldBinder: NSObject, NSSearchFieldDelegate {
     }
 
     func focus() {
-        guard let window = field.window else {
+        guard let window = field.amberWindow else {
             DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.field.window else { return }
+                guard let self, let window = self.field.amberWindow else { return }
                 window.makeFirstResponder(self.field)
             }
             return
@@ -581,7 +581,7 @@ final class SearchPageController: ContentPageController {
     /// —— 旧 SwiftUI 版那句 `.onExitCommand`。整窗播放器开着时 Esc 归它，照旧往上冒泡。
     override func cancelOperation(_ sender: Any?) {
         guard !appState.showingNowPlaying else {
-            nextResponder?.tryToPerform(#selector(cancelOperation(_:)), with: sender)
+            amberNextResponder?.tryToPerform(#selector(cancelOperation(_:)), with: sender)
             return
         }
         results.cancelSearch()

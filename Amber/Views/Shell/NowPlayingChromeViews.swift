@@ -551,7 +551,7 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
         let center = NotificationCenter.default
         focusObservers.forEach(center.removeObserver)
         focusObservers = []
-        guard let window else { return }
+        guard let window = amberWindow else { return }
         // 块式观察者的闭包是 `@Sendable`；`queue: .main` 已经把投递线程钉死在主线程，
         // 所以用 `assumeIsolated` 接回主线程隔离的自己。
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification] {
