@@ -77,6 +77,44 @@ final class RemoteDMAPTests: XCTestCase {
         XCTAssertTrue(DMAPDecoder.parse(bytes).isEmpty)
     }
 
+    /// 上一条截的是整段的尾巴，这一条截在**容器边界**上：子节点声称的长度越过了容器尾，
+    /// 但整段字节还够读。必须停在容器边界，不许把容器外面的字节当子节点收进来。
+    /// 解析改走 `RawSpan` 之后这条尤其要钉住——边界要是写成整段长度，读不越界也就不 trap，
+    /// 坏处全落在解出来的树上，悄无声息。
+    func testChildLongerThanItsContainerStopsAtTheContainerEdge() {
+        var stream = DMAPNode.container("mlog", [.u32("mstt", 200)]).encoded
+        stream[15] = 40                                    // 子节点长度头末字节：4 → 40
+        stream.append(Data(repeating: 0xAA, count: 40))    // 容器外面确实还有 40 个字节可读
+        let decoded = DMAPDecoder.parse(stream)
+        XCTAssertEqual(decoded.first?.code, "mlog")
+        XCTAssertEqual(decoded.first?.payload.count, 12)   // 容器自己的载荷照旧是那 12 字节
+        XCTAssertEqual(decoded.first?.children.count, 0)   // 里面凑不出一个完整子节点
+    }
+
+    /// tag 必须是 4 个 ASCII 字符。撞上越出 ASCII 的字节就整段停下，
+    /// 判据与长度头坏掉那条一样：宁可少解一截。
+    func testNonASCIITagStopsTheStream() {
+        var bytes = DMAPNode.u32("mstt", 200).encoded
+        bytes.append(DMAPNode.u32("mlid", 7).encoded)
+        bytes[12] = 0xE4                                   // 第二个节点的 tag 首字节
+        let decoded = DMAPDecoder.parse(bytes)
+        XCTAssertEqual(decoded.count, 1)                   // 前一个照解，从坏 tag 起停手
+        XCTAssertEqual(decoded.first?.code, "mstt")
+    }
+
+    /// 递给解析器的可能是别人的切片，而 `Data` 切片的下标不从 0 起。解析按字节视图的
+    /// 0 基偏移走，切载荷时要把 `startIndex` 加回去，不然整棵树的载荷会整体错位。
+    func testParsesSliceWhoseIndicesDoNotStartAtZero() {
+        var buffer = Data([0xDE, 0xAD, 0xBE, 0xEF, 0xBA])
+        buffer.append(DMAPNode.container("mlog", [.u32("mstt", 200),
+                                                  .string("minm", "我的电脑")]).encoded)
+        let slice = buffer.dropFirst(5)
+        XCTAssertNotEqual(slice.startIndex, 0)
+        let decoded = DMAPDecoder.parse(slice)
+        XCTAssertEqual(decoded.first?.child("mstt")?.uintValue, 200)
+        XCTAssertEqual(decoded.first?.child("minm")?.stringValue, "我的电脑")
+    }
+
     func testContentCodesCarriesEveryKnownCode() {
         let response = DMAPCodes.contentCodesResponse()
         let decoded = DMAPDecoder.parse(response.encoded)
