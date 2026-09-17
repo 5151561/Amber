@@ -119,7 +119,9 @@ final class NeteaseAPI: MusicProvider {
         var request = URLRequest(url: components.url!)
         request.setValue(Self.UA, forHTTPHeaderField: "User-Agent")
         request.setValue(Self.base + "/", forHTTPHeaderField: "Referer")
-        let (data, response) = try await session.data(for: request)
+        // 连接类失败重试两次（指数退避），业务错误（下面那条 `code != 200`）不重试。
+        // 名单与理由都在 `withConnectionRetry`。
+        let (data, response) = try await withConnectionRetry { try await session.data(for: request) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ProviderError.api("请求失败")
         }
@@ -198,7 +200,9 @@ final class NeteaseAPI: MusicProvider {
         request.setValue(header.map { "\($0.0)=\($0.1)" }.joined(separator: "; "),
                          forHTTPHeaderField: "Cookie")
 
-        let (data, response) = try await eapiSession.data(for: request)
+        // 同上：只重试连接类失败。301（登录过期）与别的业务码由 `eapi` 那一层看 `code`，
+        // 走不到这里，所以这一句包起来不会把「已过期」拖成三次。
+        let (data, response) = try await withConnectionRetry { try await eapiSession.data(for: request) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ProviderError.api("请求失败")
         }
