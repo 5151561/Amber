@@ -169,7 +169,9 @@ AmberApp (NSApplicationDelegate)                       主菜单在这里用 NSM
 | **9 状态层** | 剥离 Combine：23 个 `ObservableObject` → `@Observable`，167 个 `@Published` 去壳；AppKit 侧 112 处 `.sink` → `Observations` + `TaskBag`；`PassthroughSubject`/`CurrentValueSubject` → `AsyncChannel`；`.receive(on:)` 64 处整类删掉；`SearchFieldBinder` 与 `RemoteControlServer.remoteChanges` 两个 Combine 形状的公共 API 先行改造；连同阶段 8 的 `environmentObject` 注入链一起清 | `Observation.Observations`、`swift-async-algorithms` 1.1.5（`debounce`/`removeDuplicates`/`merge`）、`AsyncChannel` | `grep -rn "import Combine" Amber` 为 0；`AmberTests` 全绿；每批 `./Tools/run.sh` 实机 | **已完成** 2026-09-17：分 12 批落地，`import Combine` 全仓为 0，1102 项全绿。三处与计划不同的做法见下面那条补记 |
 
 
-> **阶段 9 的补记（2026-09-17）**：分 12 批做完，每批一个提交（`git log --grep 观察：批`）。
+> **阶段 9 的补记（2026-09-17）**：这一阶段同时是 `swift-modernization.md` 的阶段 4，
+> 那份记语言与工具链这一层的全貌（含阶段 5「Span」与阶段 6「strict memory safety」）；
+> 这里只记状态层这一面。分 12 批做完，每批一个提交（`git log --grep 观察：批`）。
 > 批 1–2 先改两个 Combine 形状的公共 API 与四个登录/设置 store，批 3–8 按扇出从小到大换
 > `@Observable`（最后是 `LibraryStore`），批 9 是 `AppState`，批 10–12 收尾：
 > `NotificationCenter` 六处、最后两个 `CurrentValueSubject`、清扫 45 个 import 与 15 个空
