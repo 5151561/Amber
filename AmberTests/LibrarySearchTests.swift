@@ -89,7 +89,9 @@ final class LibrarySearchTests: XCTestCase {
     /// 这条就是「不能裸上 FTS5」的正面证据：默认分词器把 `帶你飛` 当一个 token，
     /// `MATCH '你飛'` 零命中；垫成 unigram 之后才搜得到。
     func testIdeographSubstringMatches() throws {
-        XCTAssertEqual(try search("你飛"), ["帶你飛 (Live)", "Taylor Swift 帶你飛"])
+        // 三条里「带你飞」是简体那份：正文与查询都经 `foldHan` 归一，简繁互相搜得到。
+        XCTAssertEqual(try search("你飛"),
+                       ["帶你飛 (Live)", "Taylor Swift 帶你飛", "带你飞"])
         XCTAssertEqual(try search("里香"), ["周杰倫 七里香"])
     }
 
@@ -199,7 +201,8 @@ final class LibrarySearchTests: XCTestCase {
     /// 入库侧与查询侧共用同一个 `segment`——两边切法差一个空格，位置序列就对不上，
     /// 短语邻近当场失效，而表现是「搜不到」不是报错。这条把切法本身钉住。
     func testSegmentPadsIdeographsAndKeepsLatinWordsIntact() {
-        XCTAssertEqual(LibrarySearch.segment("帶你飛 (Live)"), "帶 你 飛 (Live)")
+        // 输出是**折成简体**的：`segment` 开头就过 `foldHan`，入库与查询两侧同源。
+        XCTAssertEqual(LibrarySearch.segment("帶你飛 (Live)"), "带 你 飞 (Live)")
         XCTAssertEqual(LibrarySearch.segment("Mr. Children"), "Mr. Children")
         XCTAssertEqual(LibrarySearch.segment("君の名は"), "君 の 名 は")
         XCTAssertEqual(LibrarySearch.segment("  多余   空白 "), "多 余 空 白")
@@ -212,8 +215,8 @@ final class LibrarySearchTests: XCTestCase {
     func testIndexRowPutsEachFieldInItsOwnColumn() {
         let row = LibrarySearch.indexRow(name: "七里香", artist: "周杰倫", album: "葉惠美")
         XCTAssertEqual(row.name, "七 里 香")
-        XCTAssertEqual(row.artist, "周 杰 倫")
-        XCTAssertEqual(row.album, "葉 惠 美")
+        XCTAssertEqual(row.artist, "周 杰 伦")
+        XCTAssertEqual(row.album, "叶 惠 美")
         // 拼音是三段各自 pinyinTokens 的并集：按段产、按段拼，顺序跟着字段走。
         XCTAssertEqual(row.phonetic,
                        "qi li xiang qilixiang qlx zhou jie lun zhoujielun zjl ye hui mei yehuimei yhm")
@@ -258,8 +261,11 @@ final class LibrarySearchTests: XCTestCase {
     /// 两种问法都验：一种是调用方最终递给 MATCH 的表达式（`AND` 显式写着），
     /// 一种是用户在搜索框里真敲的字（`ftsQuery` 自己把两段连成 `AND`）。
     func testAndSpansFields() throws {
-        XCTAssertEqual(try splitMatch("\"帶 你 飛\" AND \"周 杰 倫\""), ["帶你飛"])
-        XCTAssertEqual(try splitMatch("\"周 杰 倫\" AND \"葉 惠 美\""), ["帶你飛"])
+        // 这两条绕过 `ftsQuery` 直接手写 MATCH，所以要按**入库之后的样子**写：
+        // 正文入库前过了 `foldHan`，表里存的是简体。经 `ftsQuery` 的那条路
+        // 两种字形都行（见 `testSimplifiedAndTraditionalSearchEachOther`）。
+        XCTAssertEqual(try splitMatch("\"带 你 飞\" AND \"周 杰 伦\""), ["帶你飛"])
+        XCTAssertEqual(try splitMatch("\"周 杰 伦\" AND \"叶 惠 美\""), ["帶你飛"])
         // 拉丁词天生一词一组、组间 AND，所以搜索框输入就能横跨 album 与 artist。
         XCTAssertEqual(try splitSearch("fearless taylor"), ["Love Story"])
         XCTAssertEqual(try splitSearch("story swift"), ["Love Story"])
@@ -271,7 +277,7 @@ final class LibrarySearchTests: XCTestCase {
     ///
     /// 现在分组依据换成了用户敲的空白：一个空格一道组边界，组间 `AND`，而 **AND 跨列**。
     func testUserSpaceBetweenIdeographRunsIsAnAnd() throws {
-        XCTAssertEqual(LibrarySearch.ftsQuery("周杰倫 帶你飛"), "\"周 杰 倫\" AND \"帶 你 飛\"")
+        XCTAssertEqual(LibrarySearch.ftsQuery("周杰倫 帶你飛"), "\"周 杰 伦\" AND \"带 你 飞\"")
         XCTAssertEqual(try splitSearch("周杰倫 帶你飛"), ["帶你飛"])
     }
 
@@ -284,10 +290,10 @@ final class LibrarySearchTests: XCTestCase {
     ///
     /// 谁要是把上面那条 `AND` 改回并成一个短语，下面这条就会跟着红——反过来也一样。
     func testUserSpaceTurnsNeighborsIntoAndButRunsStayPhrases() throws {
-        XCTAssertEqual(LibrarySearch.ftsQuery("飛周"), "\"飛 周\"")
+        XCTAssertEqual(LibrarySearch.ftsQuery("飛周"), "\"飞 周\"")
         XCTAssertEqual(try splitSearch("飛周"), [], "没敲空格却跨字段成了 AND")
 
-        XCTAssertEqual(LibrarySearch.ftsQuery("飛 周"), "\"飛\"* AND \"周\"*")
+        XCTAssertEqual(LibrarySearch.ftsQuery("飛 周"), "\"飞\"* AND \"周\"*")
         XCTAssertEqual(try splitSearch("飛 周"), ["帶你飛"], "敲了空格还被并成短语")
     }
 

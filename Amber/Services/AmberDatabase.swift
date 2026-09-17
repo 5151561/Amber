@@ -246,6 +246,11 @@ final class AmberDatabase {
         // `backup: false`：这一步不动 schema，索引整张都是可从源表重算的派生物，
         // 重建错了再重建一次就是了，没有可丢的原始数据。
         Step(to: 4, work: { try LibrarySearchIndex.rebuild(in: $0) }),
+        // v5：正文改成**繁体归一成简体之后**再入库（`LibrarySearch.foldHan`），
+        // 简繁互搜这才在汉字那条路上成立——从前只有拼音那条桥搭得过去，
+        // 敲「带你飞」找不到库里那首「帶你飛」。已入库的正文是没折过的，
+        // 所以跟 v4 一样整张重建一次。就是上面说的「哪天要再修一次，加一条 v5」。
+        Step(to: 5, work: { try LibrarySearchIndex.rebuild(in: $0) }),
     ]
 
     /// 当前库的 `user_version`。

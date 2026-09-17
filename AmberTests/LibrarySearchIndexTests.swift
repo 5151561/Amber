@@ -182,19 +182,43 @@ final class LibrarySearchIndexTests: XCTestCase {
     /// 要让它通，得在入库与查询两侧都做一次繁简归一化——那是改 `LibrarySearch`
     /// 那一层的语义，不是接线。这条用例把**现在的**行为钉住，免得被当成 bug 顺手改掉，
     /// 也免得被当成「已经支持了」。
-    func testSimplifiedAndTraditionalBridgeGoesThroughPinyin() {
+    func testSimplifiedAndTraditionalSearchEachOther() {
         let store = makeFixture().store
         store.createPlaylist(name: "带你飞")
 
+        // 拼音那条桥（`foldHan` 之前就成立的那条）照旧。
         for word in ["dainifei", "dai ni fei", "dnf"] {
             XCTAssertEqual(songs(store, word), ["帶你飛"], "拼音「\(word)」没把繁体那条桥起来")
             XCTAssertEqual(Set(playlists(store, word)), ["帶你飛", "带你飞"],
                            "拼音「\(word)」该同时命中简繁两份列表")
         }
-        // 汉字那条路只认同一种字形。
-        XCTAssertEqual(songs(store, "带你飞"), [])
-        XCTAssertEqual(playlists(store, "带你飞"), ["带你飞"])
-        XCTAssertEqual(playlists(store, "帶你飛"), ["帶你飛"])
+
+        // **汉字那条路也要互通**：正文与查询都经 `foldHan` 归一成简体，
+        // 于是敲哪种字形都落到同一个 token 上。用户并不知道自己库里存的是哪种字形
+        //（两家音源给的不一样，本地导入的文件标签更是什么都有）。
+        XCTAssertEqual(songs(store, "带你飞"), ["帶你飛"], "敲简体要搜得到库里那首繁体的")
+        XCTAssertEqual(songs(store, "帶你飛"), ["帶你飛"])
+        for word in ["带你飞", "帶你飛"] {
+            XCTAssertEqual(Set(playlists(store, word)), ["帶你飛", "带你飞"],
+                           "「\(word)」该同时命中简繁两份列表")
+        }
+        // 子串同样互通（短语邻近在归一之后的 token 序列上成立）。
+        XCTAssertEqual(songs(store, "你飞"), ["帶你飛"])
+        XCTAssertEqual(songs(store, "你飛"), ["帶你飛"])
+        // 归一不该顺手放宽别的：反序照旧零命中。
+        XCTAssertEqual(songs(store, "飞你"), [])
+    }
+
+    /// 归一方向只能是「繁→简」，因为繁简映射是多对一。
+    /// 往多的那头折会丢信息（实测 `Hans-Hant` 把「周杰伦」折成「周傑倫」）。
+    /// 多对一的代价是召回变宽——搜「后」会同时命中「皇后」与「以後」，
+    /// 这是简繁互搜这件事本身的语义，钉在这儿免得以后被当成假阳性「修」掉。
+    func testFoldingIsManyToOneOnPurpose() {
+        XCTAssertEqual(LibrarySearch.foldHan("帶你飛"), "带你飞")
+        XCTAssertEqual(LibrarySearch.foldHan("皇后 以後"), "皇后 以后")
+        XCTAssertEqual(LibrarySearch.foldHan("带你飞"), "带你飞", "已经是简体的原样不动")
+        XCTAssertEqual(LibrarySearch.foldHan("Taylor Swift"), "Taylor Swift", "拉丁不碰")
+        XCTAssertEqual(LibrarySearch.foldHan("君の名は"), "君の名は", "假名不碰")
     }
 
     /// 西里尔大小写与变音符由 `unicode61` 自己折（SQL 的 `lower()` 只折 ASCII）。

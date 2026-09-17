@@ -72,7 +72,7 @@ final class AmberDatabaseTests: XCTestCase {
     @MainActor
     func testUserVersionIsCurrent() throws {
         let database = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try database.userVersion(), 4)
+        XCTAssertEqual(try database.userVersion(), 5)
     }
 
     /// v3 那一步：`track.local_path` **拆了**。
@@ -109,7 +109,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let upgraded = try AmberDatabase(fileURL: file)
-        XCTAssertEqual(try upgraded.userVersion(), 4)
+        XCTAssertEqual(try upgraded.userVersion(), 5)
         let columns = Set(try upgraded.sqlite.query(
             "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
         XCTAssertFalse(columns.contains("local_path"))
@@ -150,7 +150,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let upgraded = try AmberDatabase(fileURL: file)
-        XCTAssertEqual(try upgraded.userVersion(), 4)
+        XCTAssertEqual(try upgraded.userVersion(), 5)
         XCTAssertEqual(try count(upgraded, "search_index"), 1)
         // 重建用的是 `LibrarySearch.indexRow`，所以中文子串与拼音两条路都该通。
         for word in ["里香", "qlx"] {
@@ -182,7 +182,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let second = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 4)
+        XCTAssertEqual(try second.userVersion(), 5)
         let value = try second.sqlite.value(
             "SELECT value FROM rating WHERE id = ?", ["qq:1"]) { $0.int(0) }
         XCTAssertEqual(value, 5)
@@ -230,7 +230,7 @@ final class AmberDatabaseTests: XCTestCase {
 
         // 空壳条目不会挡住下一次开库。
         let second = try AmberDatabase.shared(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 4)
+        XCTAssertEqual(try second.userVersion(), 5)
     }
 
     // MARK: - 外键：该级联的级联
