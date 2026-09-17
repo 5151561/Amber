@@ -209,7 +209,7 @@ enum DebugSnapshot {
                   ?? appState.library.playlists.first else { return "PLAYLISTMENU -\n" }
         let menu = NSHostingMenu(rootView: LibraryPlaylistMenu(playlist: playlist)
             .environmentObject(appState)
-            .environmentObject(appState.library))
+            .environment(appState.library))
         var out = "PLAYLISTMENU playlist=\"\(playlist.name)\" origin=\(playlist.origin.rawValue) items=\(menu.numberOfItems)\n"
         walk(menu, depth: 1, into: &out)
         return out

@@ -164,21 +164,27 @@ final class RecentContainerTests: XCTestCase {
 
     /// 同一格里接着听**一声通知都不发**：主页目录页订阅着这份台账，
     /// 每发一次就重灌一遍整页快照（悬浮态被清、货架横向位置回到最左）。
-    func testSameContainerDoesNotRepublish() {
+    @MainActor
+    func testSameContainerDoesNotRepublish() async {
         let store = makeStore()
         let playlist = makePlaylist()
         var emissions = 0
-        let token = store.$recentContainers.dropFirst().sink { _ in emissions += 1 }
-        defer { token.cancel() }
+        let bag = TaskBag()
+        bag.observe({ store.recentContainers }) { _ in emissions += 1 }
+        await settleObservations()
 
         store.noteStarted(makeTrack("1"), container: .playlist(playlist))
+        await settleObservations()
         XCTAssertEqual(emissions, 1, "第一首把这张卡记进台账，该发一声")
+
         for index in 2...10 {
             store.noteStarted(makeTrack("\(index)"), container: .playlist(playlist))
         }
+        await settleObservations()
         XCTAssertEqual(emissions, 1, "同一份歌单接着听，台账没变，不该再发")
 
         store.noteStarted(makeTrack("11"), container: .favorites)
+        await settleObservations()
         XCTAssertEqual(emissions, 2, "换了一格才该再发一声")
     }
 

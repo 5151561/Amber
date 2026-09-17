@@ -65,16 +65,12 @@ final class AlbumDetailViewController: TrackTableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         // 入库 / 取消入库要换行的形态（星级列），喜爱要换标题后那颗 ★。
-        appState.library.$libraryAlbums
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.libraryStateChanged() }
-            .store(in: &cancellables)
-        appState.library.$favoriteAlbumIDs
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refreshVisibleRows() }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.library.libraryAlbums }) { [weak self] _ in
+            self?.libraryStateChanged()
+        }
+        observers.observe({ [appState] in appState.library.favoriteAlbumIDs }) { [weak self] _ in
+            self?.refreshVisibleRows()
+        }
         reload()
     }
 

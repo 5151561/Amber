@@ -25,7 +25,7 @@ struct LibraryPlaylistMenu: View {
     var includesPlayback = true
 
     @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
 
     var body: some View {
         if includesPlayback {

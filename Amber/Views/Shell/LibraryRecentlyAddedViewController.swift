@@ -76,9 +76,12 @@ final class LibraryRecentlyAddedViewController: LibraryPageController,
         // 这一页读的是：专辑集合与 `albumAddedAt`（分段键）、专辑喜爱（仅喜爱筛选），
         // 外加曲目——`albumAddedDate(for:)` 在旧存档没有 albumAddedAt 时回落取
         // 这张碟里曲目 `addedAt` 的最大值，所以入库/退库一首歌也可能改分段。
-        appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums])
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        let changes = appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums])
+        observers.add(Task { @MainActor [weak self] in
+            for await _ in changes {
+                self?.setNeedsRefresh()
+            }
+        })
         // **只订这一页真读的那两项**，不要 `model.objectWillChange`：
         // 标题栏标题跟着滚动联动是靠 `updateDisplayTitle()` 写`sectionTitle`，
         // 那一位从前也长在这个共用模型上（`@Published displayTitle`），

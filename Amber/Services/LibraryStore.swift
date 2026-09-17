@@ -59,60 +59,61 @@ struct LibraryChange: OptionSet, Sendable {
 ///    中间隔着一整首歌，500 ms 防抖合并不了，于是每首歌两次整份重写。
 ///    现在曲末那一笔是一条单行 UPSERT。
 @MainActor
-final class LibraryStore: ObservableObject {
+@Observable
+final class LibraryStore {
 
     /// 已添加到资料库的歌曲，最新添加的在前（「最近添加」直接用这个顺序）。
-    @Published private(set) var libraryTracks: [Track] = []
+    private(set) var libraryTracks: [Track] = []
     /// 已添加到资料库的专辑，最新添加的在前。
-    @Published private(set) var libraryAlbums: [Album] = []
-    @Published private(set) var favoriteTracks: [Track] = []
-    @Published private(set) var recentTracks: [Track] = []
+    private(set) var libraryAlbums: [Album] = []
+    private(set) var favoriteTracks: [Track] = []
+    private(set) var recentTracks: [Track] = []
     /// 「最近播放」的**容器台账**：在哪儿听的（歌单 / 心水 / 艺人 / 专辑 / 散曲），最近的在前。
     ///
     /// 与上面那份逐曲历史是**两个粒度、两张表**，各有各的上限（见`RecentContainer`）：
     /// 逐曲那份 200 条喂相似种子与月度统计；这份 50 条只给货架与二级页当格子用。
     /// 合成一份再分组的话，听完一张 200 首的歌单就会把逐曲窗口整个占满，
     /// 货架塌成一张卡，更早的格子被整个挤掉。
-    @Published private(set) var recentContainers: [RecentContainer] = []
+    private(set) var recentContainers: [RecentContainer] = []
     /// 已喜爱的专辑 id（Music.app 在专辑标题后显示 ★）
-    @Published private(set) var favoriteAlbumIDs: Set<String> = []
+    private(set) var favoriteAlbumIDs: Set<String> = []
     /// 已收藏的艺人 id（目录艺人页 hero 上那枚 ★，参考图 design-ref/ui-spec/pages/catalog-artist.png）
-    @Published private(set) var favoriteArtistIDs: Set<String> = []
+    private(set) var favoriteArtistIDs: Set<String> = []
     /// 评分表：键为曲目或专辑 id，值 1...5。Music.app 的星级同样是本地资料库属性。
-    @Published private(set) var ratings: [String: Int] = [:]
+    private(set) var ratings: [String: Int] = [:]
     /// 播放次数：键为曲目 id。资料库「歌曲」表有「播放次数」一列，0 次显示空白。
-    @Published private(set) var playCounts: [String: Int] = [:]
+    private(set) var playCounts: [String: Int] = [:]
     /// 跳过次数：一首歌没放完就被切走算一次（Music 的「跳过次数」同义）。
-    @Published private(set) var skipCounts: [String: Int] = [:]
+    private(set) var skipCounts: [String: Int] = [:]
     /// 「添加日期 / 上次播放时间 / 上次跳过时间」三列的时间戳，键为曲目 id。
-    @Published private(set) var addedAt: [String: Date] = [:]
-    @Published private(set) var lastPlayedAt: [String: Date] = [:]
-    @Published private(set) var lastSkippedAt: [String: Date] = [:]
+    private(set) var addedAt: [String: Date] = [:]
+    private(set) var lastPlayedAt: [String: Date] = [:]
+    private(set) var lastSkippedAt: [String: Date] = [:]
     /// 专辑的添加时间，键为专辑 id。资料库「最近添加」按它分「昨天 / 本周 / …」段。
     /// 旧存档没有这个键：回落取这张碟里曲目 addedAt 的最大值。
-    @Published private(set) var albumAddedAt: [String: Date] = [:]
+    private(set) var albumAddedAt: [String: Date] = [:]
     /// 资料库里的播放列表：自建的、从目录加进来的、账号同步来的，最新在前。
-    @Published private(set) var playlists: [LibraryPlaylist] = []
+    private(set) var playlists: [LibraryPlaylist] = []
     /// 用户主动从资料库里删掉的账号歌单 id：下次同步不要再把它们加回来。
-    private var dismissedAccountPlaylistIDs: Set<String> = []
+    @ObservationIgnored private var dismissedAccountPlaylistIDs: Set<String> = []  // 镜像 playlists 的派生集，跟着公开那份一起变，观察它只会重复发一轮
 
     /// 曲目被移出资料库时的旁路通知，参数是这一批曲目 id。
     /// 由 AppState 接到 `DownloadStore`：Music 里歌一从资料库删掉，本地那份下载也一起没了。
     /// 做成回调而不是让每个删除入口自己调，是因为删除入口有好几处（单曲/整张碟/表格），
     /// 少接一处就会留下一个再也没人认领的音频文件。
-    var onTracksRemoved: (([String]) -> Void)?
+    @ObservationIgnored var onTracksRemoved: (([String]) -> Void)?  // 回调不是状态，跟着公开那份一起变，观察它只会重复发一轮
 
     /// 曲目**进**资料库时的旁路通知，与 `onTracksRemoved` 对称。
     /// 由 AppState 接到 `DownloadStore`：设置 › 通用 ›「自动下载」开着时进库即落地。
     /// 同样做成回调——入库入口有单曲 / 整张碟 / 歌单同步（开了「添加与删除播放列表歌曲」）
     /// 好几处，逐处调必漏。
-    var onTracksAdded: (([Track]) -> Void)?
+    @ObservationIgnored var onTracksAdded: (([Track]) -> Void)?  // 回调不是状态，跟着公开那份一起变，观察它只会重复发一轮
 
     /// 与 libraryTracks 同步的 id 集合，供逐行判定用（列表里每行都要查一次）。
-    private var libraryTrackIDs: Set<String> = []
-    private var libraryAlbumIDs: Set<String> = []
+    @ObservationIgnored private var libraryTrackIDs: Set<String> = []  // 镜像 libraryTracks 的索引，跟着公开那份一起变，观察它只会重复发一轮
+    @ObservationIgnored private var libraryAlbumIDs: Set<String> = []  // 镜像 libraryAlbums 的索引，跟着公开那份一起变，观察它只会重复发一轮
     /// 与 favoriteTracks 同步的 id 集合：`isFavorite` 是表格排序比较器里逐行调的。
-    private var favoriteTrackIDs: Set<String> = []
+    @ObservationIgnored private var favoriteTrackIDs: Set<String> = []  // 镜像 favoriteTracks 的索引，跟着公开那份一起变，观察它只会重复发一轮
     /// 设置 › 通用 ›「歌曲列表复选框」那一列里**取消勾选**的曲目 id。
     ///
     /// 记「没勾的」而不是「勾了的」：Music/iTunes 里新歌一进来就是勾着的，
@@ -159,31 +160,31 @@ final class LibraryStore: ObservableObject {
     /// 不同艺人的同名碟），只按名字建表的话第二张碟整个查不到，第一张碟还会被
     /// 别人的曲目认领。键改成 `fallbackKey`（名 + 艺人 + 音源 + 本地性），
     /// 撞键的仍旧取数组里靠前的那张——同一把键下的两张碟，界面上本来就分不出。
-    private var albumsByID: [String: Album] = [:]
-    private var albumsByFallbackKey: [String: Album] = [:]
+    @ObservationIgnored private var albumsByID: [String: Album] = [:]  // 查表缓存，跟着公开那份一起变，观察它只会重复发一轮
+    @ObservationIgnored private var albumsByFallbackKey: [String: Album] = [:]  // 查表缓存，跟着公开那份一起变，观察它只会重复发一轮
 
     // MARK: 细分变更出口
 
     /// 细分出口的底座（见 `LibraryChange`）。**私有**：消费方只能经`changes(affecting:)`
     /// 报出「我读哪几份」才拿得到事件，不留一条「订上就什么都收」的口子——
     /// 那条口子正是 `objectWillChange` 今天这副样子的由来。
-    private let changeSubject = PassthroughSubject<LibraryChange, Never>()
+    private let changeChannel = EventChannel<LibraryChange>()
 
     /// 订这几位里任意一位的变更。事件带的是**这一次**动到的完整集合，
     /// 要按类别分支处理的消费方可以再看一眼。
     ///
     /// 与 `objectWillChange` 的时序差：这一层在值**落定之后**才发（`objectWillChange`
-    /// 是 `@Published` 的 willSet，在值变之前）。即便如此，界面侧仍应把响应合批到
-    /// 下一轮 runloop 再读——页面自己那份模型（搜索词、筛选、排序）还是 willSet 语义，
-    /// 两条路合到同一个刷新入口上时得按更严的那一条来。
-    func changes(affecting mask: LibraryChange) -> AnyPublisher<LibraryChange, Never> {
-        changeSubject.filter { !$0.isDisjoint(with: mask) }.eraseToAnyPublisher()
+    /// 以前是 willSet 语义）。换 `@Observable` 之后两条路都是「落定之后」了，
+    /// 但界面侧仍应把响应合批到下一轮 runloop 再读：同一次用户操作往往连着改好几项，
+    /// 合批才不会把一页重算好几遍。
+    func changes(affecting mask: LibraryChange) -> AsyncStream<LibraryChange> {
+        changeChannel.stream { !$0.isDisjoint(with: mask) }
     }
 
     /// 发一次细出口。空集合（什么都没真的改）不发。
     private func notify(_ change: LibraryChange) {
         guard !change.isEmpty else { return }
-        changeSubject.send(change)
+        changeChannel.send(change)
     }
 
     /// 主库连接。
@@ -191,11 +192,11 @@ final class LibraryStore: ObservableObject {
     /// **nil ＝ 开库这一步就失败了**（磁盘满、目录没权限）。此时内存这一份照常能用，
     /// 只是这一程的改动落不了盘——比拿一份空库把用户的东西覆盖掉好得多。
     /// App 里走不到这里：`AppState` 先一步跑迁移，失败会弹阻塞式警告并且不以空库启动。
-    private let database: AmberDatabase?
+    @ObservationIgnored private let database: AmberDatabase?  // 注入依赖，跟着公开那份一起变，观察它只会重复发一轮
 
     /// `search_index` 那张表的维护者。曲目 / 专辑 / 歌单的增删改都从下面那十来个
     /// 落库助手里顺手带它一把，艺人那一档由 `persist` 末尾的对账带（见 `artistIndexDirty`）。
-    private let searchIndex = LibrarySearchIndex()
+    @ObservationIgnored private let searchIndex = LibrarySearchIndex()  // 注入依赖，跟着公开那份一起变，观察它只会重复发一轮
 
     /// `directory` 供测试注入临时目录；默认落`~/Library/Application Support/Amber/`。
     init(directory: URL? = nil) {
@@ -651,9 +652,6 @@ final class LibraryStore: ObservableObject {
         let updated = checked ? uncheckedTrackIDs.subtracting(ids)
                               : uncheckedTrackIDs.union(ids)
         guard updated != uncheckedTrackIDs else { return }
-        // 手动发：这份集合不是 `@Published`，而歌曲表要靠这一声重画勾选列
-        // （`LibrarySongsViewController.bind` 订的就是`objectWillChange`）。
-        objectWillChange.send()
         let added = updated.subtracting(uncheckedTrackIDs)
         let removed = uncheckedTrackIDs.subtracting(updated)
         uncheckedTrackIDs = updated
@@ -681,9 +679,6 @@ final class LibraryStore: ObservableObject {
     /// 用户主动点播的那一首，见 `MissingFileLocator`）。
     func markFileMissing(_ trackID: String) {
         guard !missingFileTrackIDs.contains(trackID) else { return }
-        // 手动发：这份集合不是 `@Published`，而歌曲表要靠这一声重画那枚感叹号
-        //（与 `setChecked` 同一条路，`LibrarySongsViewController.bind` 订的就是`objectWillChange`）。
-        objectWillChange.send()
         missingFileTrackIDs.insert(trackID)
         notify(.fileMissing)
     }
@@ -691,7 +686,6 @@ final class LibraryStore: ObservableObject {
     /// 撤标记：重新指路成功、或者批量查找把它找回来了。
     func clearFileMissing(_ trackID: String) {
         guard missingFileTrackIDs.contains(trackID) else { return }
-        objectWillChange.send()
         missingFileTrackIDs.remove(trackID)
         notify(.fileMissing)
     }
@@ -757,7 +751,6 @@ final class LibraryStore: ObservableObject {
             }
         }
         if missing != missingFileTrackIDs {
-            objectWillChange.send()
             missingFileTrackIDs = missing
             notify(.fileMissing)
         }
@@ -949,7 +942,6 @@ final class LibraryStore: ObservableObject {
         guard !ids.isEmpty else { return }
         let updated = on ? suggestLessTrackIDs.union(ids) : suggestLessTrackIDs.subtracting(ids)
         guard updated != suggestLessTrackIDs else { return }
-        objectWillChange.send()
         let added = updated.subtracting(suggestLessTrackIDs)
         let removed = suggestLessTrackIDs.subtracting(updated)
         suggestLessTrackIDs = updated
@@ -963,7 +955,6 @@ final class LibraryStore: ObservableObject {
         let updated = on ? suggestLessArtistIDs.union([artistID])
                          : suggestLessArtistIDs.subtracting([artistID])
         guard updated != suggestLessArtistIDs else { return }
-        objectWillChange.send()
         suggestLessArtistIDs = updated
         persist("减少推荐（艺人）") { db in
             try self.persistIDSet("suggest_less_artist", adding: on ? [artistID] : [],

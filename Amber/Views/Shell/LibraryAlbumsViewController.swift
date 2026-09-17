@@ -72,9 +72,12 @@ final class LibraryAlbumsViewController: LibraryPageController,
         // 这一页真正读的只有四份：专辑集合、曲目（判空专辑用）、专辑喜爱（仅喜爱筛选）、
         // 评分（按星级排序）。从前订的是 `library.objectWillChange` ——
         // 心水一首歌、记一次播放、改一条勾选都会把这一页整个重排一遍。
-        appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums, .ratings])
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        let changes = appState.library.changes(affecting: [.albums, .tracks, .favoriteAlbums, .ratings])
+        observers.add(Task { @MainActor [weak self] in
+            for await _ in changes {
+                self?.setNeedsRefresh()
+            }
+        })
         // `@Observable` 没有 `objectWillChange` 那条「随便什么变了」的信号——这是好事，
         // 它正是「一次入库把资料库四页全量重算一遍」的由来。这里把本页真读的三项装成
         // 一个快照：与原来等价，而与它们无关的写入不再把这一页叫醒。

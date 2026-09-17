@@ -542,7 +542,7 @@ struct ProviderSettingsPane: View {
     @Bindable var model: SettingsDraftModel
     @EnvironmentObject private var appState: AppState
     @Environment(PlayerController.self) private var player
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(QQLoginStore.self) private var qqLogin
     @Environment(NeteaseLoginStore.self) private var neteaseLogin
     @Environment(ProviderSettingsStore.self) private var providerSettings
@@ -616,7 +616,7 @@ struct ProviderSettingsPane: View {
                 QQLoginView(onDismiss: { loginSheet = nil })
                     .environmentObject(appState)
                     .environment(player)
-                    .environmentObject(library)
+                    .environment(library)
                     .environment(qqLogin)
                     .environment(providerSettings)
                     .environment(player.clock)

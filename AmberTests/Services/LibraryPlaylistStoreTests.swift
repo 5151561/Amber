@@ -156,37 +156,50 @@ final class LibraryPlaylistStoreTests: XCTestCase {
 
     /// 一次账号同步要摘一批、改一批、补一批，中间不能每动一条就通知一次视图：
     /// 侧栏与所有列表页会跟着重画同样次数，`@Published` 的数组也会真的复制那么多份。
-    func testBatchUpdateNotifiesOnce() {
+    func testBatchUpdateNotifiesOnce() async {
         let store = makeStore()
         store.createPlaylist(name: "一")
         store.createPlaylist(name: "二")
         store.createPlaylist(name: "三")
 
+        // 以前数的是 `objectWillChange`；换 `@Observable` 之后没有那条大喇叭，
+        // 数的是细出口 `changes(affecting: .playlists)`——侧栏与列表页订的就是这一条。
         var notifications = 0
-        let token = store.objectWillChange.sink { _ in notifications += 1 }
-        defer { token.cancel() }
+        let changes = store.changes(affecting: .playlists)
+        let watcher = Task { @MainActor in
+            for await _ in changes { notifications += 1 }
+        }
+        defer { watcher.cancel() }
+        await settleObservations()
 
         store.updatePlaylists { playlists in
             playlists.removeFirst()
             for index in playlists.indices { playlists[index].name += "!" }
             playlists.append(.local(name: "四"))
         }
+        await settleObservations()
         XCTAssertEqual(notifications, 1, "整批改完只发一次")
         XCTAssertEqual(store.playlists.map(\.name), ["二!", "一!", "四"])
     }
 
     /// 账号同步走的就是上面那条批量通道。
-    func testAccountSyncNotifiesOnce() {
+    @MainActor
+    func testAccountSyncNotifiesOnce() async {
         let store = makeStore()
         store.syncAccountPlaylists([makePlaylist("qq:1", name: "旧一"),
                                     makePlaylist("qq:2", name: "旧二")], kind: .qq)
 
         var notifications = 0
-        let token = store.objectWillChange.sink { _ in notifications += 1 }
-        defer { token.cancel() }
+        let changes = store.changes(affecting: .playlists)
+        let watcher = Task { @MainActor in
+            for await _ in changes { notifications += 1 }
+        }
+        defer { watcher.cancel() }
+        await settleObservations()
 
         store.syncAccountPlaylists([makePlaylist("qq:1", name: "新一"),
                                     makePlaylist("qq:3", name: "新三")], kind: .qq)
+        await settleObservations()
         XCTAssertEqual(notifications, 1)
         XCTAssertEqual(store.playlists.map(\.name), ["新一", "新三"])
     }

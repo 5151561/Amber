@@ -71,7 +71,7 @@ final class SongsRichCellView: NSTableCellView {
         let host = NSHostingView(rootView: SongsTableCellContent(state: state)
             .environmentObject(appState)
             .environment(appState.player)
-            .environmentObject(appState.library)
+            .environment(appState.library)
             .environment(appState.downloads))
         host.translatesAutoresizingMaskIntoConstraints = false
         // 一格只准画自己那块矩形。NSTableCellView 默认不裁剪，SwiftUI 那边算出来的内容
@@ -272,7 +272,7 @@ struct SongsTableCellContent: View {
     var state: SongsCellState
 
     @Environment(PlayerController.self) private var player
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(DownloadStore.self) private var downloads
     /// 只给 ••• 菜单用（前往专辑 / 新建播放列表这类要 `AppState` 的动作）。
     @EnvironmentObject private var appState: AppState

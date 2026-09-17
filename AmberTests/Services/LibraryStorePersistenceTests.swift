@@ -212,21 +212,27 @@ final class LibraryStorePersistenceTests: XCTestCase {
 
     /// 跑一次 `updateTrack`，把它报出来的那一份掩码与「哪几个数组真变了」逐位比。
     @discardableResult
+    @MainActor
     private func assertMaskMatchesArrays(_ store: LibraryStore, id: String, _ what: String,
                                          transform: @escaping (inout Track) -> Void,
                                          file: StaticString = #filePath,
-                                         line: UInt = #line) -> Bool {
+                                         line: UInt = #line) async -> Bool {
         let before = ArraysSnapshot(store)
         var received: LibraryChange = []
         var emissions = 0
         // 订全部位：要看的就是它到底报了哪几位。
-        let token = store.changes(affecting: LibraryChange(rawValue: ~0)).sink {
-            received = $0
-            emissions += 1
+        let changes = store.changes(affecting: LibraryChange(rawValue: ~0))
+        let watcher = Task { @MainActor in
+            for await change in changes {
+                received = change
+                emissions += 1
+            }
         }
-        defer { token.cancel() }
+        defer { watcher.cancel() }
+        await settleObservations()
 
         let changed = store.updateTrack(id: id, transform: transform)
+        await settleObservations()
         let after = ArraysSnapshot(store)
 
         var expected: LibraryChange = []
@@ -247,7 +253,8 @@ final class LibraryStorePersistenceTests: XCTestCase {
     }
 
     /// 一首歌可能落在五处里的任意几处，逐种组合都要报得一模一样。
-    func testUpdateTrackMaskIsEquivalentToArrayDiff() throws {
+    @MainActor
+    func testUpdateTrackMaskIsEquivalentToArrayDiff() async throws {
         let store = makeStore()
         let onlyLibrary = makeTrack("m1")
         let libraryAndFavorite = makeTrack("m2")
@@ -278,26 +285,28 @@ final class LibraryStorePersistenceTests: XCTestCase {
                            (onlyPlaylist.id, "只在播放列表"),
                            (everywhere.id, "四处都在"),
                            (onlyContainer.id, "只在台账的散曲格")] {
-            assertMaskMatchesArrays(store, id: id, what) { $0.title += "!" }
+            await assertMaskMatchesArrays(store, id: id, what) { $0.title += "!" }
         }
     }
 
     /// 改完与原值相等的那一次：一位都不发、返回 false、也不往库里写。
     /// 「显示简介」面板提交时五个字段里往往只动了一个，其余四个原样写回来。
-    func testUpdateTrackWithNoRealChangeIsSilent() throws {
+    @MainActor
+    func testUpdateTrackWithNoRealChangeIsSilent() async throws {
         let store = makeStore()
         let track = makeTrack("noop")
         store.addToLibrary(track)
-        assertMaskMatchesArrays(store, id: track.id, "原样写回") { $0.title = track.title }
+        await assertMaskMatchesArrays(store, id: track.id, "原样写回") { $0.title = track.title }
         // 库里也没被动过一个字。
         XCTAssertEqual(try openDatabase().value("SELECT title FROM track WHERE id = ?",
                                                 [track.id], { $0.text(0) }), track.title)
     }
 
     /// 资料库里根本没有这个 id：什么都不该发生。
-    func testUpdateUnknownTrackIsSilent() {
+    @MainActor
+    func testUpdateUnknownTrackIsSilent() async {
         let store = makeStore()
-        assertMaskMatchesArrays(store, id: "qq:nobody", "库里没有这个 id") { $0.title = "改了" }
+        await assertMaskMatchesArrays(store, id: "qq:nobody", "库里没有这个 id") { $0.title = "改了" }
     }
 
     /// 台账里的散曲格现在只存 id，曲目从 `track` 表取——

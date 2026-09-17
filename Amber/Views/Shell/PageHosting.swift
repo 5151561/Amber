@@ -61,7 +61,7 @@ extension AppState {
         return AnyView(base
             .environmentObject(self)
             .environment(player)
-            .environmentObject(library)
+            .environment(library)
             .environment(downloads)
             .environment(qqLogin)
             .environment(neteaseLogin)

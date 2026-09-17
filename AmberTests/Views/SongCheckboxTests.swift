@@ -57,20 +57,33 @@ final class SongCheckboxTests: XCTestCase {
         XCTAssertTrue(restored.isChecked(tracks[2]))
     }
 
-    /// 这份集合不是 `@Published`，改动要自己发一声，歌曲页才会重画勾选列。
     /// 一批只发一次；没有真的改到东西时一声都不发。
-    func testBatchChangeNotifiesOnce() {
+    ///
+    /// 以前数的是 `objectWillChange`（那份集合不是 `@Published`，要自己发一声）。
+    /// 换 `@Observable` 之后没有那条大喇叭了，数的是细出口 `changes(affecting: .checkmarks)`
+    /// ——本来就该数它：歌曲页订的就是这一条。
+    @MainActor
+    func testBatchChangeNotifiesOnce() async {
         let store = makeStore()
         let tracks = makeTracks(3)
         var notifications = 0
-        let token = store.objectWillChange.sink { _ in notifications += 1 }
-        defer { token.cancel() }
+        let changes = store.changes(affecting: .checkmarks)
+        let watcher = Task { @MainActor in
+            for await _ in changes { notifications += 1 }
+        }
+        defer { watcher.cancel() }
+        await settleObservations()
 
         store.setChecked(tracks, false)
+        await settleObservations()
         XCTAssertEqual(notifications, 1)
+
         store.setChecked(tracks, false)          // 已经是这个状态了
+        await settleObservations()
         XCTAssertEqual(notifications, 1)
+
         store.setChecked([], true)               // 空批
+        await settleObservations()
         XCTAssertEqual(notifications, 1)
     }
 

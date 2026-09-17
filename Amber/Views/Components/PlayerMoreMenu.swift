@@ -38,7 +38,7 @@ struct PlayerMoreMenu: View {
     @EnvironmentObject private var appState: AppState
     /// 表本身读的是 `appState.library` / `.downloads`，这里再声明一次是为了**依赖登记**：
     /// 心水、入库这些状态一变，这棵子树才跟着重建。
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(DownloadStore.self) private var downloads
 
     var body: some View {
