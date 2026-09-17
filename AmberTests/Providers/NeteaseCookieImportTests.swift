@@ -106,7 +106,8 @@ final class NeteaseCookieImportTests: XCTestCase {
     /// （参考实现记的是 8821），所以留着钉解析。
     /// 注意 `blockText` 末尾那个真实存在的制表符——解析时要 trim 掉，
     /// 不然界面上那行字后面会拖一段空白。
-    private static let challengeBody: [String: Any] = {
+    // 计算属性而不是 `static let`：`[String: Any]` 不是 Sendable，当存储属性就是全局可变状态。
+    private static var challengeBody: [String: Any] {
         let json = """
         {"code":-462,"data":{"actionCode":null,"verifyType":40,"verifyId":2001,
         "verifyUrl":"https://st.music.163.com/encrypt-pages",
@@ -118,7 +119,7 @@ final class NeteaseCookieImportTests: XCTestCase {
         "urlAutoOpen":0},"message":null}
         """
         return (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
-    }()
+    }
 
     func testChallengeParsesRealResponse() throws {
         let challenge = try XCTUnwrap(NeteaseLoginChallenge(body: Self.challengeBody))

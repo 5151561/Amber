@@ -17,14 +17,14 @@ final class AutoplayTests: XCTestCase {
     /// `AppSettings.shared` 写的是**真实**偏好，所以整份存下来、跑完原样还回去。
     private var savedValues: SettingsValues!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         savedValues = AppSettings.shared.values
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         AppSettings.shared.values = savedValues
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func makeTrack(_ id: String) -> Track {

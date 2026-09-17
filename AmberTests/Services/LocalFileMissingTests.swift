@@ -22,7 +22,7 @@ final class LocalFileMissingTests: XCTestCase {
     private var mediaDirectory: URL!
     private var savedValues: SettingsValues!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocalFileMissingTests-\(UUID().uuidString)", isDirectory: true)
         mediaDirectory = directory.appendingPathComponent("Media", isDirectory: true)
@@ -31,7 +31,7 @@ final class LocalFileMissingTests: XCTestCase {
         AppSettings.shared.values.useListeningHistory = true
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         AppSettings.shared.values = savedValues
         try? FileManager.default.removeItem(at: directory)
     }

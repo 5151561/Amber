@@ -15,7 +15,7 @@ final class LibraryDeleteFilesTests: XCTestCase {
     /// 用户自己的目录：原地引用（external）的文件放这儿，删歌一个字节都不许碰。
     private var outside: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LibraryDeleteFilesTests-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -26,7 +26,7 @@ final class LibraryDeleteFilesTests: XCTestCase {
         }
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: directory.deletingLastPathComponent())
     }
 

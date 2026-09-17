@@ -36,7 +36,7 @@ final class LibrarySearchTests: XCTestCase {
     private var directory: URL!
     private var db: SQLiteDatabase!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LibrarySearchTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -70,7 +70,7 @@ final class LibrarySearchTests: XCTestCase {
             """, [row.name, row.artist, row.album, row.phonetic, ownerID])
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         db = nil
         try? FileManager.default.removeItem(at: directory)
     }

@@ -14,16 +14,16 @@ final class AudioTagWriterMP4Tests: XCTestCase {
 
     private var directory = URL(fileURLWithPath: "/tmp")
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("AudioTagWriterMP4Tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: directory)
-        try super.tearDownWithError()
+        try await super.tearDown()
     }
 
     // MARK: - 真文件

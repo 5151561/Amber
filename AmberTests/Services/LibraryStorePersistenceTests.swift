@@ -21,7 +21,7 @@ final class LibraryStorePersistenceTests: XCTestCase {
     private var directory: URL!
     private var savedValues: SettingsValues!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LibraryStorePersistence-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -32,7 +32,7 @@ final class LibraryStorePersistenceTests: XCTestCase {
         AppSettings.shared.values.useListeningHistory = true
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         AppSettings.shared.values = savedValues
         try? FileManager.default.removeItem(at: directory)
     }

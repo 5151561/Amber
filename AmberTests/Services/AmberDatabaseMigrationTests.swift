@@ -24,7 +24,7 @@ final class AmberDatabaseMigrationTests: XCTestCase {
     /// 媒体文件夹（index.json 住在这里，**与上面那个目录不是同一个**）。
     private var media: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("AmberMigrationTests-\(UUID().uuidString)", isDirectory: true)
         support = root.appendingPathComponent("Support", isDirectory: true)
@@ -33,7 +33,7 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: support.deletingLastPathComponent())
     }
 
