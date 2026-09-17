@@ -204,16 +204,34 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 
 | 批 | 主题 | 覆盖 | 文件 | 状态 |
 | :-: | --- | --- | --- | --- |
-| **A** | 铁律 2 收口 + 死代码清场（= 计划阶段 8） | §2.1 全部 | `Components/SongsTableCells.swift`、`Views/SidebarOutline.swift`、`Shell/DetailHeaderViews.swift`、`Shell/TrackTableViewController.swift`；**删** `Views/TopSearchLockupView.swift`、`Views/MainView.swift`、`Shell/RouteLink.swift`、`Components/Components.swift:305-397` | 未开始 |
-| **B** | 意图上响应链（= 铁律 4 的终态） | §2.2-2、-3、-7 | `App/AppState.swift`、`Shell/ContentNavigationController.swift`、`Shell/LibraryArtistsViewController.swift`、`Player/PlayQueueModel.swift` | 未开始 |
-| **C** | 撤销与命令层 | §2.2-1、-4、-5、-6、-8 | `App/MainMenu.swift`、`App/AmberApp.swift`、`Shell/MainWindowController.swift`、`Services/LibraryStore.swift`、`Components/SongsTableView.swift`、`Components/TrackMenu.swift`、`Shell/LibrarySongsViewController.swift`、`Shell/PlayQueueViewController.swift` | 未开始 |
+| **A** | 铁律 2 收口（= 计划阶段 8 的其余部分） | §2.1-1、-2、-3 | `Components/SongsTableCells.swift`、`Views/SidebarOutline.swift`、`Shell/DetailHeaderViews.swift`、`Shell/TrackTableViewController.swift` | 未开始 |
+| **B** | 意图上响应链（= 铁律 4 的终态） | §2.2-2、-3、-7 | `App/AppState.swift`、`Shell/ContentNavigationController.swift`、`Shell/LibraryArtistsViewController.swift` | 未开始 |
+| **C** | 撤销与命令层 | §2.2-1、-4、-5、-6、-8 | `App/MainMenu.swift`、`App/AmberApp.swift`、`Shell/MainWindowController.swift`、`Services/LibraryStore.swift`、`Components/SongsTableView.swift`、`Components/TrackMenu.swift`、`Shell/LibrarySongsViewController.swift`、`Shell/PlayQueueViewController.swift`、`Player/PlayQueueModel.swift` | 未开始 |
 | **D** | 本地优先最后一公里 + 目录页键盘可达 | §2.6-1、-2、-8；§2.5-1 | `Catalog/CatalogFeedModel.swift`、`Shell/CatalogPageViewController.swift`、`Shell/CatalogRoomViewController.swift`、`Shell/SearchLandingViewController.swift`、`Shell/AlbumDetailViewController.swift`、`Shell/PlaylistDetailViewController.swift` | 未开始 |
 | **E** | 增量快照三页 + Compositional | §2.6-3；§2.1-5 | `Shell/LibraryAlbumsViewController.swift`、`Shell/LibraryAllPlaylistsViewController.swift`、`Shell/LibraryRecentlyAddedViewController.swift`、`Shell/LibraryGridCards.swift` | 未开始 |
 | **F** | 渲染与 AX 收尾 | §2.3 全部；§2.5-2、-3、-6、-7 | `Lyrics/**`、`Shell/MiniPlayerView.swift`、`Shell/MiniPlayerContentView.swift`、`Shell/NowPlayingChromeViews.swift`、`Shell/MiniPlayerBackdropMetalView.swift`、`Services/ImageCache.swift`、`Services/ArtworkSize.swift`、`Catalog/ArtistPageCards.swift` | 未开始 |
 | **G** | 观察粒度 + 网络韧性 | §2.4-2~9、-11、-12；§2.6-5、-6、-7、-9、-10 | `Player/PlayerController.swift`、`Player/AudioTap.swift`、`Services/DownloadStore.swift`、`Services/AppSettings.swift`、`Services/ImportTranscoder.swift`、`Observation/TaskBag.swift`、`Observation/EventChannel.swift`、`Providers/RequestCache.swift`、`Providers/MusicProvider.swift`、`Support/SwiftFeatures.xcconfig` | 未开始 |
 
-`Components/TrackRowParts.swift` 与 `Components/SongsTableView.swift` 在 A 与 C 之间有相邻关系
-（前者是行视图、后者是表视图），切批前由主会话确认没有共同改动点。
+### 切批前主会话定下的四条（2026-09-17）
+
+1. **接缝已做**（提交 `ee65d2c`）：§2.1-4 的四份死代码由主会话一次删完，A–G 从同一棵树起步。
+   照 [reactive-ui-review.md §4](reactive-ui-review.md) 的 `SidebarItem.playlist` 那次办法。
+2. **原尾注的疑问已解**：`Components/TrackRowParts.swift` 里零 `SongsTable*` 引用，A 与 C 不撞。
+3. **批 B 只改函数体，一个调用点都不动。** `appState.push` / `goToAlbum` / `goToArtist` 有
+   **25 个活调用点散在 12 个文件里**，横跨 A/C/D/E/F 五个批次——让 B 去改调用点等于把七批串成一条线。
+   所以 `AppState` 上那三个方法的**签名与调用点全部保留**，只把函数体从「置 `pendingRoute`」
+   换成 `NSApp.sendAction(_:to: nil:from:)` 走响应链，`ContentNavigationController` 那头改成
+   实现 `amberOpenRoute(_:)`。这也顺带把 diff 缩到两个文件。
+4. **`Player/PlayQueueModel.swift` 归 C 不归 B。** 撤销要挂在它的写入口（`doDeleteAction:301`、
+   `doReorder:330`），而 B 按第 3 条已经不需要碰它（`:225` 那处 `appState.push` 原样不动）。
+
+### 并发约束（每个子代理都要守）
+
+- **不许跑 `xcodebuild test`。** 两个 worktree 同跑会互相杀宿主，日志长得像自己代码崩了
+  （记忆 `am-concurrent-xcodebuild-test-kills-host`）。各批只跑 `xcodebuild build` 验编译，
+  **`AmberTests` 由主会话在合并后串行跑一次**。
+- 各自独立 `-derivedDataPath`，**不启动 App**（记忆 `delegate-to-opus-few-agents`）。
+- 实机 `./Tools/run.sh` 也只由主会话在合并后跑（同 bundle id 多份会让 LaunchServices 命中不确定）。
 
 ### 单列（不进批次，各自一条）
 
