@@ -133,7 +133,11 @@ final class SyncedLyricsViewController: NSViewController {
         removeScrollObservers()
     }
 
-    deinit {
+    /// `isolated deinit`：摘观察者与停链**必须在主线程**，而 `deinit` 默认是非隔离的。
+    /// 这个控制器本来就只在主线程上被放掉（AppKit 持有它），标上之后那一路照旧同步跑完、
+    /// 注销时机一点不变；真要是哪天在别的线程上放掉，运行时会替我们排回主线程，
+    /// 而不是像 `assumeIsolated` 那样直接崩。
+    isolated deinit {
         NotificationCenter.default.removeObserver(self)
         for token in scrollObservers { NotificationCenter.default.removeObserver(token) }
         displayLink?.invalidate()

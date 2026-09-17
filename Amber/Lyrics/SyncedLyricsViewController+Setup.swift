@@ -30,8 +30,10 @@ final class LyricsScrollView: NSScrollView {
         // 滚轮没有「松手」事件，只能按静默时长判结束。
         legacyScrollEndTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) {
             [weak self] _ in
-            self?.legacyScrollEndTimer = nil
-            self?.onUserScrollEnded?()
+            MainActor.assumeIsolated {
+                self?.legacyScrollEndTimer = nil
+                self?.onUserScrollEnded?()
+            }
         }
     }
 }
@@ -94,15 +96,15 @@ extension SyncedLyricsViewController {
         scrollObservers = [
             center.addObserver(forName: NSScrollView.willStartLiveScrollNotification,
                                object: scrollView, queue: .main) { [weak self] _ in
-                self?.scrollViewWillBeginScrolling()
+                MainActor.assumeIsolated { self?.scrollViewWillBeginScrolling() }
             },
             center.addObserver(forName: NSScrollView.didEndLiveScrollNotification,
                                object: scrollView, queue: .main) { [weak self] _ in
-                self?.scrollViewDidEndScrolling()
+                MainActor.assumeIsolated { self?.scrollViewDidEndScrolling() }
             },
             center.addObserver(forName: NSScrollView.didLiveScrollNotification,
                                object: scrollView, queue: .main) { [weak self] _ in
-                self?.updateLineAlphasForViewportEdges()
+                MainActor.assumeIsolated { self?.updateLineAlphasForViewportEdges() }
             },
         ]
     }
