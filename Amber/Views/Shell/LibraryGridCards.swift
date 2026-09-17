@@ -560,10 +560,12 @@ final class LibraryPlaylistCardView: LibraryGridCardView {
             actions.syncAccount = { Task { await appState.syncAccountPlaylists(manual: true) } }
         }
         actions.deleteFromLibrary = {
-            if appState.sidebarSelection == .playlist(id: playlist.id) {
-                appState.sidebarSelection = .allPlaylists
+            LibraryDeleteAlert.confirmPlaylistDeletion(named: playlist.name) {
+                if appState.sidebarSelection == .playlist(id: playlist.id) {
+                    appState.sidebarSelection = .allPlaylists
+                }
+                appState.library.deletePlaylist(id: playlist.id)
             }
-            appState.library.deletePlaylist(id: playlist.id)
         }
         return actions.makeMenu()
     }
