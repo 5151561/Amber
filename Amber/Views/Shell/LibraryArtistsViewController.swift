@@ -378,10 +378,13 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         // 评分（专辑块与音轨行的五星是 `configure` 时读进去的，星控件自己不写回）。
         // 从前订的是 `library.objectWillChange` ——记一次播放、改一条勾选
         // 都会让左表与右表各重灌一遍。
-        library.changes(affecting: [.tracks, .albums, .favoriteArtists,
+        let changes = library.changes(affecting: [.tracks, .albums, .favoriteArtists,
                                     .favoriteAlbums, .ratings])
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        observers.add(Task { @MainActor [weak self] in
+            for await _ in changes {
+                self?.setNeedsRefresh()
+            }
+        })
 
         // `@Observable` 没有 `objectWillChange` 那条「随便什么变了」的信号——这是好事，
         // 它正是「一次入库把资料库四页全量重算一遍」的由来。这里把本页真读的三项装成

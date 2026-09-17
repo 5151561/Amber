@@ -424,31 +424,24 @@ class CatalogPageViewController: ContentPageController {
 
         // 听歌记账动了「最近播放」的台账 → 只重算本地那两段。根页是缓存的，
         // 不订阅的话听完一首歌货架要等到换音源或重启才变。
-        // `@Published` 在 willSet 发布，所以落到下一轮再读（同上面那条订阅）；
-        // 首值由下面那句 `reload()` 负责，这里 `dropFirst()` 掉。
-        appState.library.$recentContainers
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                guard !self.view.isHiddenOrHasHiddenAncestor else {
-                    self.needsLocalRefresh = true
-                    return
-                }
-                self.model.refreshLocalSections()
+        // 首值由下面那句 `reload()` 负责，这里用丢首值的 `observe`。
+        observers.observe({ [appState] in appState.library.recentContainers }) { [weak self] _ in
+            guard let self else { return }
+            guard !self.view.isHiddenOrHasHiddenAncestor else {
+                self.needsLocalRefresh = true
+                return
             }
-            .store(in: &cancellables)
+            self.model.refreshLocalSections()
+        }
 
         // 心水星：点一下改的是资料库，而卡上那颗星是**建卡那一刻**的快照
         // （`CatalogItem.isFavorite`，见 `CatalogFeedModel.recentItems`）。不订这一条，
         // 点了星库里真改了、星却原地不动，再点一次又加回去——这颗键看着完全失灵；
         // 反向（曲目右键菜单里心水）货架上的卡也不长星。
         // 台账没动，所以不重灌快照：只把受影响的那几件**就地重配**（见 `reconfigure(_:)`）。
-        appState.library.$favoriteTracks
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refreshFavoriteCards() }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.library.favoriteTracks }) { [weak self] _ in
+            self?.refreshFavoriteCards()
+        }
 
         // 入库态 / 下载态 / 收藏这位艺人：艺人页那张「最新發行」卡的 ＋ 与 hero 上那枚 ★
         // 同样是建卡那一刻的快照，而它们各自只在自己动手之后刷新。不订这一条，
@@ -457,18 +450,10 @@ class CatalogPageViewController: ContentPageController {
         //
         // 只挑 `.release` / `.artistHero` 两种卡型：别的卡一笔都不画入库/下载态，
         // 跟着 `downloads.$states` 走的话主页一屏几十张专辑卡会随下载进度每百分点重配一轮。
-        // 原来是 Publishers.MergeMany 合三路。`downloads` 已经是 @Observable，
-        // `library` 还不是（批 8），所以这里暂时两条路：一条 observeAny 盯下载态，
-        // 一条仍走 Combine 盯资料库那两项。批 8 之后并成一条 observeAny。
-        observers.observe({ [appState] in appState.downloads.states }) { [weak self] _ in
-            self?.refreshLibraryStateCards()
-        }
-        Publishers.Merge(
-            appState.library.$libraryAlbums.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            appState.library.$favoriteArtistIDs.dropFirst().map { _ in () }.eraseToAnyPublisher())
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.refreshLibraryStateCards() }
-            .store(in: &cancellables)
+        // 原来是 Publishers.MergeMany 合三路，现在一条 observeAny 顶三条。
+        observers.observeAny({ [appState] in
+            (appState.downloads.states, appState.library.libraryAlbums, appState.library.favoriteArtistIDs)
+        }) { [weak self] in self?.refreshLibraryStateCards() }
 
         observers.observeNow({ [model] in model.state }) { [weak self] state in self?.apply(state) }
 

@@ -65,9 +65,12 @@ final class LibraryAllPlaylistsViewController: LibraryPageController,
         // 这一页读的是播放列表集合；另加心水这一位，因为置顶那张「心水歌曲」卡上
         // 印的是 `favoriteTracks.count`（见下面的数据源）。除此之外的资料库改动
         // 与它无关——从前订 `library.objectWillChange`，入库一首歌也要重灌一次网格。
-        appState.library.changes(affecting: [.playlists, .favorites])
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        let changes = appState.library.changes(affecting: [.playlists, .favorites])
+        observers.add(Task { @MainActor [weak self] in
+            for await _ in changes {
+                self?.setNeedsRefresh()
+            }
+        })
         // `@Observable` 没有 `objectWillChange` 那条「随便什么变了」的信号——这是好事，
         // 它正是「一次入库把资料库四页全量重算一遍」的由来。这里把本页真读的三项装成
         // 一个快照：与原来等价，而与它们无关的写入不再把这一页叫醒。

@@ -130,12 +130,12 @@ final class SidebarViewController: NSViewController {
         reloadEntries()
 
         // 播放列表增删改名 → 侧栏「播放列表」组跟着变。
-        // `entries` 回读`library.playlists`，而`@Published` 在 willSet 发布，
-        // 得回主队列一跳（落在赋值之后）再读，否则新建的列表要等下一次变动才出现。
-        appState.library.$playlists
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.reloadEntries() }
-            .store(in: &cancellables)
+        // `entries` 回读 `library.playlists`。以前要回主队列一跳才读得到新值
+        //（`@Published` 在 willSet 发布），现在 `Observations` 在值落定之后才发，
+        // 那一跳不需要了。
+        observers.observeNow({ [appState] in appState.library.playlists }) { [weak self] _ in
+            self?.reloadEntries()
+        }
         // 通用页「显示 › iTunes Store」：关掉时整组连同组标题一起消失（Music 同）。
         observers.observeNow({ AppSettings.shared.values.showITunesStore }) { [weak self] shown in
             guard let self else { return }
@@ -542,7 +542,7 @@ final class SidebarOutlineController: NSObject, NSOutlineViewDataSource, NSOutli
         guard case .playlist(let playlist) = entry(atRow: row) else { return nil }
         return NSHostingMenu(rootView: LibraryPlaylistMenu(playlist: playlist)
             .environmentObject(appState)
-            .environmentObject(appState.library))
+            .environment(appState.library))
     }
 
     // MARK: 拖入落点

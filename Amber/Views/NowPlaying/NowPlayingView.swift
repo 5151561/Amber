@@ -187,7 +187,7 @@ private struct MetadataLabels: View {
     /// 从前这一位是在顶层 body 里算的（`metadata` 里那句 `library.isFavorite`），
     /// 于是一首歌播完 `notePlayed` 改 `playCounts` / `lastPlayedAt`，
     /// 整屏跟着重算一遍（design-ref/reactive-ui-review.md §2.1）。
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
 
     private typealias M = MusicMetrics.NowPlaying
 

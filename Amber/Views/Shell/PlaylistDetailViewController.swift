@@ -390,19 +390,15 @@ final class PlaylistDetailViewController: TrackTableViewController {
         loadSortPreference()
         // 心水歌曲：心水一首歌这一页当场跟着变。
         if case .favorites = source {
-            appState.library.$favoriteTracks
-                .removeDuplicates()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] tracks in self?.showFavorites(tracks) }
-                .store(in: &cancellables)
+            observers.observe({ [appState] in appState.library.favoriteTracks }) { [weak self] tracks in
+                self?.showFavorites(tracks)
+            }
         }
         // 资料库播放列表：改名 / 加歌 / 删歌 / 整份被删都要跟着变。
         if case .library = source {
-            appState.library.$playlists
-                .removeDuplicates()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.libraryPlaylistsChanged() }
-                .store(in: &cancellables)
+            observers.observe({ [appState] in appState.library.playlists }) { [weak self] _ in
+                self?.libraryPlaylistsChanged()
+            }
         }
         reload()
     }

@@ -200,10 +200,13 @@ final class LibrarySongsViewController: ContentPageController {
         // 这一页读得最宽：曲目集合、心水（筛选）、评分 / 播放次数 / 加入日期（既进筛选
         // 也进排序）、专辑（类型 / 专辑艺人 / 年份几列回查专辑）、勾选列与失联感叹号。
         // 但**不**读播放列表、艺人喜爱、减少推荐——那三位不该把整张表重排一遍。
-        appState.library.changes(affecting: [.tracks, .albums, .favorites, .ratings,
+        let changes = appState.library.changes(affecting: [.tracks, .albums, .favorites, .ratings,
                                              .playbackStats, .checkmarks, .fileMissing])
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        observers.add(Task { @MainActor [weak self] in
+            for await _ in changes {
+                self?.setNeedsRefresh()
+            }
+        })
 
         // 下载态同理（云端列按它排序），否则下完一首、按云端列排的表不会重排
         observers.observe({ [appState] in appState.downloads.states }) { [weak self] _ in

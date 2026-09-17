@@ -227,7 +227,7 @@ extension View {
     func auxiliaryEnvironment(_ appState: AppState) -> some View {
         environmentObject(appState)
             .environment(appState.player)
-            .environmentObject(appState.library)
+            .environment(appState.library)
             .environment(appState.downloads)
             .environment(appState.qqLogin)
             .environment(appState.neteaseLogin)

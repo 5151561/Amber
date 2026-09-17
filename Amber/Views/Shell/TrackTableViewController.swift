@@ -589,21 +589,13 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         let player = appState.player
         let library = appState.library
 
-        // 播放器那三项已经是 @Observable；资料库还没（批 8），所以暂时两条路。
+        // 原来是六条 publisher 各自 sink，现在两条 observeAny：播放器那三项一条、
+        // 资料库那三项一条。分两条是因为元组元数有上限，也因为两边本来就是两个来源。
         observers.observeAny({ [player] in (player.currentIndex, player.queue, player.isPlaying) }) {
             [weak self] in self?.refreshVisibleRows()
         }
-
-        let triggers: [AnyPublisher<Void, Never>] = [
-            library.$favoriteTracks.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
-            library.$libraryTracks.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
-            library.$ratings.removeDuplicates().map { _ in }.eraseToAnyPublisher(),
-        ]
-        for trigger in triggers {
-            trigger
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] in self?.refreshVisibleRows() }
-                .store(in: &cancellables)
+        observers.observeAny({ [library] in (library.favoriteTracks, library.libraryTracks, library.ratings) }) {
+            [weak self] in self?.refreshVisibleRows()
         }
     }
 
