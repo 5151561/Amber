@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - SwiftUI 叶子的宿主
@@ -147,8 +146,7 @@ class ContentPageController: NSViewController, ContentPageToolbarProviding {
     private let makeContent: (() -> AnyView)?
     /// 内容页要给底部迷你播放器留白；二级页、空态页同样要（胶囊一直都在）。
     private let bottomReserve: Bool
-    var cancellables = Set<AnyCancellable>()
-    /// 已迁到 `@Observable` 的 store 走这里；还是 `@Published` 的仍走 `cancellables`。
+    /// 页面自己的订阅都装这里，随控制器一起收摊。
     let observers = TaskBag()
 
     init(appState: AppState, bottomReserve: Bool = true,
@@ -231,10 +229,11 @@ final class LibraryPageModel {
     var search = ""
     var sort = LibraryGridSort()
     // 标题栏标题的覆盖值**不在这里**。那一位只有「最近添加」写（跟着滚动联动当前段名），
-    // 挂在四页共用的模型上就是把一次性显示态摆进共享状态：谁再把 `objectWillChange`
+    // 挂在四页共用的模型上就是把一次性显示态摆进共享状态：谁再把「这个模型变了」整个
     // 接成刷新，「滚过一个段头 = 整页重灌」就复发一次（批 A 只切断了页面那条订阅）。
-    // 现在它是那一页自己的字段 + 一条给工具栏的流，见
-    // `LibraryPageController.displayTitleSource` 与 `LibraryRecentlyAddedViewController`。
+    // 现在它是页控制器自己的一个字段（`LibraryPageController.displayTitle`），
+    // 写它的人和读它的人是同一台控制器，中间连一条流都没有，
+    // 见 `LibraryRecentlyAddedViewController`。
 
     /// 专辑页的排序是持久化的（原先两个 `@AppStorage`）。键名一字不改，旧偏好照读。
     let sortDefaultsKey: String?
