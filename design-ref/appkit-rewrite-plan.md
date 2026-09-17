@@ -2,6 +2,9 @@
 
 > 2026-09-05。审查对象：`Amber/Views/**`、`Amber/App/**`、`Amber/Lyrics/**`，对照规格笔记里 Music 1.7 的类型树。
 > 这份文件是后续每个阶段开工前要读的总纲；每阶段完工后把「状态」一栏改掉。
+>
+> **2026-09-17 修订**：§1.4「状态层不用改」的结论已推翻（见该节），据此新增**阶段 9 状态层**。
+> 阶段 0–8 的编号、内容与五段补记一律不动——源码里有十处注释按这些编号定位。
 
 ## 0. 先纠正一个前提：Music 不是「全 AppKit」，是「AppKit 骨架 + 少量 SwiftUI 叶子」
 
@@ -66,9 +69,55 @@
 | `DesignSystem/*` | ~1460 | 度量与颜色 token，`NSColor` 双份已经有 | 保留，补`NSFont` token |
 | `Models / Providers / Services / Player / AmberTests` | — | 与界面无关 | **一行不动** |
 
-### 1.4 状态层的结论：不用改
+### 1.4 状态层的结论：要改（2026-09-17 推翻原结论）
 
-`AppState / PlayerController / LibraryStore / …` 都是`ObservableObject + @Published`，Combine 的`$prop.sink` 在 AppKit 里直接能用，而且比 SwiftUI 更好：谁订阅谁更新，不存在「一个 @Published 变了整棵树重算」。`PlayerControlsState / NowPlayingMetadata / SongsTableColumns / SongsTableSort` 这些值类型的视图模型也原样搬。测试目标（`AmberTests`）只测这些，迁移过程中它们必须一直绿。
+> **原文（2026-09-05）是**：「`AppState / PlayerController / LibraryStore / …` 都是
+> `ObservableObject + @Published`，Combine 的 `$prop.sink` 在 AppKit 里直接能用，而且比
+> SwiftUI 更好：谁订阅谁更新，不存在「一个 @Published 变了整棵树重算」。」
+>
+> 那句话本身没错——它说的是「比 SwiftUI 的 `@EnvironmentObject` 整树失效更好」，这一点
+> 到今天仍然成立。**过期的是它的结论**：当时的备选只有「Combine」与「SwiftUI 整树失效」
+> 两个，而 Swift 6.2 起多了第三个，它在「谁订阅谁更新」这条上与 Combine 平齐，
+> 在别的地方更好。
+
+现在的结论：**剥离 Combine，状态层换成 `@Observable` + `Observations` +
+`swift-async-algorithms`**。理由是三条实测（2026-09-17，Xcode 27 beta / Swift 6.4，
+部署目标 macOS 26）：
+
+1. **`Observations` 的失效粒度与 `$prop.sink` 同级，而且自带两样 Combine 要手写的东西。**
+   [实测] 订阅后先发一次当前值（等同 `$prop`，现有 `.dropFirst()` 一对一保留）；
+   **同一 tick 连写 1→5 只收到 5**（自动合并）；**Equatable 属性连写三次同值只发一次**
+   （相邻去重，等于内建 `removeDuplicates()`，全仓 61 处里大半可直接删）。
+   非 Equatable 不去重，那些仍要 `removeDuplicates(by:)`。
+2. **时序从 willSet 翻成 didSet。** `@Published` 在值变**之前**发，`Observations` 在
+   **之后**发。[reactive-ui-review.md §2.1] 记的 `AppState.pendingRoute` 清空失效
+   （`= nil` 在外层赋值落存储之前就跑完，随后被覆盖）正是 willSet 语义的产物——换过去
+   这一类 bug 从根上没有了。代价是每个按 willSet 时序写过的消费方都要重新核对。
+3. **`.receive(on: DispatchQueue.main)` 整类消失**（全仓 64 处）：`for await` 循环体跑在
+   所在 actor 上，消费方是 `@MainActor` 就已经在主线程。
+
+代价与边界，一并记在这里免得实现时再争：
+
+- **操作符要引第三方。** [实测] 标准库与 Foundation 都**没有** `debounce` /
+  `removeDuplicates` / `merge` / `chunks`。需引 `apple/swift-async-algorithms` 1.1.5，
+  它连带拖入 `swift-collections` 1.6.0——**本仓从零依赖变成两个依赖**，进签名与打包流程。
+- **`merge()` 最多 3 路**（第 4 个参数报 `extra argument in call`）。现场唯一那处
+  `Publishers.MergeMany`（`Shell/CatalogPageViewController.swift`）恰好 3 路，可直接换；
+  再多要用 `AsyncChannel` 扇入。
+- **`@Observable` 的依赖是「渲染时记录读了哪些属性」**，从未渲染过的视图不注册任何依赖。
+  与记忆 `am-hidden-hostingview-stops-updating` 是同一个坑的两面，收起的分栏列、
+  滚出屏幕的表格行都要专门验。
+- **事件流不归它管。** `PassthroughSubject` / `CurrentValueSubject` 那几处（`LibraryStore`
+  的 `changes(affecting:)`、`PlayQueueModel` 的两个 `didChange`）是**事件广播**不是状态观察，
+  `@Observable` 替代不了，换 `AsyncChannel`。判据：消费方关心的是「发生了一次」还是
+  「现在的值是什么」。
+- `PlayerControlsState / NowPlayingMetadata / SongsTableColumns / SongsTableSort` 这些
+  **值类型视图模型原样不动**（这一条原文仍然有效）。
+- 测试目标（`AmberTests`，1089 个方法）是整轮改造唯一的自动化护栏，**必须一直绿**；
+  其中 6 个文件 import Combine、9 处 `.sink`、14 处 `XCTestExpectation` 要跟着改。
+
+落地见 §3 的**阶段 9**。原 §3 阶段 8「清场」里那条「删 `environmentObject` 注入链」
+归并进阶段 9 一起做。
 
 ## 2. 目标结构
 
@@ -116,7 +165,8 @@ AmberApp (NSApplicationDelegate)                       主菜单在这里用 NSM
 | **5 资料库四页 + 搜索** | 专辑网格 / 所有播放列表 → collection view 网格（`Page.gridItemMinWidth = 183` 等已是`AMPGridLayoutModel` 的值）；艺人 →`NSSplitView` + 表格；最近添加 → 分段 collection view（段头吸顶联动标题）；搜索落地/结果页 → collection view | 同上 | 各页对`pages/*.png` | **已完成（待用户看外观）**：资料库四页 + 所有播放列表 + 目录二级页 + 搜索两页全部走 AppKit，网格 cell 也去掉了`NSHostingView`。见下面那条补记 |
 | **6 整窗播放器** | AppKit 壳：背景换现成的 `MiniPlayerBackdropMetalView`、位移动画（已在 `NowPlayingHostController`）、rollover 计时、四角胶囊 `NSGlassEffectView`、右半区抽屉复用 `InspectorContainerViewController`（沉浸档）、歌词 VC 直接当子控制器；封面 / 元数据 / 传输键那一块**留 SwiftUI**、装进定尺寸槽（Music 同构）。三处决定见下面那条补记 | `NSAnimationContext`、`NSGlassEffectView`、`NSTrackingArea` | 收起后 CPU ≈ 0；展开位移与 Music 的 `transitionResponse/Damping` 一致；`-dumpviews` 迁移前后内容列 frame 一个不差 | **已完成（待用户看外观）** 2026-09-17 |
 | **7 附属窗** | 设置窗 `NSTabViewController(tabStyle: .toolbar)`，五个 pane 是`NSHostingController`；QQ 登录 sheet、显示选项面板（`NSPanel`）同法 | — | 设置窗 AX 树与`settings 规格 ` 对位 | **已完成**：三扇都归`Shell/AuxiliaryWindows`；旧 SwiftUI`Settings` 场景连同`SettingsView` 壳、`AppState.settingsTab` 已于 2026-09-07 删净 |
-| **8 清场** | ~~删 `PerfFlags / PerfScrollHarness / PerfWindowConfigurator`~~（已于 2026-09-07 单独清掉）、`ContentColumnBoundsKey`、`SidebarTrackDrop`、所有`*Host`/`*Representable`、`environmentObject` 注入链；README 架构段改写；AGENTS.md 写入 §2 的铁律 | — |`grep -rn Representable Amber` 为 0 | 未开始 |
+| **8 清场** | ~~删 `PerfFlags / PerfScrollHarness / PerfWindowConfigurator`~~（已于 2026-09-07 单独清掉）、`ContentColumnBoundsKey`、`SidebarTrackDrop`、所有`*Host`/`*Representable`、~~`environmentObject` 注入链~~（归并进**阶段 9**）；README 架构段改写；AGENTS.md 写入 §2 的铁律 | — |`grep -rn Representable Amber` 为 0 | 未开始 |
+| **9 状态层** | 剥离 Combine：23 个 `ObservableObject` → `@Observable`，167 个 `@Published` 去壳；AppKit 侧 112 处 `.sink` → `Observations` + `TaskBag`；`PassthroughSubject`/`CurrentValueSubject` → `AsyncChannel`；`.receive(on:)` 64 处整类删掉；`SearchFieldBinder` 与 `RemoteControlServer.remoteChanges` 两个 Combine 形状的公共 API 先行改造；连同阶段 8 的 `environmentObject` 注入链一起清 | `Observation.Observations`、`swift-async-algorithms` 1.1.5（`debounce`/`removeDuplicates`/`merge`）、`AsyncChannel` | `grep -rn "import Combine" Amber` 为 0；`AmberTests` 全绿；每批 `./Tools/run.sh` 实机 | 未开始 |
 
 
 > **阶段 4 的一处更正（2026-09-06）**：计划原写「歌单/专辑/**艺人**详情 = 一张 `NSTableView`」，

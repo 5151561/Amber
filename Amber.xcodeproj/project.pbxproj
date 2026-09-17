@@ -20,6 +20,7 @@
 		1A0000000000000000000005 /* Amber.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Amber.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000006 /* AmberTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AmberTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A000000000000000000001A /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Signing.xcconfig; path = Support/Signing.xcconfig; sourceTree = "<group>"; };
+		1A000000000000000000001B /* SwiftFeatures.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SwiftFeatures.xcconfig; path = Support/SwiftFeatures.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -59,6 +60,7 @@
 				1A0000000000000000000001 /* Amber */,
 				1A0000000000000000000002 /* AmberTests */,
 				1A000000000000000000001A /* Signing.xcconfig */,
+				1A000000000000000000001B /* SwiftFeatures.xcconfig */,
 				1A0000000000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -197,7 +199,7 @@
 /* Begin XCBuildConfiguration section */
 		1A0000000000000000000011 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 1A000000000000000000001A /* Signing.xcconfig */;
+			baseConfigurationReference = 1A000000000000000000001B /* SwiftFeatures.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -228,7 +230,7 @@
 		};
 		1A0000000000000000000012 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 1A000000000000000000001A /* Signing.xcconfig */;
+			baseConfigurationReference = 1A000000000000000000001B /* SwiftFeatures.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
