@@ -94,6 +94,48 @@ final class ObservationInfraTests: XCTestCase {
         XCTAssertEqual(seen, [42], "登记到首次迭代之间的改动必须照发")
     }
 
+    // MARK: TaskBag.observeAny
+
+    /// `observeAny` 与 `observe` 的**首值口径必须一致**：当前值不发。
+    /// 21 个调用点都按「页面自己在 `viewDidLoad` 里读初值」写的，多发一次就是多重排一次。
+    func testObserveAnyDropsTheCurrentValue() async {
+        let model = Model()
+        let bag = TaskBag()
+        var fires = 0
+        bag.observeAny({ (model.count, model.name) }) { fires += 1 }
+        await settle()
+
+        XCTAssertEqual(fires, 0, "当前值不发，与 observe 同口径")
+
+        model.count = 1
+        await settle()
+        XCTAssertEqual(fires, 1)
+
+        model.name = "b"
+        await settle()
+        XCTAssertEqual(fires, 2, "快照里任意一项变了都算一次")
+    }
+
+    /// **登记之后、任务跑起来之前**改的那一下，`observeAny` 同样不能丢。
+    ///
+    /// 这条与 `testChangeBetweenSubscribeAndFirstTurnIsNotSwallowed` 是同一个坑，只是
+    /// `observeAny` 收的是元组、没有 Equatable 可比，所以基线换了一种问法：登记那一刻挂一个
+    /// 一次性的 `withObservationTracking`，问的是「有没有人改过」而不是「改成了什么」。
+    /// 从前这里写的是 `dropFirst()`，这一下会被整个吞掉、等多久都不来
+    ///（`Player/PlayQueueModel.swift` 与 `Lyrics/InspectorLyricsViewController.swift`
+    /// 那两处消费方不是幂等的 `setNeedsRefresh()`，丢了就是真丢）。
+    func testObserveAnyChangeBetweenSubscribeAndFirstTurnIsNotSwallowed() async {
+        let model = Model()
+        let bag = TaskBag()
+        var fires = 0
+        bag.observeAny({ (model.count, model.name) }) { fires += 1 }
+        // 故意不 settle：这一行就落在那道窗口里（`Task` 要过一跳才开始迭代）。
+        model.count = 42
+        await settle()
+
+        XCTAssertEqual(fires, 1, "登记到首次迭代之间的改动必须照发")
+    }
+
     func testCancelAllStopsDelivery() async {
         let model = Model()
         let bag = TaskBag()
@@ -179,6 +221,33 @@ final class ObservationInfraTests: XCTestCase {
 
         XCTAssertLessThan(elapsed, .milliseconds(50),
                           "20 次 send 必须立刻返回；AsyncChannel 的 async send 会挂在这里")
+    }
+
+    /// 缓冲有上界，而且丢的是**最早的**那几条。
+    ///
+    /// 换掉 `.unbounded` 的前提是「消费方都不读元素、收到就整份重算」（理由写在
+    /// `EventChannel` 的类型注释里），那前提下唯一必须保住的就是**最后一条**——
+    /// 这条用例钉的正是它。顺带钉住 `droppedCount`：丢弃不许是静默的。
+    func testChannelBoundsItsBufferAndKeepsTheNewest() async {
+        let channel = EventChannel<Int>()
+        let limit = EventChannel<Int>.bufferLimit
+        let total = limit * 3
+        let stream = channel.stream()   // 只订不取，让它堆起来
+
+        for v in 1...total { channel.send(v) }
+        channel.finish()
+
+        var seen: [Int] = []
+        for await v in stream { seen.append(v) }
+
+        XCTAssertEqual(seen.count, limit, "缓冲有上界")
+        XCTAssertEqual(seen.last, total, "最后一条永远保得住——合批重算靠的就是它")
+        XCTAssertEqual(seen.first, total - limit + 1, "丢的是最早的那几条")
+        #if DEBUG
+        // 两个观测口只在 DEBUG 编（`.unbounded` 时代连「堆了多深」都问不出来）。
+        XCTAssertEqual(channel.droppedCount, total - limit, "丢了几条要数得出来")
+        XCTAssertEqual(channel.deepestDepth, limit, "堆了多深也要数得出来")
+        #endif
     }
 
     func testSubscriberDeregistersWhenTaskCancelled() async {

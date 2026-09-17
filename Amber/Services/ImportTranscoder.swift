@@ -292,76 +292,63 @@ enum ImportTranscoder {
         guard let sourceTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw ImportError.noAudioTrack
         }
-        // 下面这四个 AVFoundation 对象加那个 `finished`，都要被 `requestMediaDataWhenReady`
-        // 的 `@Sendable` 块捕获，可它们一个都不是 `Sendable`。真正的保证在本函数末尾那条
-        // 自建串行队列上：块只在它上面串行回调，四个对象从递给它那一刻起就只在块里被碰，
-        // 直到 continuation 收线才交回这里。编译器看不出这层保证，逐个手工担保。
-        //
-        // 开了 strict memory safety（SE-0458）之后，`nonisolated(unsafe)` 声明的**每一次使用**
-        // 都要写 `unsafe`——本函数里 26 处，说的全是上面这一条契约，没有第二条。
-        // 这里没有 `@safe` 外壳可做：外壳只能包声明，包不了局部变量。读的时候别一处处追问
-        // 「这个 `unsafe` 是什么意思」，它们是同一句话的 26 个副本：**这个对象只在那条串行队列上被碰**。
-        // 真正该盯的是有没有人把它们带出队列——比如在块外再摸一次 `reader`，或者把 `input`
-        // 递给另一个队列。那才是违约，而且编译器同样只会给你一个一模一样的 `unsafe`。
-        nonisolated(unsafe) let reader = try AVAssetReader(asset: asset)
-        nonisolated(unsafe) let output = AVAssetReaderAudioMixOutput(audioTracks: [sourceTrack],
-                                                                     audioSettings: spec.readerSettings)
-        guard unsafe reader.canAdd(output) else { throw ImportError.readFailed("解码设置不被支持") }
-        unsafe reader.add(output)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderAudioMixOutput(audioTracks: [sourceTrack],
+                                                 audioSettings: spec.readerSettings)
+        guard reader.canAdd(output) else { throw ImportError.readFailed("解码设置不被支持") }
+        reader.add(output)
 
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        nonisolated(unsafe) let writer = try AVAssetWriter(outputURL: destination,
-                                                           fileType: spec.fileType)
+        let writer = try AVAssetWriter(outputURL: destination, fileType: spec.fileType)
         // 标签必须在 `startWriting` 之前挂上，之后再改就写不进容器了。
-        if !metadata.isEmpty { unsafe writer.metadata = metadata }
-        nonisolated(unsafe) let input = AVAssetWriterInput(mediaType: .audio,
-                                                           outputSettings: spec.writerSettings)
-        unsafe input.expectsMediaDataInRealTime = false
-        guard unsafe writer.canAdd(input) else { throw ImportError.writeFailed("编码设置不被支持") }
-        unsafe writer.add(input)
+        if !metadata.isEmpty { writer.metadata = metadata }
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: spec.writerSettings)
+        input.expectsMediaDataInRealTime = false
+        guard writer.canAdd(input) else { throw ImportError.writeFailed("编码设置不被支持") }
+        writer.add(input)
 
-        guard unsafe reader.startReading() else {
-            throw unsafe ImportError.readFailed(reader.error?.localizedDescription ?? "无法开始读取")
+        guard reader.startReading() else {
+            throw ImportError.readFailed(reader.error?.localizedDescription ?? "无法开始读取")
         }
-        guard unsafe writer.startWriting() else {
-            throw unsafe ImportError.writeFailed(writer.error?.localizedDescription ?? "无法开始写入")
+        guard writer.startWriting() else {
+            throw ImportError.writeFailed(writer.error?.localizedDescription ?? "无法开始写入")
         }
-        unsafe writer.startSession(atSourceTime: .zero)
+        writer.startSession(atSourceTime: .zero)
 
+        // 从这一行起，这四个对象加 `finished` 只属于 `session`，只在下面那条队列上被碰。
+        let session = TranscodeSession(reader: reader, output: output, writer: writer, input: input)
         let queue = DispatchQueue(label: "Amber.ImportTranscoder")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            // 回调串行跑在 queue 上，`finished` 不需要另加锁（上面那段注释说的就是这条队列）。
-            nonisolated(unsafe) var finished = false
-            unsafe input.requestMediaDataWhenReady(on: queue) {
-                guard unsafe !finished else { return }
-                while unsafe input.isReadyForMoreMediaData {
-                    guard let buffer = unsafe output.copyNextSampleBuffer() else {
-                        unsafe finished = true
-                        unsafe input.markAsFinished()
-                        if unsafe reader.status == .failed {
-                            unsafe writer.cancelWriting()
-                            unsafe continuation.resume(throwing: ImportError.readFailed(
-                                reader.error?.localizedDescription ?? "读取中断"))
+            session.input.requestMediaDataWhenReady(on: queue) {
+                guard !session.finished else { return }
+                while session.input.isReadyForMoreMediaData {
+                    guard let buffer = session.output.copyNextSampleBuffer() else {
+                        session.finished = true
+                        session.input.markAsFinished()
+                        if session.reader.status == .failed {
+                            session.writer.cancelWriting()
+                            continuation.resume(throwing: ImportError.readFailed(
+                                session.reader.error?.localizedDescription ?? "读取中断"))
                             return
                         }
-                        unsafe writer.finishWriting {
-                            if unsafe writer.status == .completed {
+                        session.writer.finishWriting {
+                            if session.writer.status == .completed {
                                 continuation.resume()
                             } else {
-                                unsafe continuation.resume(throwing: ImportError.writeFailed(
-                                    writer.error?.localizedDescription ?? "写入中断"))
+                                continuation.resume(throwing: ImportError.writeFailed(
+                                    session.writer.error?.localizedDescription ?? "写入中断"))
                             }
                         }
                         return
                     }
-                    if unsafe !input.append(buffer) {
-                        unsafe finished = true
-                        unsafe reader.cancelReading()
-                        unsafe writer.cancelWriting()
-                        unsafe continuation.resume(throwing: ImportError.writeFailed(
-                            writer.error?.localizedDescription ?? "无法写入采样"))
+                    if !session.input.append(buffer) {
+                        session.finished = true
+                        session.reader.cancelReading()
+                        session.writer.cancelWriting()
+                        continuation.resume(throwing: ImportError.writeFailed(
+                            session.writer.error?.localizedDescription ?? "无法写入采样"))
                         return
                     }
                 }
@@ -369,3 +356,42 @@ enum ImportTranscoder {
         }
     }
 }
+
+/// 一次转码用到的四个 AVFoundation 句柄，加一个「收线了没有」的标记。
+///
+/// **为什么要这个外壳**（`AGENTS.md`「语言与安全开关」第二档的判据：同一个不安全声明
+/// 用 ≥3 次）：这五样都要被 `requestMediaDataWhenReady` 的 `@Sendable` 块捕获，
+/// 可它们一个都不是 `Sendable`。从前的写法是五个 `nonisolated(unsafe)` 局部声明，
+/// 代价是开了 strict memory safety（SE-0458）之后**每一次使用**都要写 `unsafe`——
+/// `exportOnce` 一个函数里 26 处，说的全是同一句话。
+///
+/// 当时的结论是「这里没有 `@safe` 外壳可做：外壳只能包声明，包不了局部变量」。
+/// 那句只对了一半——包不了局部变量，但**可以把这五个局部变量收成一个类型**，
+/// 于是契约从「抄 26 遍」变成「写在这里一遍」，`exportOnce` 里 `unsafe` 归零。
+///
+/// **契约**：这四个对象（连同 `finished`）从递给 `requestMediaDataWhenReady` 那一刻起
+/// **只在传给它的那条自建串行队列上被碰**，直到 continuation 收线。队列是串行的，
+/// 所以 `finished` 也不需要另加锁。改这段时唯一该盯的就是有没有人违反这一条——
+/// 比如在块外再摸一次 `reader`，或者把 `input` 递给另一条队列。
+///
+/// `@unchecked Sendable` 担保的就是上面这一条；`@safe` 是不让这句担保泄漏到使用点去
+///（同 `Player/AudioTap.swift` 的 `TapShared`：自己持有不安全的东西、自己管住，
+/// 对外只是安全 API）。
+@safe
+private final class TranscodeSession: @unchecked Sendable {
+    let reader: AVAssetReader
+    let output: AVAssetReaderAudioMixOutput
+    let writer: AVAssetWriter
+    let input: AVAssetWriterInput
+    /// 收线了没有。只在那条串行队列上读写。
+    var finished = false
+
+    init(reader: AVAssetReader, output: AVAssetReaderAudioMixOutput,
+         writer: AVAssetWriter, input: AVAssetWriterInput) {
+        self.reader = reader
+        self.output = output
+        self.writer = writer
+        self.input = input
+    }
+}
+
