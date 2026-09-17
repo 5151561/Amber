@@ -121,7 +121,10 @@ final class QQAPI: MusicProvider {
             request.setValue(credential.cookie, forHTTPHeaderField: "Cookie")
         }
         request.setValue("https://y.qq.com/portal/player.html", forHTTPHeaderField: "Referer")
-        let (data, response) = try await session.data(for: request)
+        // 连接类失败重试两次（指数退避），业务错误一次都不重试——名单与理由都在
+        // `withConnectionRetry`。下面 `code != 0` 那一支走的是 `ProviderError`，
+        // 不是 `URLError`，所以 104003 这类照旧当场抛出。
+        let (data, response) = try await withConnectionRetry { try await session.data(for: request) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ProviderError.api("请求失败")
         }
