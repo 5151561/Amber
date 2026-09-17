@@ -20,6 +20,8 @@ import SwiftUI
 /// - `-scroll <点数>`：dump 之前把内容列那张滚动视图往下滚这么多点。
 ///   用来自证「跟着滚动联动」的那一类行为（「最近添加」的标题栏标题跟当前段名）——
 ///   发键那条路要先把焦点落到滚动视图上，靠 System Events 驱动不了。
+// 整份都在主线程：读的是 NSApp、窗口视图树、各份菜单，本来就没有别的跑法。
+@MainActor
 enum DebugSnapshot {
 
     static func installIfRequested() {
@@ -35,17 +37,19 @@ enum DebugSnapshot {
         if let scrollBy {
             // 滚在 dump 之前的半程：页面已经铺好、dump 还没开始。
             DispatchQueue.main.asyncAfter(deadline: .now() + delay * 0.5) {
-                scrollContent(by: scrollBy)
+                MainActor.assumeIsolated { scrollContent(by: scrollBy) }
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            if let dumpPath { try? dumpViews().write(toFile: dumpPath, atomically: true, encoding: .utf8) }
-            if let snapPath { snapshot(to: snapPath) }
-            if let menuPath {
-                let text = dumpDockMenu() + dumpPlayerMoreMenu() + dumpMiniWindowMenu()
-                    + dumpTrackMenus() + dumpCollectionMenu() + dumpPlaylistMenu()
-                    + dumpToolbarMoreMenu()
-                try? text.write(toFile: menuPath, atomically: true, encoding: .utf8)
+            MainActor.assumeIsolated {
+                if let dumpPath { try? dumpViews().write(toFile: dumpPath, atomically: true, encoding: .utf8) }
+                if let snapPath { snapshot(to: snapPath) }
+                if let menuPath {
+                    let text = dumpDockMenu() + dumpPlayerMoreMenu() + dumpMiniWindowMenu()
+                        + dumpTrackMenus() + dumpCollectionMenu() + dumpPlaylistMenu()
+                        + dumpToolbarMoreMenu()
+                    try? text.write(toFile: menuPath, atomically: true, encoding: .utf8)
+                }
             }
         }
     }
@@ -64,7 +68,6 @@ enum DebugSnapshot {
     ///
     /// 没在放歌时这颗按钮本来就不出菜单——但那样这份表就永远自证不了，
     /// 所以退而用一首现成的曲目把表装出来，只为看项集与顺序（标题里注明是哪种）。
-    @MainActor
     static func dumpPlayerMoreMenu() -> String {
         if let capsule = firstView(of: MiniPlayerView.self), let menu = capsule.makeMoreMenu() {
             var out = "PLAYERMENU（正在播放）items=\(menu.numberOfItems)\n"
@@ -82,7 +85,6 @@ enum DebugSnapshot {
     }
 
     /// 装菜单用的兜底曲目：正在播的那首，否则资料库里第一首。
-    @MainActor
     private static func fallbackTrack(_ appState: AppState) -> Track? {
         appState.player.currentTrack
             ?? appState.library.libraryTracks.first
@@ -90,7 +92,6 @@ enum DebugSnapshot {
     }
 
     /// 独立迷你播放器窗那颗 ⋯ 弹的菜单（`-miniplayer` 开窗之后才有）。
-    @MainActor
     static func dumpMiniWindowMenu() -> String {
         guard let contents = firstView(of: MiniPlayerContentView.self) else {
             return "MINIWINDOWMENU -\n"
@@ -105,7 +106,6 @@ enum DebugSnapshot {
     ///
     /// 这三份是右键才弹得出来的，鼠标交互驱动不了；但菜单本来就是**当场装配**的，
     /// 让 App 自己把装好的那份写下来即可自证项集与顺序——不用点一下。
-    @MainActor
     static func dumpTrackMenus() -> String {
         guard let appState = (NSApp.delegate as? AppDelegate)?.appState else { return "TRACKMENUS -\n" }
         guard let track = fallbackTrack(appState) else { return "TRACKMENUS (没有可用曲目)\n" }
@@ -123,7 +123,6 @@ enum DebugSnapshot {
 
     /// 集合菜单（专辑/歌单/艺人）的**完整骨架**：把能力全给上，看段落划分与项序。
     /// 各调用点实际给了哪几条要看各自的卡，这里只自证 `CollectionActions` 这张表本身。
-    @MainActor
     static func dumpCollectionMenu() -> String {
         var all = CollectionActions()
         all.play = {}
@@ -163,7 +162,6 @@ enum DebugSnapshot {
     /// 所以这里照样只调 `menu.update()`——那一句走的就是真身那条路，不是另抄一份。
     /// 配 `-albumdemo` 用：能看到专辑页把 `CollectionActions` 那张表交上来了没有。
     /// 那颗「共享」不在这份里，它是工具栏件不是菜单，`-dumpviews` 的 TOOLBAR 段里看。
-    @MainActor
     static func dumpToolbarMoreMenu() -> String {
         // 走可见窗而不是 `NSApp.mainWindow`：dump 时 App 未必是最前那个（脚本跑着），
         // mainWindow 那会儿是 nil。
@@ -185,7 +183,6 @@ enum DebugSnapshot {
     /// 那颗「共享」现在会把什么交给系统共享面板。同样只叫代理那一句
     /// （`itemsForSharingServicePickerToolbarItem:`）——系统点开面板时问的就是它。
     /// 面板本身是系统的浮层，弹不弹得出来只能用鼠标验（见 AGENTS：交互类交给用户）。
-    @MainActor
     private static func dumpToolbarShare() -> String {
         guard let item = NSApp.windows.filter(\.isVisible)
             .compactMap({ $0.toolbar?.items })
@@ -204,7 +201,6 @@ enum DebugSnapshot {
     /// 单列一份是因为它是 **SwiftUI 那条渲染路**：AppKit 那边的项从 `MenuSpec.makeMenu`
     /// 出来，这边是 `Menu { … }` / `ShareLink`，两条路各有各的坑，得各自自证。
     /// `NSHostingMenu` 造出来 items 就已经在了，不用点一下（见会话笔记）。
-    @MainActor
     static func dumpPlaylistMenu() -> String {
         guard let appState = (NSApp.delegate as? AppDelegate)?.appState,
               // 优先挑一份**分享得出去**的（`qq:radio:` 那种在网页版没有页面，
@@ -220,7 +216,6 @@ enum DebugSnapshot {
     }
 
     /// 所有可见窗里的第一个这种视图（迷你窗开着时它不一定是 main window）。
-    @MainActor
     private static func firstView<V: NSView>(of type: V.Type) -> V? {
         for window in NSApp.windows where window.isVisible {
             guard let root = window.contentView?.superview ?? window.contentView else { continue }
