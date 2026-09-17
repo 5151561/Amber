@@ -250,8 +250,13 @@ final class CatalogArtworkView: NSView {
         // 贴给层的是 CGImage：`contents` 收下 `NSImage` 时，AppKit 会在提交那一刻按本层的
         // 尺寸／倍率重画一遍，同一张图挂在几个尺寸的层上就得各画一次（本地封面正是这种
         // 共用一份实例的情形），画的过程互相串起来就是那种「横带拼接」的花图。
-        let contents: Any? = image.map {
-            $0.amberCGImage ?? $0
+        // `??` 的两边一个是 `CGImage?`、一个是 `NSImage`，合起来编译器要把 `Any?` 隐式
+        // 提成 `Any`（一条警告）。拆成 `if let` 两条路，贴上去的东西也一眼看得清。
+        let contents: Any?
+        if let cgImage = image?.amberCGImage {
+            contents = cgImage
+        } else {
+            contents = image
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -520,6 +525,55 @@ final class CatalogCornerBadge: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+// MARK: - 键盘焦点环
+
+/// 卡片的键盘焦点环。**环本身整只交给系统画**（铁律 6）：`NSFocusRingPlacement.only`
+/// 之后填的那条路径，AppKit 按当前强调色 / 外观渲成系统那只环，粗细、羽化、颜色
+/// 一个数都不在这里定——换句话说，用户在「系统设置 ▸ 外观」里换强调色，这只环跟着换。
+/// 这里自己定的只有两件：形状（跟着卡片的圆角），和那一点内缩。
+///
+/// 焦点环是本轮**唯一新增的像素**（从前这四页对键盘用户压根没有可见的落点，
+/// 见审查单 §2.5-1），出处记在 `inset` 上。
+///
+/// **为什么单独做成一只视图**：11 种卡整棵都是 CALayer 组的（`override func draw` 全仓
+/// 0 处），把环画进卡片自己的 `draw` 等于给每一张卡都配上一块位图后备。这只视图只在
+/// 真的拿到焦点时才在场，没焦点时整棵树和从前一模一样。
+private final class CatalogCardFocusRingView: NSView {
+
+    /// 路径往里让出的一圈 ＝ 环往外扩的那一圈。层背视图的绘制被自己的 bounds 裁掉，
+    /// 环画到界外就没了，所以先让出来。
+    ///
+    /// [实测 probe 2026-09-17] 系统不公开这个数（`NSFocusRingPlacement` 只说画哪一层），
+    /// 所以量了一次：在 160×160 的层背画布正中填一个 80×80 的圆角矩形，
+    /// `NSFocusRingPlacement.only` 之后墨迹盒是 37…123，即**四周各外扩 3.0pt**，
+    /// 内部不填（环是空心的，卡片内容照样透出来）。同一次探针也确认了
+    /// 「层背视图里 `NSSetFocusRingStyle` 画得出来」——画出来的正是系统那只蓝环
+    /// （首像素 r0.30 g0.65 b1.00 a0.08，对得上 `keyboardFocusIndicatorColor`）。
+    static let inset: CGFloat = 3
+
+    /// 跟着卡片的圆角走，让环贴着卡形而不是套一个方框。
+    var cornerRadius: CGFloat = 0 {
+        didSet {
+            guard cornerRadius != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    /// 纯装饰：点击照旧落在它盖住的那张卡上。
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: Self.inset, dy: Self.inset)
+        guard rect.width > 0, rect.height > 0 else { return }
+        // 路径往里缩了多少，圆角也要跟着小多少，不然环的转角会比卡片更方。
+        let radius = max(0, cornerRadius - Self.inset)
+        NSGraphicsContext.saveGraphicsState()
+        NSFocusRingPlacement.only.set()
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+}
+
 // MARK: - 卡片根视图
 
 /// 所有目录卡的根视图：悬浮态由自己持有（计划 §2 铁律 3），点击按区域分派，
@@ -533,6 +587,25 @@ class CatalogCardContentView: NSView, CatalogHoverTarget {
     /// 有落点（route / onOpen）或点击即播（onPlay）才算可交互：都没有的卡不可点、也不给悬浮态。
     private(set) var isInteractive = false
     private(set) var isHovering = false
+
+    /// 键盘焦点态（审查单 §2.5-1 剩下的那一半）。
+    ///
+    /// **与悬浮态是两个字段，不合并**：页面侧的 `hoveredCard` 是鼠标驱动的，
+    /// 滚轮滚动、鼠标没动时也会重算一次（见 `CatalogCardItem.CatalogHoverTarget` 的注释）——
+    /// 两件事共用一个字段，等于鼠标一动就把键盘焦点抹掉。
+    /// 铁律 3：显示态由视图自己持有、自己 `needsDisplay`，不上广播。
+    private(set) var isKeyboardFocused = false
+
+    /// 焦点环只在真的拿到焦点时才建，没焦点的卡不多这一只视图。
+    private var focusRing: CatalogCardFocusRingView?
+
+    /// 宿主 `NSCollectionViewItem.isSelected` 的 KVO。
+    ///
+    /// `NSCollectionViewItem` 不把选中态转给自己的 `view`（它的 setter 只写 ivar），
+    /// 而 11 种卡的 item 外壳分散在三个文件里；`selected` 是普通合成属性，
+    /// **自动 KVO 成立**（IB 里绑定选中态走的就是它），所以在根视图这一处接一次
+    /// 就覆盖全部卡型，不必逐个外壳覆写 `isSelected`。
+    private var selectionObservation: NSKeyValueObservation?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -570,6 +643,7 @@ class CatalogCardContentView: NSView, CatalogHoverTarget {
         if isHovering { hoverDidChange(true, animated: false) }
         setAccessibilityLabel([item.eyebrow, item.title, item.subtitle]
             .compactMap { $0 }.joined(separator: "，"))
+        bindSelectionIfNeeded()
         needsLayout = true
     }
 
@@ -579,10 +653,80 @@ class CatalogCardContentView: NSView, CatalogHoverTarget {
             isHovering = false
             hoverDidChange(false, animated: false)
         }
+        // 出队时先把焦点环撤掉：新的选中态由 collection view 随后写进 `isSelected`，
+        // KVO 会把该亮的那张重新点亮。不撤的话，上一位的环会跟着卡片被复用出去。
+        setKeyboardFocused(false)
         item = nil
         appState = nil
         isInteractive = false
         resetContent()
+    }
+
+    // MARK: 键盘焦点（审查单 §2.5-1）
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        bindSelectionIfNeeded()
+    }
+
+    /// 接一次就够：卡片复用的是同一只视图挂在同一只 item 上，
+    /// 所以 `prepareForReuse` 不解这条 KVO（解了下一轮还得重接）。
+    ///
+    /// 两个调用点是同一件事的两次机会：`configure` 那次一定接得上（item 正在喂数据给
+    /// 自己的 `view`，两者的关系已经成立），`viewDidMoveToWindow` 那次只是更早一点。
+    private func bindSelectionIfNeeded() {
+        guard selectionObservation == nil, let item = enclosingCollectionViewItem else { return }
+        selectionObservation = item.observe(\.isSelected, options: [.initial, .new]) { [weak self] _, change in
+            guard let focused = change.newValue else { return }
+            // `setSelected:` 由 `NSCollectionView` 在主线程调，KVO 是同步发出来的；
+            // 这里再跳一次主 actor 会让环晚一个 runloop 才亮，方向键连按就跟不上手。
+            MainActor.assumeIsolated { self?.setKeyboardFocused(focused) }
+        }
+    }
+
+    /// 根视图挂在 item 的 `view` 上，所以响应链上第一位 `NSCollectionViewItem` 就是宿主。
+    private var enclosingCollectionViewItem: NSCollectionViewItem? {
+        var responder = amberNextResponder
+        while let current = responder {
+            if let item = current as? NSCollectionViewItem { return item }
+            responder = current.amberNextResponder
+        }
+        return nil
+    }
+
+    private func setKeyboardFocused(_ focused: Bool) {
+        guard focused != isKeyboardFocused else { return }
+        isKeyboardFocused = focused
+        guard focused else {
+            focusRing?.removeFromSuperview()
+            focusRing = nil
+            return
+        }
+        let ring = CatalogCardFocusRingView(frame: bounds)
+        ring.autoresizingMask = [.width, .height]
+        focusRing = ring
+        addSubview(ring, positioned: .above, relativeTo: nil)
+        layoutFocusRing()
+    }
+
+    /// 子类全都在自己的 `layout()` 头上调 `super.layout()`，所以这一条对 11 种卡都成立。
+    override func layout() {
+        super.layout()
+        layoutFocusRing()
+    }
+
+    /// 环的圆角跟着卡片自己的圆角走：链接卡 / 首要结果卡是卡根带圆角，
+    /// 其余卡的圆角在封面块上，都没有就退回海报卡那一档。
+    private func layoutFocusRing() {
+        guard let focusRing else { return }
+        focusRing.frame = bounds
+        if let radius = layer?.cornerRadius, radius > 0 {
+            focusRing.cornerRadius = radius
+        } else if let artwork = artworkViewForAlignment as? CatalogArtworkView {
+            focusRing.cornerRadius = artwork.cornerRadius
+        } else {
+            focusRing.cornerRadius = MusicMetrics.Catalog.posterCornerRadius
+        }
     }
 
     /// 整卡默认落点：有 route 就推一层；没有 route 但有 `onOpen` 的（资料库派生的艺人卡）
