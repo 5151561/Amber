@@ -95,6 +95,26 @@ API，不是新语言模式；下一个语言模式是 7，尚未开放。
 - **`Mutex` 取代 `OSAllocatedUnfairLock`**（9 处）——现状能用，换了无收益。
 - **`InlineArray` 用在 DES 的 block/state 上**——合身，但那是性能优化不是本轮主题。
 
+## 4.5 迁移踩过的坑：类型级 `@MainActor` 会传染给方法体里的闭包
+
+并发那一轮给 `NowPlayingCenter` 加了类型级 `@MainActor`（判断没错：这个类确实只在主线程活），
+**漏的是隔离会传染给方法体里写的闭包**——而 `MPMediaItemArtwork(boundsSize:) { … }` 的
+`requestHandler` 恰恰是要交给 MediaPlayer 在**它自己的队列**上调的。Swift 6 语言模式给这类
+闭包插了动态隔离检查，于是一放歌（以及一打开待播清单，同样会写 `nowPlayingInfo`）就 trap。
+
+**为什么编译期没拦住**：`requestHandler` 从 ObjC 导进来不带 `@Sendable`，所以闭包静默继承
+调用处的隔离；同一个文件里那几个媒体键回调是 `addTarget` 的 `@Sendable` 参数，编译器逼着
+写了 `Task { @MainActor in }`，反而没事。判据是**这个闭包会不会被别人在别的线程上调**，
+与它写在哪个类里无关。
+
+**怎么认它**：症状是启动没事、一走到那条路就秒退，stderr 全空、没有崩溃报告（进程 exit 133
+= SIGTRAP）。`lldb --batch -o run -k bt` 一抓就明：栈里有
+`_swift_task_checkIsolatedSwift` → `dispatch_assert_queue_fail`，再往上就是那个闭包和调它的
+系统 API，队列名会直接告诉你它在谁的队列上。
+
+修法是给闭包显式标 `@Sendable` 断掉继承（捕获若不是 `Sendable` 再用 `nonisolated(unsafe)`
+说明事实）。同族扫过一遍，仓里没有第二处。
+
 ## 5. 这一轮看出来、按纪律没动的三条
 
 都在实时音频路径上，改动要单独一轮 + 单独实机听：
