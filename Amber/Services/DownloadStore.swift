@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Combine
 import Foundation
+import os
 
 /// 一首歌的下载状态。UI（••• 菜单、歌曲表的「下载」列）只认这四种。
 enum DownloadState: Equatable {
@@ -1535,29 +1536,41 @@ final class DownloadStore: ObservableObject {
 ///
 /// 用不了 `URLSession.shared.download(from:)`：那条 async API 不报进度。
 /// 走 delegate 版拿 `didWriteData`，落到磁盘的临时文件由调用方负责搬走。
-private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+private final class Downloader: NSObject, URLSessionDownloadDelegate, Sendable {
 
-    private var onProgress: ((Double) -> Void)?
-    private var continuation: CheckedContinuation<URL, Error>?
-    /// `finishTasksAndInvalidate` 之前 URLSession 强引用 delegate，
-    /// 所以 await 期间这个对象一直活着，不用自己持有自己。
-    private var task: URLSessionDownloadTask?
+    /// 三个字段都收在一把锁后面。
+    ///
+    /// 以前是裸 `var` + `@unchecked Sendable`，靠「URLSession 的 delegate 回调串行投递」
+    /// 撑着。但 `task` 根本不在那条串行链上：`onCancel:` 由取消方的线程直接调，
+    /// 跟 `fetch` 里给它赋值是真并发。`@unchecked` 当时的作用只是让编译器别问——
+    /// 迁到 Swift 6 也不会报它，所以顺手修掉。
+    private struct State {
+        var onProgress: (@Sendable (Double) -> Void)?
+        var continuation: CheckedContinuation<URL, Error>?
+        /// `finishTasksAndInvalidate` 之前 URLSession 强引用 delegate，
+        /// 所以 await 期间这个对象一直活着，不用自己持有自己。
+        var task: URLSessionDownloadTask?
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
-    static func fetch(_ url: URL, onProgress: @escaping (Double) -> Void) async throws -> URL {
+    static func fetch(_ url: URL, onProgress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         let downloader = Downloader()
-        downloader.onProgress = onProgress
+        downloader.state.withLock { $0.onProgress = onProgress }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                downloader.continuation = continuation
                 let session = URLSession(configuration: .default,
                                          delegate: downloader, delegateQueue: nil)
-                downloader.task = session.downloadTask(with: url)
-                downloader.task?.resume()
+                let task = session.downloadTask(with: url)
+                downloader.state.withLock {
+                    $0.continuation = continuation
+                    $0.task = task
+                }
+                task.resume()
                 // 会话不再收新任务后自己收摊，否则每下一首漏一条会话。
                 session.finishTasksAndInvalidate()
             }
         } onCancel: {
-            downloader.task?.cancel()
+            downloader.state.withLock { $0.task }?.cancel()
         }
     }
 
@@ -1565,7 +1578,7 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress?(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        state.withLock { $0.onProgress }?(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
@@ -1594,8 +1607,12 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked
     }
 
     private func finish(_ result: Result<URL, Error>) {
-        guard let continuation else { return }
-        self.continuation = nil
-        continuation.resume(with: result)
+        // 先在锁里把 continuation 取走（一次性保护就是这一步），出锁再 resume——
+        // 别在持锁时 resume：续体恢复后跑的是调用方的代码，不该落在这把锁里。
+        let continuation = state.withLock { s -> CheckedContinuation<URL, Error>? in
+            defer { s.continuation = nil }
+            return s.continuation
+        }
+        continuation?.resume(with: result)
     }
 }
