@@ -22,7 +22,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let row = try XCTUnwrap(
             SBS_TextContentLayer.measureRows(text: "gypqj", font: font, width: 300).first)
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-        CTLineGetTypographicBounds(row.ctLine, &ascent, &descent, &leading)
+        unsafe CTLineGetTypographicBounds(row.ctLine, &ascent, &descent, &leading)
         XCTAssertEqual(row.height, ceil(ascent + descent + leading) + expectedPadding)
     }
 

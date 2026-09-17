@@ -29,7 +29,7 @@ final class ArtworkDisplayTests: XCTestCase {
         let data = try makeJPEG(size: 40, color: .systemPink)
         let image = try XCTUnwrap(ImageCache.decode(data))
         XCTAssertEqual(image.size, NSSize(width: 40, height: 40))
-        let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let cgImage = try XCTUnwrap(image.amberCGImage)
         XCTAssertEqual(cgImage.width, 40)
         XCTAssertEqual(cgImage.height, 40)
         XCTAssertNil(ImageCache.decode(Data("不是图片".utf8)))
@@ -101,7 +101,7 @@ final class ArtworkDisplayTests: XCTestCase {
 
     /// 左上角那个像素的字节，用来认「这是哪张图」。
     private static func pixelBytes(of image: NSImage) -> [UInt8]? {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+        guard let cgImage = image.amberCGImage,
               let data = cgImage.dataProvider?.data as Data? else { return nil }
         return Array(data.prefix(3))
     }
@@ -110,7 +110,7 @@ final class ArtworkDisplayTests: XCTestCase {
     /// 会按 2 倍分辨率出图（40pt 的画布出来是 80×80 像素），验尺寸就没法验了。
     private func makeJPEG(size: Int, color: NSColor) throws -> Data {
         // 每像素 4 个分量（RGBA）：24 位打包的位图 CoreGraphics 建不出上下文来。
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size,
+        guard let rep = unsafe NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size,
                                          pixelsHigh: size, bitsPerSample: 8, samplesPerPixel: 4,
                                          hasAlpha: true, isPlanar: false,
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0,

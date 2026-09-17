@@ -418,7 +418,7 @@ final class ImportServiceTests: XCTestCase {
             spec: ImportOutputSpec.make(encoder: .aiff, preset: .iTunesPlus, source: format))
         let written = try AVAudioFile(forReading: aiff)
         XCTAssertEqual(written.fileFormat.sampleRate, 44_100)
-        let flags = written.fileFormat.streamDescription.pointee.mFormatFlags
+        let flags = unsafe written.fileFormat.streamDescription.pointee.mFormatFlags
         XCTAssertNotEqual(flags & kAudioFormatFlagIsBigEndian, 0, "AIFF 是大端 PCM")
 
         let alac = directory.appendingPathComponent("out.m4a")
@@ -761,11 +761,11 @@ final class ImportServiceTests: XCTestCase {
         buffer.frameLength = frames
         // 正弦：全零的静音也能过，但编码器对静音的处理与真信号不同，
         // 用真信号才验得到「转出来的还是一首歌」。
-        if let channels = buffer.floatChannelData {
+        if let channels = unsafe buffer.floatChannelData {
             for frame in 0..<Int(frames) {
                 let value = Float(sin(2 * Double.pi * frequency * Double(frame) / 44_100)) * 0.5
                 for channel in 0..<Int(buffer.format.channelCount) {
-                    channels[channel][frame] = value
+                    unsafe channels[channel][frame] = value
                 }
             }
         }

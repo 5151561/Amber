@@ -184,7 +184,7 @@ final class QRCDecoderTests: XCTestCase {
             ("八个全零分组", String(repeating: "0", count: 128)),
             ("八个全 F 分组", String(repeating: "F", count: 128)),
             ("伪随机 128 字节",
-             (0..<128).map { String(format: "%02X", ($0 &* 37) & 0xFF) }.joined()),
+             (0..<128).map { UInt8(($0 &* 37) & 0xFF) }.hexString(uppercase: true)),
             // crypt=1 匿名下回的那种 20 字节残片（见 QQAPI+Lyric 文件头的警告）
             ("20 字节残片", String(repeating: "A", count: 40)),
         ]

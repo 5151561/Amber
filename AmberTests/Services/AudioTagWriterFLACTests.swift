@@ -395,7 +395,7 @@ final class AudioTagWriterFLACTests: XCTestCase {
 
     private static func image(type: String) -> Data {
         let data = NSMutableData()
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+        let bitmap = unsafe NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
                                       bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
                                       isPlanar: false, colorSpaceName: .deviceRGB,
                                       bytesPerRow: 0, bitsPerPixel: 0)!
