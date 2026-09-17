@@ -16,8 +16,13 @@
 // （Xcode 27 beta / swiftlang-6.4.0.30.4），6.1→6.4 给的是下面这些 upcoming feature
 // 开关和新 API，不是新语言模式。下一个语言模式是 7，尚未开放。
 //
-// SWIFT_VERSION 与 SWIFT_STRICT_CONCURRENCY / SWIFT_APPROACHABLE_CONCURRENCY
-// 仍在 pbxproj 的 target 级，本文件只承载「本轮新加」的开关。
+// 2026-09-17：这三条也搬进来了，pbxproj 里那 14 行已删净——工程级引这份 xcconfig
+// （`baseConfigurationReference`，Debug/Release 各一处），两个 target **都没有**自己的
+// base config，所以 target 级与**工程级**的同名键都会覆盖 xcconfig。只删 target 级
+// 那 12 行做不到「一处真值」，工程级那两行 `SWIFT_VERSION` 一样要删。
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
+SWIFT_APPROACHABLE_CONCURRENCY = YES
 
 // MARK: - Swift 7 语言模式的 upcoming feature
 //
