@@ -219,7 +219,7 @@ final class AppState: ObservableObject {
             return await provider.similarTracks(track, limit: limit)
         }
 
-        // 取流。播放不指定档位＝走音源的 `qualityProvider`（= `effectiveQuality`）。
+        // 取流。播放不指定档位＝走音源自己存着的那档（= `effectiveQuality`，由本文件推下去）。
         let resolveRemote: (Track) async throws -> URL = { [weak self] track in
             guard let self, let provider = self.providers[track.kind] else {
                 throw ProviderError.api("未知音乐源")
@@ -320,10 +320,10 @@ final class AppState: ObservableObject {
             return try await resolveRemote(track)
         }
 
-        // QQ 登录态与音质注入
-        qqAPI.credentialProvider = { [weak self] in self?.qqLogin.credential }
-        // 档位不是直接给 qqLogin.quality，而是过一道设置窗的夹取（无损开关 / 杜比全景声）
-        qqAPI.qualityProvider = { [weak self] in self?.effectiveQuality ?? .standard }
+        // QQ 登录态与音质：**推**给音源层，不再由音源反过来读 store
+        //（理由见 `QQAPI.Injected` 上的注释）。订阅在下面统一挂，这里先播一次种：
+        // 订阅要过一跳才到，中间这段空窗期不能让它拿着默认档位去取流。
+        qqAPI.credential = qqLogin.credential
         qqAPI.onCredentialExpired = { [weak self] in
             guard let self else { return }
             self.qqLogin.markExpired()
@@ -333,14 +333,43 @@ final class AppState: ObservableObject {
 
         // 网易云同一套接线。档位过的是同一道 `effectiveQuality`：音质是全局一份偏好，
         // 不按音源各存一份——设置 › 播放 里也只有一个档位选择器。
-        neteaseAPI.credentialProvider = { [weak self] in self?.neteaseLogin.credential }
-        neteaseAPI.qualityProvider = { [weak self] in self?.effectiveQuality ?? .standard }
+        neteaseAPI.credential = neteaseLogin.credential
         neteaseAPI.onCredentialExpired = { [weak self] in
             guard let self else { return }
             self.neteaseLogin.markExpired()
             self.showToast("网易云音乐登录已过期，请重新登录")
         }
         neteaseLogin.qrAPI = neteaseAPI
+
+        // 凭证一变就推给对应音源。`@Published` 订阅时会先发一次当前值，
+        // 上面那次播种是为了覆盖「订阅还没到、就已经有人取流」这段空窗。
+        qqLogin.$credential
+            .sink { [weak qqAPI] credential in qqAPI?.credential = credential }
+            .store(in: &cancellables)
+        neteaseLogin.$credential
+            .sink { [weak neteaseAPI] credential in neteaseAPI?.credential = credential }
+            .store(in: &cancellables)
+
+        // 档位不是直接用 `qqLogin.quality`，而是过一道设置窗的夹取（无损开关 /
+        // 杜比全景声），所以三个输入任一变化都要重算一次再推下去。
+        // `@Published` 是在值改之前发的，`receive(on:)` 推到下一跳再读——
+        // 与仓库里其它订阅同口径（见 `PlayQueueModel` 那几条）。
+        let seededQuality = effectiveQuality
+        qqAPI.quality = seededQuality
+        neteaseAPI.quality = seededQuality
+        Publishers.Merge3(
+            qqLogin.$quality.map { _ in () },
+            AppSettings.shared.$values.map { _ in () },
+            audioOutput.$output.map { _ in () }
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in
+            guard let self else { return }
+            let quality = self.effectiveQuality
+            self.qqAPI.quality = quality
+            self.neteaseAPI.quality = quality
+        }
+        .store(in: &cancellables)
 
         // 账号里的歌单进资料库、登录态校验：都由 MainView 在上屏时触发
         //（init 里不发网络请求也不动资料库——AppState 只是被构造出来时不该有副作用），

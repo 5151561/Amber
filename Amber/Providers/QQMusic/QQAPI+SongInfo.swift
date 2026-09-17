@@ -409,11 +409,13 @@ extension QQAPI {
 
     /// 曲谱这一族要的 h5 comm（照 [QQMusicApi] `modules/song.py::get_sheet` 的 `comm=`）。
     /// 虫虫那一路多一个 `platform: "h5"`，见 `signedSheetRequest`。
-    private static let sheetComm: [String: Any] = [
+    // 写成计算属性而不是 `static let`：`[String: Any]` 不是 Sendable，当存储属性就是全局可变状态。
+    // 这几个键值是每条请求都要现拼进去的，没有存下来的必要。
+    private static var sheetComm: [String: Any] { [
         "g_tk": 5381, "uin": "", "format": "json",
         "inCharset": "utf-8", "outCharset": "utf-8",
         "notice": 0, "needNewCode": 1,
-    ]
+    ] }
 
     /// 虫虫钢琴那条**必须走签名网关**（`musics.fcg?_=<毫秒>&sign=<zzc…>`）。
     ///

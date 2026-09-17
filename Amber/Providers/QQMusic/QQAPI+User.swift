@@ -374,7 +374,7 @@ extension QQAPI {
         ]
         if let commOverride {
             payload["comm"] = commOverride
-        } else if let credential = credentialProvider?() {
+        } else if let credential = credential {
             payload["comm"] = [
                 "cv": 12060012, "ct": 11, "format": "json",
                 "uin": Int(credential.uin.filter(\.isNumber)) ?? 0,
@@ -393,7 +393,7 @@ extension QQAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("https://y.qq.com/", forHTTPHeaderField: "Referer")
-        if let cookie = credentialProvider?()?.cookie {
+        if let cookie = credential?.cookie {
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
         let (data, response) = try await session.data(for: request)

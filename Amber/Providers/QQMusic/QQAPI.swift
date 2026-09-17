@@ -16,10 +16,30 @@ final class QQAPI: MusicProvider {
     static let clientUA = "QQMusic/21"
     private static let fallbackCDN = "https://isure.stream.qqmusic.qq.com/"
 
-    /// 登录态由 AppState 注入：返回当前凭证（可能为 nil）
-    var credentialProvider: (() -> QQCredential?)?
-    /// 音质偏好由 AppState 注入
-    var qualityProvider: (() -> StreamQuality)?
+    /// 登录态、音质、过期回调三样由 AppState **推**进来。
+    ///
+    /// 以前是反过来「拉」的闭包（`credentialProvider` 直读 store 上的 `credential`）。
+    /// 改成推是因为请求要能跑在协作线程池上：继承调用方隔离域的函数里，编译器无从证明
+    /// 调用方是主 actor，`@MainActor` 闭包在那里根本调不了。三样都是 Sendable 的小值
+    /// 类型，放同一把锁后面即可——与仓库里别处的 `OSAllocatedUnfairLock` 同一手法。
+    private struct Injected: Sendable {
+        var credential: QQCredential?
+        var quality: StreamQuality = .standard
+        var onCredentialExpired: (@MainActor @Sendable () -> Void)?
+    }
+    private let injected = OSAllocatedUnfairLock(initialState: Injected())
+
+    /// 当前登录凭证（可能为 nil）。AppState 订阅 store 的 `credential` 推进来。
+    var credential: QQCredential? {
+        get { injected.withLock { $0.credential } }
+        set { injected.withLock { $0.credential = newValue } }
+    }
+
+    /// 全局流播放档位，已过设置窗的夹取（无损开关 / 杜比全景声）。
+    var quality: StreamQuality {
+        get { injected.withLock { $0.quality } }
+        set { injected.withLock { $0.quality = newValue } }
+    }
     private static let log = Logger(subsystem: "com.changlepan.Amber", category: "QQAPI")
 
     /// 复核校验接口同一时刻只跑一条（见 `noteCredentialRejected`）。
@@ -29,7 +49,10 @@ final class QQAPI: MusicProvider {
     /// 必须声明成主线程回调：触发点在 URLSession 的后台续体上，接的那头要弹 toast、
     /// 改 @Published；不带 @MainActor 的话 Swift 5 下编译期不查，运行期就在后台线程动
     /// AppKit（`NSView.isHidden` 直接抛异常 → SIGABRT）。
-    var onCredentialExpired: (@MainActor @Sendable () -> Void)?
+    var onCredentialExpired: (@MainActor @Sendable () -> Void)? {
+        get { injected.withLock { $0.onCredentialExpired } }
+        set { injected.withLock { $0.onCredentialExpired = newValue } }
+    }
 
     /// 普通请求会话（musicu 与 c.y.qq.com 上那几条老式 fcgi 都走它）
     let session: URLSession
@@ -74,7 +97,7 @@ final class QQAPI: MusicProvider {
                 commOverride: [String: Any]? = nil,
                 anonymous: Bool = false,
                 verifiesCredential: Bool = false) async throws -> [String: Any] {
-        let credential = anonymous ? nil : credentialProvider?()
+        let credential = anonymous ? nil : credential
         var payload: [String: Any] = [:]
         if let commOverride {
             payload["comm"] = commOverride
@@ -157,7 +180,7 @@ final class QQAPI: MusicProvider {
     /// 界面上就一直显示「已登录」，只是 VIP 曲目全部取不到流。要发现这件事得主动打一个
     /// 必须登录才有数据的接口：失效时它回 1000，musicu 会顺手触发 onCredentialExpired。
     func validateCredential() async {
-        guard credentialProvider?() != nil else { return }
+        guard credential != nil else { return }
         _ = try? await musicu(module: "music.UserInfo.userInfoServer", method: "GetLoginUserInfo",
                               param: [:], clientType: 1, clientVersion: 13030508,
                               verifiesCredential: true)
@@ -915,9 +938,9 @@ final class QQAPI: MusicProvider {
     }
     private let accountCache = OSAllocatedUnfairLock(initialState: AccountCache())
 
-    /// 手上有没有凭证。注入的 `credentialProvider` 直读 `QQLoginStore.credential`，
+    /// 手上有没有凭证。`credential` 由 AppState 从 `QQLoginStore` 推进来，
     /// 与边栏那句「已登录」是同一个来源。
-    var isLoggedIn: Bool { credentialProvider?() != nil }
+    var isLoggedIn: Bool { credential != nil }
 
     /// 已登录账号的歌单：先自建（`GetPlaylistByUin`，收数字 uin），
     /// 再收藏（`CgiGetPlaylistFavInfo`，收 euin）。
@@ -925,7 +948,7 @@ final class QQAPI: MusicProvider {
     /// 这两条都只读；往账号里写是另外两套协议的事（`MusicLibraryWriting` /
     /// `MusicTasteWriting`），每一处写入都由用户在菜单上点出来。
     func accountPlaylists() async -> [Playlist] {
-        guard let credential = credentialProvider?() else { return [] }
+        guard let credential = credential else { return [] }
         let uin = credential.uin.filter(\.isNumber)
         guard !uin.isEmpty else { return [] }
 
@@ -947,7 +970,7 @@ final class QQAPI: MusicProvider {
     /// `info.logo` = `http://thirdqq.qlogo.cn/g?…&s=140`（140px 的方图，升到 https 照样回 200）。
     func accountProfile() async -> QQAccountProfile? {
         if let cached = accountCache.withLock({ $0.profile }) { return cached }
-        guard credentialProvider?() != nil,
+        guard credential != nil,
               let data = try? await musicu(module: "music.UserInfo.userInfoServer",
                                            method: "GetLoginUserInfo", param: [:],
                                            clientType: 1, clientVersion: 13030508),
@@ -1470,7 +1493,7 @@ final class QQAPI: MusicProvider {
     func trackStreamURL(track: Track, quality: StreamQuality?) async throws -> URL {
         let mid = track.id.rawID
         // 显式档位（下载）优先；没传就用全局的流播放档。两者都只是阶梯的**起点**。
-        let wanted = quality ?? qualityProvider?() ?? .standard
+        let wanted = quality ?? self.quality
         let candidates = try await vkeyCandidates(songMid: mid, mediaMid: track.mediaMid,
                                                   from: wanted)
 
@@ -1480,13 +1503,13 @@ final class QQAPI: MusicProvider {
             if await isFetchable(url) { return url }
         }
 
-        if credentialProvider?() == nil {
+        if credential == nil {
             throw ProviderError.unavailable("付费或 VIP 曲目，匿名状态无法播放")
         }
         // 服务端对取流只回 104003「无权播放」，不区分「没有会员」和「登录早就掉了」。
         // 先确认一下登录态，别把过期的 cookie 说成会员等级不够。
         await validateCredential()
-        if credentialProvider?() == nil {
+        if credential == nil {
             throw ProviderError.unavailable("QQ音乐登录已过期，请重新登录后再播放")
         }
         throw ProviderError.unavailable(candidates.reason.isEmpty
@@ -1511,7 +1534,7 @@ final class QQAPI: MusicProvider {
     private func vkeyCandidates(songMid: String, mediaMid: String?,
                                 from wanted: StreamQuality) async throws -> StreamCandidates {
         let filenames: [String]
-        if let mediaMid, !mediaMid.isEmpty, credentialProvider?() != nil {
+        if let mediaMid, !mediaMid.isEmpty, credential != nil {
             filenames = wanted.ladder.flatMap { quality in
                 quality.rungs.map { "\($0.code)\(mediaMid)\($0.ext)" }
             }
@@ -1524,7 +1547,7 @@ final class QQAPI: MusicProvider {
         }
 
         let param: [String: Any] = [
-            "uin": credentialProvider?()?.uin ?? "0",
+            "uin": credential?.uin ?? "0",
             "filename": filenames,
             "guid": guid,
             "songmid": Array(repeating: songMid, count: filenames.count),
@@ -1641,7 +1664,7 @@ final class QQAPI: MusicProvider {
     func mvStreamURL(mv: MV, maxHeight: Int?) async throws -> URL {
         let vid = mv.id.rawID
         guard !vid.isEmpty else { throw ProviderError.invalidResponse }
-        let uin = credentialProvider?()?.uin.filter(\.isNumber) ?? ""
+        let uin = credential?.uin.filter(\.isNumber) ?? ""
         let data = try await musicu(
             module: "music.stream.MvUrlProxy", method: "GetMvUrls",
             param: ["vids": [vid], "request_type": 10001, "addrtype": 3,
@@ -1650,7 +1673,7 @@ final class QQAPI: MusicProvider {
                            "uin": Int(uin) ?? 0, "g_tk": 5381])
         let variants = Self.parseMVVariants(data, vid: vid)
         guard let picked = MVVariant.pick(variants, maxHeight: maxHeight) else {
-            throw ProviderError.unavailable(credentialProvider?() == nil
+            throw ProviderError.unavailable(credential == nil
                 ? "这支 MV 匿名状态下取不到地址，登录后再试"
                 : "这支 MV 当前账号无权观看")
         }
@@ -1926,7 +1949,7 @@ final class QQAPI: MusicProvider {
              ["singerMid": seedSingerMid, "order": 1, "number": 10, "begin": 0]),
         ]
 
-        var report = "QQ 登录态接口探测  \(Date())\n登录态：\(credentialProvider?() != nil ? "有" : "无")\n\n"
+        var report = "QQ 登录态接口探测  \(Date())\n登录态：\(credential != nil ? "有" : "无")\n\n"
         for (module, method, param) in candidates {
             var line = "\(module)/\(method)  "
             do {
@@ -1983,9 +2006,9 @@ final class QQAPI: MusicProvider {
     /// 而扫码登录只落了数字 uin。所以先打一遍账号信息接口，从返回里捞 euin 候选，
     /// 再拿每个候选去试收藏接口——省得靠猜。
     func debugProbeUserPlaylists(to path: String) async {
-        let numericUin = credentialProvider?()?.uin.filter(\.isNumber) ?? ""
+        let numericUin = credential?.uin.filter(\.isNumber) ?? ""
         var report = "QQ 账号歌单接口探测  \(Date())\n"
-        report += "登录态：\(credentialProvider?() != nil ? "有" : "无")  数字 uin：\(numericUin)\n\n"
+        report += "登录态：\(credential != nil ? "有" : "无")  数字 uin：\(numericUin)\n\n"
 
         func dump(_ label: String, _ value: Any, limit: Int = 2600) -> String {
             guard JSONSerialization.isValidJSONObject(value),

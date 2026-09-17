@@ -14,23 +14,23 @@ actor RequestCache {
     /// 5 分钟又短到「新碟上架」「巅峰榜」这类日更内容不会停在旧的一版上。
     static let catalogTTL: TimeInterval = 300
 
-    private var entries: [String: (value: Any, expiresAt: Date)] = [:]
-    private var inFlight: [String: Task<Any?, Never>] = [:]
+    private var entries: [String: (value: any Sendable, expiresAt: Date)] = [:]
+    private var inFlight: [String: Task<(any Sendable)?, Never>] = [:]
 
     /// 取值：命中未过期的缓存直接返回；同键已有在跑的请求就等它，不再发一条。
     ///
     /// `load` 返回 nil 表示这次没取到——**不缓存**，下次照旧重试
     ///（跟原先「失败就回空、下次再要」的行为一致）。
-    func value<T>(for key: String,
-                  ttl: TimeInterval = RequestCache.catalogTTL,
-                  load: @escaping () async -> T?) async -> T? {
+    func value<T: Sendable>(for key: String,
+                            ttl: TimeInterval = RequestCache.catalogTTL,
+                            load: @escaping @Sendable () async -> T?) async -> T? {
         if let entry = entries[key], entry.expiresAt > Date(), let hit = entry.value as? T {
             return hit
         }
         if let running = inFlight[key] {
             return await running.value as? T
         }
-        let task = Task<Any?, Never> { await load() }
+        let task = Task<(any Sendable)?, Never> { await load() }
         inFlight[key] = task
         let value = await task.value
         inFlight.removeValue(forKey: key)

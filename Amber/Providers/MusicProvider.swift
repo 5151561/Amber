@@ -25,7 +25,7 @@ enum ProviderError: Error, LocalizedError {
 }
 
 /// 统一的音乐源协议。实现均为无 UI 依赖的纯网络层，可在后台线程调用。
-protocol MusicProvider {
+protocol MusicProvider: Sendable {
     var kind: ProviderKind { get }
 
     func searchTracks(keyword: String, limit: Int, offset: Int) async throws -> [Track]
@@ -100,7 +100,7 @@ protocol MusicProvider {
 
     /// 解析可播放的流地址（匿名状态下 VIP/付费曲目会抛 unavailable）。
     ///
-    /// `quality == nil` 走音源自己的全局档位（`qualityProvider`，= 设置里的流播放档）；
+    /// `quality == nil` 走音源自己存着的那档（由 AppState 推进来，= 设置里的流播放档）；
     /// 传了值就用这一档当**起点**，降级阶梯不变。下载要的是「下载」那一档
     /// （设置 › 播放 › 下载 + 下载杜比全景声，两者与流播放各夹各的），
     /// 所以下载那条 resolver 显式传档，见 `AppState.downloadQuality`。
