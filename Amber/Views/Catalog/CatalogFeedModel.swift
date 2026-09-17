@@ -9,8 +9,8 @@ import SwiftUI
 /// 这一层并发向音源要每一格的数据，交不出来的段整段省掉。
 ///
 /// 这就是原 `CatalogFeedPage`（SwiftUI View）里的`reload()` 与「段 → 卡片」两块，
-/// **逻辑一字不改**地搬到一个 `ObservableObject` 上（计划 §2：状态层原样保留，
-/// AppKit 侧用 Combine 显式订阅）。视图由 `CatalogPageViewController` 负责。
+/// 搬到一个 `@Observable` 的状态对象上（计划 §2：状态层原样保留，
+/// AppKit 侧显式订阅 `state`）。视图由 `CatalogPageViewController` 负责。
 @MainActor
 @Observable
 final class CatalogFeedModel {
@@ -73,15 +73,38 @@ final class CatalogFeedModel {
 
     /// 换音源 / 首次上屏 / 错误页点「重试」都走这条。上一轮还没跑完就取消，
     /// 与原来 `.task(id: appState.selectedProvider)` 的语义相同。
+    ///
+    /// **本地那两段先上屏**（审查单 §2.6-1）：「最近播放」与「音乐回忆」由
+    /// `LibraryStore` **同步**算出，一条音源请求都不发（下面`pending` 把它们排除在外），
+    /// 从前却要等那个并发上限 4、十几段的 `withTaskGroup` 整个排干才跟着网络段一起发布，
+    /// 断网时更是等完还落到空态。所以这里**同步**先发一份只有本地段的`.content`，
+    /// 网络段到货再整份补上。本地一段都交不出来（新装、台账还是空的）才照旧打菊花。
+    ///
+    /// 同步发而不是放进下面那个 `Task`：`reload()` 的调用点（`viewDidLoad`、换音源、
+    /// 重试）都在主 actor 上，同步赋值意味着**这一轮 runloop 里**页面就拿到了本地段，
+    /// 中间不会闪一下加载态。
     func reload() {
         reloadTask?.cancel()
-        reloadTask = Task { [weak self] in await self?.performReload() }
+        let plan = sections(appState)
+        let local = localSections(in: plan)
+        state = local.isEmpty ? .loading : .content(title: title, sections: local)
+        reloadTask = Task { [weak self] in await self?.performReload(plan) }
     }
 
-    private func performReload() async {
-        state = .loading
+    /// 计划里由本地资料库现算的那几段，按计划里的次序。整段交不出来（台账是空的、
+    /// 上个月没听够 5 首）的省掉，与网络段「交不出来就整段省掉」同一条规矩。
+    private func localSections(in plan: [CatalogPageSection]) -> [CatalogSection] {
+        plan.compactMap { plan in
+            switch plan.slot {
+            case .recentlyPlayed: return recentlyPlayedSection(plan)
+            case .musicMemories: return musicMemoriesSection(plan)
+            default: return nil
+            }
+        }
+    }
+
+    private func performReload(_ plan: [CatalogPageSection]) async {
         let provider = appState.provider(appState.selectedProvider)
-        let plan = sections(appState)
 
         // 各段互不依赖，并发拉；但一页十几段、有的段自己还要并发好几条请求，
         // 全放出去会被音源限流（网易云实测会静默丢几条），所以限到 4 条同时在跑。
@@ -136,8 +159,9 @@ final class CatalogFeedModel {
     ///
     /// 目录页三页的根页是缓存的（切走只 `isHidden`，见`ContentNavigationController`），
     /// `reload()` 只在首次上屏与换音源时跑——听完一首歌货架不会自己变。
-    /// 走 `reload()` 重拉整页太贵：它先把状态打回 `.loading`（页面闪一下空），
-    /// 再把十几段全向音源要一遍，而变的只有本地那一段。
+    /// 走 `reload()` 重拉整页太贵：它先把页面退回「只有本地那两段」（网络段整批撤掉、
+    /// 回来时再整批插回，横向货架的 cell 因此重建两遍），再把十几段全向音源要一遍，
+    /// 而变的只有本地那一段。
     ///
     /// 这一段原先整段不在（第一次听歌，台账还是空的）时交给 `reload()`：
     /// 该插在第几段是 `sections(_:)` 那份计划说了算，只有整页重排才排得准，

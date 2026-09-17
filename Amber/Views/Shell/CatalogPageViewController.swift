@@ -196,7 +196,7 @@ class CatalogPageViewController: ContentPageController {
     private let errorLabel = NSTextField(labelWithString: "")
     private var emptyHost: NSView?
 
-    // 翻页箭头（悬浮态由 tracking area + 这几个自己持有的字段推，不经 @Published）
+    // 翻页箭头（悬浮态由 tracking area + 这几个自己持有的字段推，不上共享的可观察状态）
     private lazy var leftArrow = CatalogShelfArrowButton(direction: .left) { [weak self] in
         self?.pageHoveredShelf(by: -1)
     }
@@ -479,8 +479,12 @@ class CatalogPageViewController: ContentPageController {
             }
         }
 
-        apply(model.state)
+        // **先 reload 再 apply**：`CatalogFeedModel.reload()` 里本地那两段
+        //（最近播放 / 音乐回忆）是**同步**发布的（审查单 §2.6-1），这么排首份快照直接
+        // 就是它们，中间不必先灌一次空的加载态。本地一段都交不出来时`reload()` 置的
+        // 仍是 `.loading`，这里照旧打菊花——与从前一字不差。
         model.reload()
+        apply(model.state)
     }
 
     override func viewDidAppear() {
@@ -743,6 +747,16 @@ class CatalogPageViewController: ContentPageController {
         // 卡摆在哪儿是按「段序 + 每段件数」算死的（见 `makeLayout`），这几样没动，
         // 布局解就还是同一份。容器宽变了走的是 `viewDidLayout` 那条路（组合布局自己
         // 重求解），根本到不了这里，所以指纹里没有宽——理由见 `layoutSignature`。
+        //
+        // **一次 reload 现在会灌两份快照**（本地两段先到、网络段随后整份补上，
+        // 见 `CatalogFeedModel.reload()`），这道闸正是它的配套：
+        // - 网络段真的补进来了：段序变了，布局非重解不可——这一下**不是**多出来的，
+        //   插段本身就要重解，只是从前那一下发生在「空 → 十几段」，现在发生在
+        //   「两段 → 十几段」。此刻屏上那两段的封面刚贴过、必在 `ImageCache` 的内存档里，
+        //   `CatalogArtworkView.setArtwork` 对内存命中是**当场贴**、不经`Task`，
+        //   所以 cell 重建不会白一帧。
+        // - 网络一段都没补进来（断网、音源全交白卷）：两份快照形状相同，
+        //   上面那次 `apply` 是零差异 diff、指纹也一样，这里一次都不失效。
         if signature != lastLayoutSignature {
             lastLayoutSignature = signature
             collectionView.collectionViewLayout?.invalidateLayout()
@@ -1518,7 +1532,7 @@ private final class CatalogOverlayView: NSView {
 
 // MARK: - 收悬浮的 collection view
 
-/// 悬浮态由 tracking area 直接推给页面控制器（铁律 3：不经 `@Published` 绕一圈）。
+/// 悬浮态由 tracking area 直接推给页面控制器（铁律 3：不经共享的可观察状态绕一圈）。
 private final class CatalogShelfCollectionView: NSCollectionView {
 
     var onMouseMoved: ((NSPoint) -> Void)?

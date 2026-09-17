@@ -79,17 +79,20 @@ final class AlbumDetailViewController: TrackTableViewController {
 
     private func reload() {
         loadTask?.cancel()
+        // 本地导入归出来的专辑没有音源可问详情，曲目就在资料库里（见 ImportService）：
+        // 整条路是**同步**的，一条请求都不发。所以既不进 `Task`，也不先打一次菊花
+        //（审查单 §2.6-2）——从前那一下会把页面清空（`TrackTableViewController.apply(state:)`
+        // 撤头部、清曲目）再在下一跳原样填回来，本地专辑因此白闪一帧。
+        if album.isLocal {
+            loadTask = nil
+            let detail = AlbumDetail(album: album, tracks: appState.library.tracks(in: album))
+            self.detail = detail
+            show(detail)
+            return
+        }
         apply(state: .loading)
         loadTask = Task { [weak self] in
             guard let self else { return }
-            // 本地导入归出来的专辑没有音源可问详情，曲目就在资料库里（见 ImportService）。
-            if album.isLocal {
-                let detail = AlbumDetail(album: album,
-                                         tracks: appState.library.tracks(in: album))
-                self.detail = detail
-                self.show(detail)
-                return
-            }
             do {
                 let detail = try await appState.provider(album.kind).albumDetail(album)
                 guard !Task.isCancelled else { return }
