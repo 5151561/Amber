@@ -86,11 +86,25 @@ extension PlayerController: RemoteControlTarget {
         // `clock`（10 Hz 的进度）**不能**并进来：那会把长轮询打成每秒十次唤醒，
         // 遥控器的电池和这台机器的 CPU 都受不了。进度靠 `cant`/`cast` 由客户端自己推。
         //
-        // 过渡形态：`PlayerController` 还是 ObservableObject，这里先桥 objectWillChange。
-        // 它改成 @Observable 之后换成 `Observations`，协议这一侧不用动。
+        // 遥控器要的是 `snapshot()` 里那几项的任意变化。`@Observable` 没有
+        // 「随便什么变了」那条信号，所以在这里把它们逐项列出来——反倒比
+        // `objectWillChange` 准：以前任何一个属性变都会唤醒长轮询，现在只有
+        // 这七项才会。
         let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let pump = Task { @MainActor in
-            for await _ in objectWillChange.values {
+        let pump = Task { @MainActor [weak self] in
+            let changes = Observations { [weak self] in
+                guard let self else { return nil as Int? }
+                var hasher = Hasher()
+                hasher.combine(self.currentIndex)
+                hasher.combine(self.isPlaying)
+                hasher.combine(self.duration)
+                hasher.combine(self.repeatMode)
+                hasher.combine(self.isShuffled)
+                hasher.combine(self.volume)
+                hasher.combine(self.queue.count)
+                return hasher.finalize()
+            }
+            for await _ in changes.dropFirst() {
                 continuation.yield(())
             }
             continuation.finish()

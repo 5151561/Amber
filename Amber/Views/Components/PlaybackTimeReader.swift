@@ -39,7 +39,7 @@ struct PlaybackTimeReader<Content: View>: View {
 
 /// 真正挂在时钟上的那一支。`isActive` 翻面时整支被换掉，订阅跟着建立／断开。
 private struct LivePlaybackTime<Content: View>: View {
-    @EnvironmentObject private var clock: PlaybackClock
+    @Environment(PlaybackClock.self) private var clock
 
     @ViewBuilder var content: (TimeInterval) -> Content
 

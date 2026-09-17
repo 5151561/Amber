@@ -108,11 +108,9 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
         contents.onRollStateChanged = { [weak self] visible in self?.setChromeVisible(visible) }
 
         // 音量：滑杆的值与音量键的图像都跟着播放器走。
-        appState.player.$volume
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] volume in self?.playerVolumeDidChange(volume) }
-            .store(in: &cancellables)
+        observers.observeNow({ [appState] in appState.player.volume }) { [weak self] volume in
+            self?.playerVolumeDidChange(volume)
+        }
 
         NotificationCenter.default
             .publisher(for: NSApplication.willTerminateNotification)

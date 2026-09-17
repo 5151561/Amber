@@ -282,16 +282,13 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     private func bind() {
         // `@Published` 是在 **willSet** 里发的，同步读回去拿到的是**旧值**，
         // 异步回主队列这一跳正好落在赋值之后（同 `MiniPlayerView.bind`）。
-        player.$volume.removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateVolume() }
-            .store(in: &cancellables)
+        observers.observe({ [player] in player.volume }) { [weak self] _ in
+            self?.updateVolume()
+        }
 
-        player.$currentIndex.map { _ in () }
-            .merge(with: player.$queue.map { _ in () })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.reloadLyricsIfNeeded() }
-            .store(in: &cancellables)
+        observers.observeAny({ [player] in (player.currentIndex, player.queue) }) { [weak self] in
+            self?.reloadLyricsIfNeeded()
+        }
 
         // 在「显示简介 › 歌词」里改完自定义歌词，显示口那份会换，翻译键跟着重判。
         observers.observe({ TrackInfoStore.shared.infos }) { [weak self] _ in self?.reloadLyricsIfNeeded() }

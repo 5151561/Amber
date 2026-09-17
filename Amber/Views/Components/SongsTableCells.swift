@@ -70,7 +70,7 @@ final class SongsRichCellView: NSTableCellView {
         // 前往专辑/新建播放列表。四件各自注入，谁变了刷谁。
         let host = NSHostingView(rootView: SongsTableCellContent(state: state)
             .environmentObject(appState)
-            .environmentObject(appState.player)
+            .environment(appState.player)
             .environmentObject(appState.library)
             .environment(appState.downloads))
         host.translatesAutoresizingMaskIntoConstraints = false
@@ -271,7 +271,7 @@ final class SongsTextCellView: NSTableCellView {
 struct SongsTableCellContent: View {
     var state: SongsCellState
 
-    @EnvironmentObject private var player: PlayerController
+    @Environment(PlayerController.self) private var player
     @EnvironmentObject private var library: LibraryStore
     @Environment(DownloadStore.self) private var downloads
     /// 只给 ••• 菜单用（前往专辑 / 新建播放列表这类要 `AppState` 的动作）。

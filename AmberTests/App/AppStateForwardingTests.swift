@@ -182,26 +182,30 @@ final class AppStateForwardingTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(40))
     }
 
-    /// 播放进度**不能**走 AppState。
+    /// 播放进度**不能**惊动 AppState。
     ///
-    /// 进度 10 Hz 一跳，一旦并进 `player.objectWillChange`，AppState 就把它转发给全体
-    /// 订阅者——整个界面每秒重画十次，实测光这一条就吃掉 40% CPU。
-    /// 所以它单独挂在 `PlaybackClock` 上，只有真正显示时间的那几块订阅。
+    /// 进度 10 Hz 一跳，一旦读它的人是整棵界面树，整个界面就每秒重画十次
+    /// ——实测光这一条就吃掉 40% CPU。所以它单独挂在 `PlaybackClock` 上，
+    /// 只有真正显示时间的那几块读。
+    ///
+    /// `PlaybackClock` 换 `@Observable` 之后没有 `objectWillChange` 了，
+    /// 这里改成观察 `time` 本身——顺带把「AppState 不该被惊动」那一半也换成
+    /// 观察它自己的属性，比订一条大喇叭更贴近现在的真实形态。
     @MainActor
-    func testPlaybackProgressDoesNotForwardToAppState() {
+    func testPlaybackProgressDoesNotForwardToAppState() async {
         let state = makeState()
-        let leaked = expectation(description: "进度不该惊动 AppState")
-        leaked.isInverted = true
-        let onState = state.objectWillChange.sink { _ in leaked.fulfill() }
-
-        let ticked = expectation(description: "clock 自己要发")
-        let onClock = state.player.clock.objectWillChange.sink { _ in ticked.fulfill() }
+        var clockTicks: [TimeInterval] = []
+        var appStateTouches = 0
+        let bag = TaskBag()
+        bag.observe({ state.player.clock.time }) { clockTicks.append($0) }
+        bag.observe({ state.selectedProvider }) { _ in appStateTouches += 1 }
+        await settle()
 
         state.player.currentTime = 12.5
+        await settle()
 
-        wait(for: [leaked, ticked], timeout: 0.5)
+        XCTAssertEqual(clockTicks, [12.5], "clock 自己要发")
+        XCTAssertEqual(appStateTouches, 0, "进度不该惊动 AppState")
         XCTAssertEqual(state.player.currentTime, 12.5, accuracy: 0.001)
-        onState.cancel()
-        onClock.cancel()
     }
 }

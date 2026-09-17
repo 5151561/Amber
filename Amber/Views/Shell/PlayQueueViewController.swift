@@ -124,6 +124,8 @@ final class PlayQueueViewController: NSViewController {
     // MARK: 状态
 
     private var cancellables = Set<AnyCancellable>()
+
+    private let observers = TaskBag()
     /// identifier → item，快照重建时一起刷新（cellProvider 与交互都要按 identifier 回查）。
     private var itemsByIdentifier: [String: PlayQueueItem] = [:]
     /// [实测] §3.11 `needsToScrollToIdealRow`
@@ -267,16 +269,16 @@ final class PlayQueueViewController: NSViewController {
         //
         // ① `kViewModelDataObservationContext`：只重建快照并 apply，**不碰行高**。
         //    行高本来就由 delegate 的 `tableView:heightOfRow:` 在 apply 过程中逐行问。
-        model.dataDidChange
-            .sink { [weak self] in self?.reload(animated: true) }
-            .store(in: &cancellables)
+        observers.add(Task { @MainActor [weak self, model] in
+            for await _ in model.dataDidChange.stream() { self?.reload(animated: true) }
+        })
 
         // ② `kViewModelSourceObservationContext`：**只**对「继续播放」那一条分区头行发
         //    `noteHeightOfRowsWithIndexesChanged:`（那行有没有「来自…」决定它 58 还是 44，
         //    §3.5），且这一步在 apply **之外**发。
-        model.sourceDidChange
-            .sink { [weak self] in self?.reloadContinuePlayingSource() }
-            .store(in: &cancellables)
+        observers.add(Task { @MainActor [weak self, model] in
+            for await _ in model.sourceDidChange.stream() { self?.reloadContinuePlayingSource() }
+        })
 
         // [实测] §3.11：滚动结束是「5 秒回滚」三个重置点之一。Music 走的是 AMP 滚动视图的
         // `didEndScrollInScrollView:` 回调（`NSScrollView` 没有公开 delegate），

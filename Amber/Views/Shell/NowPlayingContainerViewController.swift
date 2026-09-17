@@ -93,6 +93,8 @@ final class NowPlayingContainerViewController: NSViewController {
 
     private var cancellables = Set<AnyCancellable>()
 
+    private let observers = TaskBag()
+
     #if DEBUG
     /// 见 `init` 里那段：`-nowplaying -queue` / `-lyrics` 的验收口子，
     /// 第一次有效布局之后照点击那条路把抽屉打开。
@@ -238,11 +240,9 @@ final class NowPlayingContainerViewController: NSViewController {
 
         // 封面：换歌就重取。`currentIndex` 与 `queue` 各发一次，中间那一拍两者还不同步，
         // 同一跳之后直接读 `currentTrack` 才是两者都落定的值（同 `MiniPlayerView.bind`）。
-        player.$currentIndex.map { _ in () }
-            .merge(with: player.$queue.map { _ in () })
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.reloadArtworkIfNeeded() }
-            .store(in: &cancellables)
+        observers.observeAny({ [player] in (player.currentIndex, player.queue) }) { [weak self] in
+            self?.reloadArtworkIfNeeded()
+        }
 
         reloadArtworkIfNeeded()
     }

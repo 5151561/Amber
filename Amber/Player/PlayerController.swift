@@ -12,8 +12,9 @@ import os
 /// 于是「整个界面每秒重画十次」——实测光这一条就吃掉 40% CPU（风扇也是这么来的）。
 /// 拆出来之后，只有真正显示时间的那几块（进度条、时间标签、歌词）订阅它。
 @MainActor
-final class PlaybackClock: ObservableObject {
-    @Published fileprivate(set) var time: TimeInterval = 0
+@Observable
+final class PlaybackClock {
+    fileprivate(set) var time: TimeInterval = 0
 }
 
 /// 「从列表播放」的上下文：整份可见行 + 要起播的那一首在其中的下标。
@@ -23,12 +24,16 @@ struct TrackPlayContext: Equatable { var tracks: [Track]; var index: Int }
 
 /// AVPlayer 队列封装：播放/暂停/切歌/循环/随机，自动连播与系统集成。
 ///
-/// **不要往这里加 `@Published`**：`AppState` 把本对象的`objectWillChange` 转发给了
-/// 全体订阅者，任何按帧/按缓冲变化的量一旦 `@Published`，整个界面就会跟着它重画
-/// （`PlaybackClock` 就是为此拆出去的）。交叉淡入淡出、增强器、响度测量全程
-/// 不发一次 `objectWillChange`。
+/// **不要往这里加可观察属性**：任何按帧/按缓冲变化的量一旦可观察，读它的界面就会跟着
+/// 它重画（`PlaybackClock` 就是为此拆出去的）。交叉淡入淡出、增强器、响度测量全程
+/// 不写可观察状态。
+///
+/// （换 `@Observable` 之前这条的理由更硬：`AppState` 曾把本对象的 `objectWillChange`
+/// 转发给全体订阅者，一条进度就能把整个界面重画。转发早已去掉，但结论不变——
+/// 现在是「谁读谁重画」，10 Hz 的量仍然只该让真正显示时间的那几块读。）
 @MainActor
-final class PlayerController: ObservableObject {
+@Observable
+final class PlayerController {
 
     enum RepeatMode: Int, CaseIterable {
         case off, all, one
@@ -117,27 +122,27 @@ final class PlayerController: ObservableObject {
         let assetSeconds: TimeInterval?
     }
 
-    @Published private(set) var queue: [Track] = []
+    private(set) var queue: [Track] = []
     /// 与 `queue` **一一对应**的来源标记，长度恒等于`queue.count`。
     /// 队列面板的四个分区全靠它推（见 `PlayQueueModel.sections`），
     /// 所以每一处动 `queue` 的地方都要同步动它——这是硬不变式，`PlayQueueModelTests` 在断言。
-    @Published private(set) var queueOrigins: [QueueOrigin] = []
+    private(set) var queueOrigins: [QueueOrigin] = []
     /// 这一队是从哪份列表起播的。`play(_:startAt:source:)` 写入，传 nil 就清空；
     /// 「继续播放」分区头上那行「来自…」与那颗「清除」都读它。
-    @Published private(set) var queueSource: QueueSource?
-    @Published private(set) var currentIndex: Int?
-    @Published private(set) var isPlaying = false
-    @Published private(set) var isLoading = false
+    private(set) var queueSource: QueueSource?
+    private(set) var currentIndex: Int?
+    private(set) var isPlaying = false
+    private(set) var isLoading = false
     /// 播放进度。转发到 `clock`，**不是**`@Published`——见`PlaybackClock` 的注释。
     let clock = PlaybackClock()
     var currentTime: TimeInterval {
         get { clock.time }
         set { clock.time = newValue }
     }
-    @Published var duration: TimeInterval = 0
-    @Published var repeatMode: RepeatMode = .off
-    @Published var isShuffled = false
-    @Published var volume: Double = 1.0 {
+    var duration: TimeInterval = 0
+    var repeatMode: RepeatMode = .off
+    var isShuffled = false
+    var volume: Double = 1.0 {
         // 母音量在 player 上，淡入淡出在 audioMix 里，两者相乘。两路都要写：
         // 过渡期间两路同时出声，只写一路会让退场那首突然变响。
         didSet {
@@ -146,10 +151,10 @@ final class PlayerController: ObservableObject {
         }
     }
     /// 播放失败的提示（如 VIP 曲目无权限）
-    @Published var lastError: String?
+    var lastError: String?
     /// 当前这一路流的真实规格（采样率/位深/编码），就绪后从 asset 读出来。
     /// 迷你播放器的音质气泡显示它——设置里选的档位会降级，气泡要报实际拿到的那一档。
-    @Published private(set) var streamFormat: StreamFormat?
+    private(set) var streamFormat: StreamFormat?
 
     /// 由 AppState 注入：解析曲目流地址
     var providerResolver: ((Track) async throws -> URL)?

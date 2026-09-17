@@ -9,7 +9,7 @@ import SwiftUI
 /// 数字是从播放中的 asset 读出来的实际值（见 `StreamFormat`），不是设置里选的档位：
 /// 阶梯会降级，两者经常对不上，气泡按实际拿到的那一档报。
 struct AudioQualityPopover: View {
-    @EnvironmentObject private var player: PlayerController
+    @Environment(PlayerController.self) private var player
 
     var body: some View {
         VStack(spacing: 6) {
