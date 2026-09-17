@@ -363,7 +363,9 @@ final class AppState {
         observers.observe({ [weak audioOutput] in audioOutput?.output }) { [weak self] _ in
             self?.pushEffectiveQuality()
         }
-        observers.observe({ AppSettings.shared.values }) { [weak self] _ in self?.pushEffectiveQuality() }
+        // 只订自己真读的那两项（`losslessEnabled` / `dolbyAtmos`，见 `AppSettings` §细粒度投影）：
+        // 订整份 `values` 时改一次歌词字号也会把「有效音质重算」叫醒。
+        observers.observe({ AppSettings.shared.qualityPrefs }) { [weak self] _ in self?.pushEffectiveQuality() }
 
         // 账号里的歌单进资料库、登录态校验：都由 MainView 在上屏时触发
         //（init 里不发网络请求也不动资料库——AppState 只是被构造出来时不该有副作用），

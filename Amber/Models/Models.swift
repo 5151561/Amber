@@ -535,6 +535,13 @@ struct CatalogTagGroup: Identifiable, Hashable, Sendable {
 /// 音源交给一个格子的东西
 struct CatalogSlotResult: Sendable {
     var items: CatalogItems = .none
+    /// 这一格**取不到**（连接类错误、服务端拒绝），与「音源本来就没这一格」分开。
+    ///
+    /// 为什么是加字段而不是把 `MusicProvider.catalogItems` / `playlists(tag:)` 改成
+    /// `throws`（审查单 §8「留给下一轮」第 1 条）：`.empty` 对这两条是**有意义的返回值**
+    /// ——很多格子音源本来就不供，改 `throws` 会把「没这一格」与「取不到」混成一件事；
+    /// 而带默认值的加法是源码兼容的，现存构造点一行不动。
+    var failure: URLError? = nil
     /// 段标题「查看全部」的落点；有才显示 ›
     var seeAll: Playlist? = nil
     /// 卡片眉行（Music 的 eyebrow），按条目 id 索引
