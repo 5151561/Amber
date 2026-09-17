@@ -288,6 +288,46 @@ final class CatalogTopResultCardView: CatalogCardContentView {
     }
 }
 
+// MARK: 多列曲目行的键盘焦点环
+
+/// 目录曲目行的焦点环。**与 `CatalogCardItems.swift` 的 `CatalogCardFocusRingView`
+/// 是同一套**：环整只交给系统画（铁律 6），自己只定形状与那一点内缩。
+///
+/// 为什么这里又有一只：那一只是 `private`，跨文件取不到，而曲目行是裸 `NSView`、
+/// 不在卡片基类体系里（审查单「留给下一轮」那条），继承不到它。两只合一要动
+/// `CatalogCardItems.swift` 的访问级别，不在本批的文件范围内——见收工报告。
+private final class CatalogTrackRowFocusRingView: NSView {
+
+    /// 路径往里让出的一圈 ＝ 环往外扩的那一圈。层背视图的绘制被自己的 bounds 裁掉，
+    /// 环画到界外就没了，所以先让出来。
+    ///
+    /// [实测 probe 2026-09-17] 系统不公开这个数：`NSFocusRingPlacement.only` 之后
+    /// 填 80×80 的圆角矩形，墨迹盒是 37…123，即**四周各外扩 3.0pt**、内部不填。
+    /// （原始探针记在 `CatalogCardFocusRingView.inset` 上。）
+    static let inset: CGFloat = 3
+
+    var cornerRadius: CGFloat = 0 {
+        didSet {
+            guard cornerRadius != oldValue else { return }
+            needsDisplay = true
+        }
+    }
+
+    /// 纯装饰：点击照旧落在它盖住的那一行上。
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: Self.inset, dy: Self.inset)
+        guard rect.width > 0, rect.height > 0 else { return }
+        // 路径往里缩了多少，圆角也要跟着小多少，不然环的转角会比行更方。
+        let radius = max(0, cornerRadius - Self.inset)
+        NSGraphicsContext.saveGraphicsState()
+        NSFocusRingPlacement.only.set()
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+}
+
 // MARK: 多列曲目行（track-lockup）
 
 /// 探新「新歌精选 / 正在流行中 / 大家都在听」的行 [AX] 379×56：
@@ -311,6 +351,18 @@ final class CatalogTrackRowView: NSView, CatalogHoverTarget {
     private let moreButton = CatalogMoreButton()
 
     private var isHovering = false
+
+    /// 键盘焦点态。与悬浮态是两个字段，不合并：悬浮是鼠标驱动的，滚轮一滚就重算一次，
+    /// 共用一个字段等于鼠标一动就把键盘焦点抹掉（同 `CatalogCardContentView` 那条）。
+    /// 铁律 3：显示态由视图自己持有、自己 `needsDisplay`，不上广播。
+    private var isKeyboardFocused = false
+
+    /// 焦点环只在真的拿到焦点时才建，没焦点的行不多这一只视图。
+    private var focusRing: CatalogTrackRowFocusRingView?
+
+    /// 宿主 `NSCollectionViewItem.isSelected` 的 KVO（方向键走到哪一件，
+    /// collection view 就把哪一件的这一位翻 true）。
+    private var selectionObservation: NSKeyValueObservation?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -361,15 +413,72 @@ final class CatalogTrackRowView: NSView, CatalogHoverTarget {
         titleField.stringValue = track.title
         artistField.stringValue = track.artistName
         setAccessibilityLabel("\(track.title)，\(track.artistName)")
+        bindSelectionIfNeeded()
         needsLayout = true
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         setHovering(false)
+        // 出队时先把焦点环撤掉：新的选中态由 collection view 随后写进 `isSelected`，
+        // KVO 会把该亮的那一行重新点亮。不撤的话，上一位的环会跟着行被复用出去。
+        setKeyboardFocused(false)
         track = nil
         appState = nil
         artworkView.prepareForReuse()
+    }
+
+    // MARK: 键盘焦点（审查单 §2.5-1 漏掉的这一行）
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        bindSelectionIfNeeded()
+    }
+
+    /// 接一次就够：行复用的是同一只视图挂在同一只 item 上，所以 `prepareForReuse`
+    /// 不解这条 KVO。两个调用点是同一件事的两次机会——`configure` 那次一定接得上，
+    /// `viewDidMoveToWindow` 那次只是更早一点。与 `CatalogCardContentView` 同解。
+    private func bindSelectionIfNeeded() {
+        guard selectionObservation == nil, let item = enclosingCollectionViewItem else { return }
+        selectionObservation = item.observe(\.isSelected, options: [.initial, .new]) { [weak self] _, change in
+            guard let focused = change.newValue else { return }
+            // `setSelected:` 由 `NSCollectionView` 在主线程调，KVO 是同步发出来的；
+            // 这里再跳一次主 actor 会让环晚一个 runloop 才亮，方向键连按就跟不上手。
+            MainActor.assumeIsolated { self?.setKeyboardFocused(focused) }
+        }
+    }
+
+    /// 本视图就是 item 的 `view`，所以响应链上第一位 `NSCollectionViewItem` 就是宿主。
+    private var enclosingCollectionViewItem: NSCollectionViewItem? {
+        var responder = amberNextResponder
+        while let current = responder {
+            if let item = current as? NSCollectionViewItem { return item }
+            responder = current.amberNextResponder
+        }
+        return nil
+    }
+
+    private func setKeyboardFocused(_ focused: Bool) {
+        guard focused != isKeyboardFocused else { return }
+        isKeyboardFocused = focused
+        guard focused else {
+            focusRing?.removeFromSuperview()
+            focusRing = nil
+            return
+        }
+        let ring = CatalogTrackRowFocusRingView(frame: bounds)
+        ring.autoresizingMask = [.width, .height]
+        focusRing = ring
+        addSubview(ring, positioned: .above, relativeTo: nil)
+        layoutFocusRing()
+    }
+
+    /// 环贴着**行自己的形状**走：行的可见外形就是那块悬浮底
+    ///（满 bounds、圆角 6），所以直接读它的圆角，不另立一个会跟它走散的常量。
+    private func layoutFocusRing() {
+        guard let focusRing else { return }
+        focusRing.frame = bounds
+        focusRing.cornerRadius = hoverBackground.cornerRadius
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -387,6 +496,7 @@ final class CatalogTrackRowView: NSView, CatalogHoverTarget {
 
     override func layout() {
         super.layout()
+        layoutFocusRing()
         CatalogCardKit.setFrame(hoverBackground, bounds)
         CatalogCardKit.setFrame(divider, NSRect(x: M.trackDividerLeading, y: 0,
                                                 width: max(0, bounds.width - M.trackDividerLeading),
