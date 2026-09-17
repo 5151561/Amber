@@ -26,7 +26,11 @@ enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        // `SecItemCopyMatching` 的第二个形参是 `UnsafeMutablePointer<CFTypeRef?>?`，
+        // Security 框架整套都是 C 接口，没有安全替代。`&result` 那一下是 inout-to-pointer，
+        // 指针指向上一行这个局部变量，调用同步返回、不留指针，所以标记只罩这一句。
+        // 钥匙串这边**只加标注**，查询字典与取值语义一个字节不动。
+        guard unsafe SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }

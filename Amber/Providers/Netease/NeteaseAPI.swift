@@ -229,7 +229,7 @@ final class NeteaseAPI: MusicProvider {
             ("resolution", "1920x1080"),
             ("__csrf", cookie("__csrf") ?? ""),
             ("channel", Self.clientChannel),
-            ("requestId", "\(Int(Date().timeIntervalSince1970 * 1000))_\(String(format: "%04d", Int.random(in: 0..<1000)))"),
+            ("requestId", "\(Int(Date().timeIntervalSince1970 * 1000))_\(Int.random(in: 0..<1000).zeroPadded(to: 4))"),
         ]
         if let musicU = cookie("MUSIC_U") {
             header.append(("MUSIC_U", musicU))

@@ -146,8 +146,11 @@ private func vorbisVendor(inCommentBody body: Data) -> String? {
     guard bytes.byteCount >= 4 else { return nil }
     // 小端 32 位。偏移 0 但 `body` 自身未必对齐，所以走不对齐读；`UInt32` 进 `Int` 恒非负，
     // 原来那条 `length >= 0` 到这里已经是恒真，跟着删掉。
-    let length = Int(UInt32(littleEndian: bytes.unsafeLoadUnaligned(fromByteOffset: 0,
-                                                                   as: UInt32.self)))
+    //
+    // `unsafeLoadUnaligned` 不安全在它自己不查边界，读越界是未定义行为而不是 trap；
+    // 谁保证它安全：紧挨着上面那条 `bytes.byteCount >= 4`。
+    let length = unsafe Int(UInt32(littleEndian: bytes.unsafeLoadUnaligned(fromByteOffset: 0,
+                                                                          as: UInt32.self)))
     guard bytes.byteCount >= 4 + length else { return nil }
     // 仍旧走 `String(bytes:encoding:)`：vendor 不是合法 UTF-8 时要的就是 nil、让调用方兜底，
     // `String(decoding:)` 会拿替换字符糊过去，那是另一种行为。
@@ -544,13 +547,17 @@ enum OggTagWriter {
         // 与原来逐字节移位拼出来的值一个比特不差（`UInt64(littleEndian:)` 在小端机上是恒等，
         // 大端机上是整体字节翻转，正是那个循环在做的事）。
         // 偏移 6 / 14 都不是自然对齐，所以只能走不对齐读，`load` 那一族会在对齐上炸。
+        //
+        // `unsafeLoadUnaligned` 不安全在它自己不查边界，读越界是未定义行为而不是 trap；
+        // 谁保证它安全：上面那条 `count == 27`——6+8 与 14+4 都落在 27 里，
+        // 而 `raw` 就是这 27 字节的视图。整个 `Page(...)` 是一个表达式，一个标记罩住两次读。
         let raw = bytes.bytes
-        return Page(headerType: bytes[5],
-                    granule: UInt64(littleEndian: raw.unsafeLoadUnaligned(fromByteOffset: 6,
-                                                                          as: UInt64.self)),
-                    serial: UInt32(littleEndian: raw.unsafeLoadUnaligned(fromByteOffset: 14,
-                                                                         as: UInt32.self)),
-                    segments: segments, body: body, raw: header + table + body)
+        return unsafe Page(headerType: bytes[5],
+                           granule: UInt64(littleEndian: raw.unsafeLoadUnaligned(
+                               fromByteOffset: 6, as: UInt64.self)),
+                           serial: UInt32(littleEndian: raw.unsafeLoadUnaligned(
+                               fromByteOffset: 14, as: UInt32.self)),
+                           segments: segments, body: body, raw: header + table + body)
     }
 
     /// 按段表把页里的包拼出来，拼够 `limit` 个就停。

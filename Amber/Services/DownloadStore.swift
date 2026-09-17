@@ -520,8 +520,11 @@ final class DownloadStore {
             running[id] = nil
             pending.removeAll { $0.id == id }
             if let entry = index[id], !Self.isExternal(entry.path) {
-                try? FileManager.default.trashItem(at: fileURL(forPath: entry.path),
-                                                   resultingItemURL: nil)
+                // `resultingItemURL` 在 Swift 里是 `AutoreleasingUnsafeMutablePointer<NSURL?>?`
+                // ——ObjC 的 out 参数导过来就长这样，没有安全替代的重载。我们不要回传的
+                // 废纸篓路径，传的是 `nil`：不安全的只有这个类型，没有指针真的被解引用。
+                try? unsafe FileManager.default.trashItem(at: fileURL(forPath: entry.path),
+                                                          resultingItemURL: nil)
             }
             index[id] = nil
             states.removeValue(forKey: id)
@@ -651,7 +654,7 @@ final class DownloadStore {
         guard organized else { return safeName(track.id) + "." + ext }
         let artist = safeName(track.artistName.isEmpty ? "未知艺人" : track.artistName)
         let album = safeName(track.albumName.isEmpty ? "未知专辑" : track.albumName)
-        let number = track.trackNumber.map { String(format: "%02d ", $0) } ?? ""
+        let number = track.trackNumber.map { $0.zeroPadded(to: 2) + " " } ?? ""
         let title = safeName(track.title.isEmpty ? track.id : track.title)
         return "\(artist)/\(album)/\(number)\(title).\(ext)"
     }

@@ -810,9 +810,12 @@ enum RemoteHTTPClient {
             // 不许是 `@Sendable`），而这两个函数要被上面说的那些 handler 捕获。
             // 它们实际仍然只在主线程上跑：每个调用点不是裹在 `assumeIsolated` 里，
             // 就是在继承了主 actor 的 `Task` 里。
+            // 下面每一次碰 `buffer` / `finished` 都要标 `unsafe`：它们是
+            // `nonisolated(unsafe)`，「谁保证它安全」就写在上面那段——全部只在主线程上被碰。
+            // 标记逐处出现是对的，这两个变量正是本文件唯一靠人担保、编译器管不了的地方。
             @Sendable func finish(_ result: Result<RemoteHTTPClientResponse, any Error>) {
-                guard !finished else { return }
-                finished = true
+                guard unsafe !finished else { return }
+                unsafe finished = true
                 connection.cancel()
                 continuation.resume(with: result)
             }
@@ -821,15 +824,15 @@ enum RemoteHTTPClient {
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
                     data, _, isComplete, error in
                     MainActor.assumeIsolated {
-                        if let data { buffer.append(data) }
-                        if let response = RemoteHTTPClientResponse.parse(buffer),
+                        if let data { unsafe buffer.append(data) }
+                        if let response = unsafe RemoteHTTPClientResponse.parse(buffer),
                            response.headers["content-length"] != nil {
                             finish(.success(response))
                             return
                         }
                         if isComplete {
                             // 没给 Content-Length 的，收到 EOF 再解一次
-                            if let response = RemoteHTTPClientResponse.parse(buffer) {
+                            if let response = unsafe RemoteHTTPClientResponse.parse(buffer) {
                                 finish(.success(response))
                             } else {
                                 finish(.failure(ClientError.malformed))

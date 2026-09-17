@@ -33,28 +33,39 @@ enum NeteaseCrypto {
     }
 
     static func md5Hex(_ text: String) -> String {
-        md5(Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        md5(Data(text.utf8)).hexString()
     }
 
     // MARK: - AES-128-ECB
 
     /// PKCS7 填充的 AES-ECB。key 直接取字符串的 UTF-8 字节（16 字节 = AES-128）。
+    ///
+    /// **这里的 `unsafe` 标在哪、谁保证它安全**（下面 `aesCBC` 与它逐字同构，不再重复说）：
+    /// CommonCrypto 是纯 C 接口，进出都是裸指针加长度，没有安全替代——CryptoKit 只做
+    /// AEAD 那几套，不提供 ECB/CBC，而这两个模式是网易那边定死的，换不得。
+    /// 三处标记分别是两层 `withUnsafe*Bytes` 借出缓冲、以及 `CCCrypt` 本身。
+    ///
+    /// 指针有效性由 `withUnsafeBytes` 自己的作用域保证：`CCCrypt` 是同步调用，
+    /// 指针不会活过闭包。长度这一侧由我们保证：输出缓冲 `capacity` 是
+    /// `data.count + kCCBlockSizeAES128`，这是 PKCS7 最多补满一整块之后的上界，
+    /// 递给 `CCCrypt` 的正是同一个 `capacity`，所以它写不出界；真正写了多少由
+    /// `moved` 回报，末尾按它截断。`keyBytes.count` 上面刚校过是 16。
     static func aesECB(_ data: Data, key: String, encrypt: Bool) -> Data? {
         let keyBytes = Array(key.utf8)
         guard keyBytes.count == kCCKeySizeAES128 else { return nil }
         let capacity = data.count + kCCBlockSizeAES128
         var out = Data(count: capacity)
         var moved = 0
-        let status = out.withUnsafeMutableBytes { outBuffer in
-            data.withUnsafeBytes { inBuffer in
-                CCCrypt(CCOperation(encrypt ? kCCEncrypt : kCCDecrypt),
-                        CCAlgorithm(kCCAlgorithmAES),
-                        CCOptions(kCCOptionECBMode | kCCOptionPKCS7Padding),
-                        keyBytes, keyBytes.count,
-                        nil,
-                        inBuffer.baseAddress, data.count,
-                        outBuffer.baseAddress, capacity,
-                        &moved)
+        let status = unsafe out.withUnsafeMutableBytes { outBuffer in
+            unsafe data.withUnsafeBytes { inBuffer in
+                unsafe CCCrypt(CCOperation(encrypt ? kCCEncrypt : kCCDecrypt),
+                               CCAlgorithm(kCCAlgorithmAES),
+                               CCOptions(kCCOptionECBMode | kCCOptionPKCS7Padding),
+                               keyBytes, keyBytes.count,
+                               nil,
+                               inBuffer.baseAddress, data.count,
+                               outBuffer.baseAddress, capacity,
+                               &moved)
             }
         }
         guard status == kCCSuccess else { return nil }
@@ -73,7 +84,7 @@ enum NeteaseCrypto {
         let digest = md5Hex("nobody\(url)use\(json)md5forencrypt")
         let plain = "\(url)\(separator)\(json)\(separator)\(digest)"
         guard let cipher = aesECB(Data(plain.utf8), key: eapiKey, encrypt: true) else { return "" }
-        return cipher.map { String(format: "%02X", $0) }.joined()
+        return cipher.hexString(uppercase: true)
     }
 
     /// 解 eapi 的密文响应（`e_r` 那条路）。
@@ -180,16 +191,17 @@ enum NeteaseCrypto {
         let capacity = data.count + kCCBlockSizeAES128
         var out = Data(count: capacity)
         var moved = 0
-        let status = out.withUnsafeMutableBytes { outBuffer in
-            data.withUnsafeBytes { inBuffer in
-                CCCrypt(CCOperation(encrypt ? kCCEncrypt : kCCDecrypt),
-                        CCAlgorithm(kCCAlgorithmAES),
-                        CCOptions(kCCOptionPKCS7Padding),
-                        keyBytes, keyBytes.count,
-                        ivBytes,
-                        inBuffer.baseAddress, data.count,
-                        outBuffer.baseAddress, capacity,
-                        &moved)
+        // 三处 `unsafe` 的契约同 `aesECB`，多出来的 `ivBytes` 上面也刚校过是 16 字节。
+        let status = unsafe out.withUnsafeMutableBytes { outBuffer in
+            unsafe data.withUnsafeBytes { inBuffer in
+                unsafe CCCrypt(CCOperation(encrypt ? kCCEncrypt : kCCDecrypt),
+                               CCAlgorithm(kCCAlgorithmAES),
+                               CCOptions(kCCOptionPKCS7Padding),
+                               keyBytes, keyBytes.count,
+                               ivBytes,
+                               inBuffer.baseAddress, data.count,
+                               outBuffer.baseAddress, capacity,
+                               &moved)
             }
         }
         guard status == kCCSuccess else { return nil }
@@ -236,7 +248,7 @@ enum NeteaseCrypto {
         var padded = Data(count: 128 - secretKey.utf8.count)
         padded.append(contentsOf: secretKey.utf8.reversed())
         guard let cipher = rsaNoPadding(padded) else { return "" }
-        return cipher.map { String(format: "%02x", $0) }.joined()
+        return cipher.hexString()
     }
 
     /// weapi 的一对请求字段。
@@ -313,7 +325,7 @@ indirect enum NeteaseJSON: ExpressibleByStringLiteral, ExpressibleByIntegerLiter
             case "\t": out += "\\t"
             default:
                 if scalar.value < 0x20 {
-                    out += String(format: "\\u%04x", scalar.value)
+                    out += "\\u" + scalar.value.zeroPadded(to: 4, radix: 16)
                 } else {
                     out.unicodeScalars.append(scalar)
                 }

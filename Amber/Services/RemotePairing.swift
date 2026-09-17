@@ -49,7 +49,7 @@ enum RemotePairing {
             md5.update(data: Data(String(character).utf8))
             md5.update(data: Data([0]))
         }
-        return md5.finalize().map { String(format: "%02X", $0) }.joined()
+        return md5.finalize().hexString(uppercase: true)
     }
 
     /// PIN 必须是 4 位数字（遥控 App 上显示的就是四格）。
@@ -59,7 +59,8 @@ enum RemotePairing {
 
     /// 随机生成一个 16 位大写 hex 的资料库标识（`_touch-able._tcp` 的服务名与 `DbId`）。
     static func randomLibraryID() -> String {
-        (0..<8).map { _ in String(format: "%02X", UInt8.random(in: 0...255)) }.joined()
+        (0..<8).map { _ in UInt8.random(in: 0...255).zeroPadded(to: 2, radix: 16, uppercase: true) }
+            .joined()
     }
 }
 

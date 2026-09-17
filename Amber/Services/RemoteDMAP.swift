@@ -134,13 +134,7 @@ struct DMAPRawNode {
     }
 
     /// 大写十六进制。配对 GUID（`cmpg`，8 字节）就用这个转成 16 位 hex。
-    /// `String(_:radix:uppercase:)` 不像 `%02X` 那样自带宽度，小于 `0x10` 的自己补个零。
-    var hexValue: String {
-        payload.map { byte in
-            let hex = String(byte, radix: 16, uppercase: true)
-            return byte < 0x10 ? "0" + hex : hex
-        }.joined()
-    }
+    var hexValue: String { payload.hexString(uppercase: true) }
 
     /// 直接子节点里第一个叫 `code` 的。
     func child(_ code: String) -> DMAPRawNode? {

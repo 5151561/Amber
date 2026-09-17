@@ -423,7 +423,7 @@ extension QQAPI {
     /// [实测 2026-09-09] 与 Python 版对同一份 payload 输出逐字节一致；拿它去打
     /// `musics.fcg` 能拿到正常 JSON（故意改坏则响应为空），见 `signedMusicu` 的注释。
     static func zzcSign(_ payload: Data) -> String {
-        let hex = Insecure.SHA1.hash(data: payload).map { String(format: "%02X", $0) }.joined()
+        let hex = Insecure.SHA1.hash(data: payload).hexString(uppercase: true)
         let chars = Array(hex)
         let part1 = [23, 14, 6, 36, 16, 7, 19].map { String(chars[$0]) }.joined()
         let part2 = [16, 1, 32, 12, 19, 27, 8, 5].map { String(chars[$0]) }.joined()

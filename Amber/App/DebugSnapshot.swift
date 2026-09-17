@@ -218,7 +218,7 @@ enum DebugSnapshot {
     /// 所有可见窗里的第一个这种视图（迷你窗开着时它不一定是 main window）。
     private static func firstView<V: NSView>(of type: V.Type) -> V? {
         for window in NSApp.windows where window.isVisible {
-            guard let root = window.contentView?.superview ?? window.contentView else { continue }
+            guard let root = window.contentView?.amberSuperview ?? window.contentView else { continue }
             if let hit = firstView(of: type, in: root) { return hit }
         }
         return nil
@@ -299,12 +299,12 @@ enum DebugSnapshot {
                 out += "  TOOLBAR items=\(toolbar.items.count) visible=\(toolbar.isVisible)\n"
                 for item in toolbar.items {
                     let v = item.view
-                    let r = v.flatMap { $0.window == nil ? nil : windowRect(of: $0) }
+                    let r = v.flatMap { $0.amberWindow == nil ? nil : windowRect(of: $0) }
                     out += "    ITEM \(item.itemIdentifier.rawValue) hidden=\(item.isHidden) label=\"\(item.label)\" view=\(v.map { String(describing: type(of: $0)) } ?? "-") frame=\(r.map(fmt) ?? "-")\n"
                 }
             }
             // 从主题框架（contentView.superview）往下走，标题栏与红绿灯也在里面
-            if let root = window.contentView?.superview ?? window.contentView {
+            if let root = window.contentView?.amberSuperview ?? window.contentView {
                 walk(root, depth: 1, into: &out)
             }
         }
@@ -316,7 +316,7 @@ enum DebugSnapshot {
         var extra = ""
         if view.isHidden { extra += " hidden" }
         // 淡入淡出（迷你窗的 rollover 就是改 alpha）光看 hidden 看不出来，顺手记一笔。
-        if view.alphaValue < 0.999 { extra += String(format: " alpha=%.2f", view.alphaValue) }
+        if view.alphaValue < 0.999 { extra += " alpha=\(view.alphaValue.fixed(2))" }
         if let field = view as? NSTextField { extra += " text=\"\(field.stringValue.prefix(40))\" font=\(field.font.map { "\($0.pointSize)" } ?? "-")" }
         if let button = view as? NSButton, !button.title.isEmpty { extra += " title=\"\(button.title)\"" }
         if let scroll = view as? NSScrollView {
@@ -335,7 +335,7 @@ enum DebugSnapshot {
 
     /// 窗口坐标、左上原点（AX 的 frame 报法减去窗口原点）。
     private static func windowRect(of view: NSView) -> CGRect {
-        guard let window = view.window else { return view.frame }
+        guard let window = view.amberWindow else { return view.frame }
         let r = view.convert(view.bounds, to: nil)
         let h = window.frame.height
         return CGRect(x: r.minX, y: h - r.maxY, width: r.width, height: r.height)
@@ -346,7 +346,7 @@ enum DebugSnapshot {
     }
     private static func fmt(_ p: CGPoint) -> String { "(\(num(p.x)), \(num(p.y)))" }
     private static func num(_ v: CGFloat) -> String {
-        v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v)
+        v == v.rounded() ? String(Int(v)) : v.fixed(1)
     }
 
     /// 每一扇可见窗各写一张：主窗落在 `<path>`，其余按窗口类名加后缀
@@ -360,7 +360,7 @@ enum DebugSnapshot {
         let ext = url.pathExtension.isEmpty ? "png" : url.pathExtension
         var main = true
         for window in NSApp.windows where window.isVisible {
-            guard let root = window.contentView?.superview ?? window.contentView,
+            guard let root = window.contentView?.amberSuperview ?? window.contentView,
                   root.bounds.width > 0, root.bounds.height > 0,
                   let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { continue }
             root.cacheDisplay(in: root.bounds, to: rep)
