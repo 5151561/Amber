@@ -54,6 +54,8 @@ enum MainMenu {
         static let miniPlayerLyrics = #selector(AppDelegate.amberToggleMiniPlayerLyrics(_:))
     }
 
+    // 只标这一个方法而不是整个 enum：`Action` 那组常量要在非隔离处比对。
+    @MainActor
     static func install(on app: NSApplication) {
         let main = NSMenu()
         main.addItem(appMenuItem(appName: app.amberDisplayName))
@@ -74,6 +76,7 @@ enum MainMenu {
 
     // MARK: - Amber
 
+    @MainActor
     private static func appMenuItem(appName: String) -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: appName)
