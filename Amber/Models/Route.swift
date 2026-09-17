@@ -19,7 +19,7 @@ import Foundation
 /// `key` 必须自己作用域化到「这一页的这一段」（见 `CatalogFeedModel.sectionKey` /
 /// `ArtistPageModel.sectionKey` 上的注释），不能直接拿 `CatalogSection.id`
 /// ——那个 id 只在单页内唯一。
-struct RouteCargo<Element>: Hashable {
+struct RouteCargo<Element: Sendable>: Hashable, Sendable {
     let items: [Element]
 
     init(_ items: [Element]) { self.items = items }
@@ -43,7 +43,7 @@ struct LocalTrackList: Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-enum Route: Hashable {
+enum Route: Hashable, Sendable {
     case playlist(Playlist)
     /// 资料库里的播放列表（本地自建 / 加进来的音源歌单 / 账号同步来的）
     case libraryPlaylist(id: String)

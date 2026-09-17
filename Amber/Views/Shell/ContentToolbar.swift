@@ -508,16 +508,12 @@ final class SearchPageController: ContentPageController {
         // 首屏是落地页（词条为空）。
         resultsPage.view.isHidden = true
 
-        results.$showsLanding
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] landing in self?.showLanding(landing) }
-            .store(in: &cancellables)
-        results.$recentSearches
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] terms in self?.landingPage.setRecents(terms) }
-            .store(in: &cancellables)
+        observers.observeNow({ [results] in results.showsLanding }) { [weak self] landing in
+            self?.showLanding(landing)
+        }
+        observers.observeNow({ [results] in results.recentSearches }) { [weak self] terms in
+            self?.landingPage.setRecents(terms)
+        }
     }
 
     override var pageToolbarItemIdentifiers: [NSToolbarItem.Identifier] {

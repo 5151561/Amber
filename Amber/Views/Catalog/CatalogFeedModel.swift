@@ -13,9 +13,10 @@ import SwiftUI
 /// **逻辑一字不改**地搬到一个 `ObservableObject` 上（计划 §2：状态层原样保留，
 /// AppKit 侧用 Combine 显式订阅）。视图由 `CatalogPageViewController` 负责。
 @MainActor
-final class CatalogFeedModel: ObservableObject {
+@Observable
+final class CatalogFeedModel {
 
-    @Published private(set) var state: CatalogPageState = .loading
+    private(set) var state: CatalogPageState = .loading
 
     let title: String
     /// 这一页在路由身份里的名字（`listen-now` / `browse` / `radio`）。
