@@ -62,6 +62,22 @@ final class NowPlayingCenter {
         }
     }
 
+    /// 把封面包成 `MPMediaItemArtwork`。
+    ///
+    /// **这里的 `@Sendable` 不是装饰，少了它一放歌就闪退。** MediaPlayer 在**自己的队列**上
+    /// 调 `requestHandler`（`com.apple.MediaPlayer.MPNowPlayingInfoCenter/accessQueue`，
+    /// 走的是 `-[MPMediaItemArtwork jpegDataWithSize:]`），而这个类是 `@MainActor`——
+    /// 写在方法里的闭包会**跟着继承主 actor 隔离**，Swift 6 语言模式给这种闭包插的动态隔离
+    /// 检查（`swift_task_isCurrentExecutor` → `dispatch_assert_queue`）在那条队列上直接 trap。
+    /// 症状是「一放歌就闪退」「一打开待播清单就闪退」，两者都只是因为那一下会写 nowPlayingInfo。
+    ///
+    /// `@Sendable` 断掉隔离继承，闭包就成了非隔离的、谁在哪条线程上调都行。捕获不必
+    /// 额外担保：`NSImage` 在 macOS 26 SDK 里已经是 `Sendable`（试着加
+    /// `nonisolated(unsafe)` 编译器会说这是多余的），MediaPlayer 那边也只**读**它。
+    private static func artworkBox(_ image: NSImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in image }
+    }
+
     func update(track: Track?, artwork: NSImage?, position: TimeInterval, duration: TimeInterval, rate: Double) {
         guard let track else {
             infoCenter.nowPlayingInfo = nil
@@ -80,13 +96,12 @@ final class NowPlayingCenter {
                 MPMediaItemPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
             ]
             if let artwork {
-                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
+                info[MPMediaItemPropertyArtwork] = Self.artworkBox(artwork)
             }
             infoCenter.nowPlayingInfo = info
         } else if let artwork, infoCenter.nowPlayingInfo?[MPMediaItemPropertyArtwork] == nil {
             // 封面晚到时补上
-            infoCenter.nowPlayingInfo?[MPMediaItemPropertyArtwork] =
-                MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
+            infoCenter.nowPlayingInfo?[MPMediaItemPropertyArtwork] = Self.artworkBox(artwork)
         }
         infoCenter.nowPlayingInfo?[MPMediaItemPropertyPlaybackDuration] = duration
         infoCenter.nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
