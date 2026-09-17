@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// 主窗的三列：侧栏 / 内容 / 面板。对应 Music 的 `MainSplitViewController`。
@@ -25,7 +24,6 @@ final class MainSplitViewController: NSSplitViewController {
     /// 换档靠交叉淡入。**不再是「一台 `NSHostingController` 换`rootView`」**——
     /// 待播清单换成 AppKit 之后它有滚动位置、选区、定时器，抽换 `rootView` 装不下。
     let inspectorContainer: InspectorContainerViewController
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
     /// 我们自己收合面板时置位，免得 `splitViewDidResizeSubviews` 把这一下回灌进模型。
     private var isSyncingInspector = false

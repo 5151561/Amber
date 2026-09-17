@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 /// 内容列的导航栈。对应 Music 的 `AMPNavigationController`（` 界面逻辑笔记`）。
 ///
@@ -16,7 +15,6 @@ final class ContentNavigationController: NSViewController {
 
     private let appState: AppState
     private var stack: [StackEntry] = []
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
     /// 栈顶变了要通知窗口重建工具栏。
     var onStackChanged: (() -> Void)?

@@ -1,4 +1,3 @@
-import Combine
 import SwiftUI
 
 // MARK: - 列表尺寸（全局偏好）

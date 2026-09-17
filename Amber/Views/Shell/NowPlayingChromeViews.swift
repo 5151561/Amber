@@ -1,6 +1,5 @@
 import AVKit
 import AppKit
-import Combine
 import SwiftUI
 
 /// 整窗播放器的四角玻璃胶囊与粒子层（Music 的 `HeaderLayoutView` + `FooterButtons`）。
@@ -75,7 +74,6 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     private var lyricsToken: String?
     private var lyricsTask: Task<Void, Never>?
 
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     // MARK: rollover（nowplaying spec §2.3）

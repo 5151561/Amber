@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - 详情页表格（歌单 / 专辑 / 本地列表）—— 计划阶段 4 批 B
@@ -582,9 +581,10 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
     /// 播放态 / 心水 / 入库 / 评分变了，重调一遍可见行的 `configure`。
     ///
     /// 用不了 `reloadData(forRowIndexes:columnIndexes:)`：它只重取**格子**，
-    /// 而曲目的一切都在行视图里（实测见文件头）。订阅一律
+    /// 而曲目的一切都在行视图里（实测见文件头）。订阅从前一律
     /// `.removeDuplicates().receive(on: DispatchQueue.main)`——`@Published` 在 willSet 发布，
-    /// 不落到下一轮读属性会慢一拍。
+    /// 不落到下一轮读属性会慢一拍；`Observations` 自带相邻去重、又在值落定之后才发，
+    /// 两样都不需要了。
     private func subscribeRowState() {
         let player = appState.player
         let library = appState.library

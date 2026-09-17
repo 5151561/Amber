@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// 「正在播放」的行为层，对着 Music 1.7 的实测结果搭：

@@ -1,6 +1,5 @@
 import AVKit
 import AppKit
-import Combine
 
 /// App 内的 MV 播放窗。
 ///
@@ -21,7 +20,6 @@ final class MVPlayerWindowController: NSWindowController, NSWindowDelegate {
 
     private let videoPlayer = AVPlayer()
     private let playerView = AVPlayerView()
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     /// 当前这扇窗在播的 MV（重复点同一支时不必重新取流）。

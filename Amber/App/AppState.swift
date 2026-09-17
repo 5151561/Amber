@@ -1,7 +1,6 @@
 import AppKit
 import AsyncAlgorithms
 import AVFoundation
-import Combine
 import Foundation
 import Observation
 import SwiftUI
@@ -80,9 +79,6 @@ final class AppState {
     /// 启动校验登录态要用；`providers` 里那份是同一个对象，存一次省得回头强转。
     private let qqAPI: QQAPI
     private let neteaseAPI: NeteaseAPI
-    private var cancellables = Set<AnyCancellable>()
-    /// 已经迁到 `@Observable` 的 store 走这里；还是 `@Published` 的仍走 `cancellables`。
-    /// 两者在整轮迁移期间并存，最后一批做完 `cancellables` 整个消失。
     private let observers = TaskBag()
     private var didLaunchSync = false
     /// MV 播放窗。第一支 MV 点开时才建，之后一直复用这一扇（见 `playMV`）。
@@ -370,7 +366,6 @@ final class AppState {
         // `receive(on:)` 是因为 `@Published` 在值改**之前**发、当场回读会拿到旧值。
         // 换成 `Observations` 之后事件在值落定之后才到，回读就是新值，那一跳不需要了；
         // 合三路也不必——三条各自观察、都调同一个重算，效果一样还少一层。
-        // （`AppSettings` 还是 `@Published`，批 7 才迁，那一条暂时仍走 Combine。）
         let seededQuality = effectiveQuality
         qqAPI.quality = seededQuality
         neteaseAPI.quality = seededQuality

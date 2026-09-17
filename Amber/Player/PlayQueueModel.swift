@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 // MARK: - 队列面板的视图模型
 //
@@ -70,7 +69,6 @@ final class PlayQueueModel {
 
     private let appState: AppState
     private var player: PlayerController { appState.player }
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     /// 四个分区。任何一个为空，面板就不 append 那个分区

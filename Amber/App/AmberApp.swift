@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// 应用入口。界面层换成 AppKit 骨架之后（design-ref/appkit-rewrite-plan.md 阶段 1），
@@ -43,7 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 非 private：`DebugSnapshot` 的`-dumpmenus` 要拿它当场装一份曲目菜单出来自证。
     let appState = AppState()
     private var windowController: MainWindowController?
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     // MARK: - 生命周期

@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 
 /// 歌词缓存：侧栏歌词与整窗歌词共用同一份取词结果。

@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// 窗口根。三件事：铺那层玻璃、把分栏/迷你播放器/整窗播放器/toast/艺人简介面板叠起来、
@@ -25,7 +24,6 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
     private let nowPlayingController: NowPlayingContainerViewController
     private var miniPlayer: NSView?
     private let toast = ToastView()
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
     private var nameAlertShown = false
 
