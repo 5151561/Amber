@@ -35,7 +35,7 @@ struct TopResultsCardGrid: View {
 /// 热门搜索结果卡：leading 封面 44 + 两行文本（标题 13 semibold / 副标题 11 secondary）
 /// + 尾标（艺人 chevron、歌曲 ellipsis）。
 struct TopResultsCard: View {
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     let item: TopResultsItem
 
     var body: some View {

@@ -59,7 +59,7 @@ extension AppState {
             }
         }
         return AnyView(base
-            .environmentObject(self)
+            .environment(self)
             .environment(player)
             .environment(library)
             .environment(downloads)

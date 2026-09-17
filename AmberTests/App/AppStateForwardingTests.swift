@@ -132,24 +132,33 @@ final class AppStateForwardingTests: XCTestCase {
         XCTAssertEqual(state.enabledProviders, [.qq])
     }
 
-    /// 子 store 的变化不惊动 AppState：一条 objectWillChange 从前会把所有
-    /// `@EnvironmentObject var appState` 的视图整棵重画。改名/播放/心水各自的观察者
-    /// 现在只订阅自己那份 store。
+    /// 子 store 的变化不惊动 AppState。
+    ///
+    /// 从前 AppState 是 `ObservableObject`，一条 `objectWillChange` 就把所有
+    /// `@EnvironmentObject var appState` 的视图整棵重画；这条测试是钉住「不转发」的。
+    ///
+    /// 换 `@Observable` 之后**这件事由语言本身保证**——没有大喇叭，谁读哪个属性就只对
+    /// 那个属性敏感。所以这里改成钉一条更接近本意的：动子 store 不会碰 AppState
+    /// **自己的任何属性**。
     @MainActor
-    func testSubStoreChangesDoNotForwardToAppState() {
+    func testSubStoreChangesDoNotForwardToAppState() async {
         let state = makeState()
-        let leaked = expectation(description: "子 store 的变化不该惊动 AppState")
-        leaked.isInverted = true
-        let cancellable = state.objectWillChange.sink { _ in leaked.fulfill() }
+        var touches = 0
+        let bag = TaskBag()
+        // AppState 自己那几位里挑三个有代表性的：导航、音源、面板。
+        bag.observeAny({ (state.sidebarSelection, state.selectedProvider, state.isInspectorOpen) }) {
+            touches += 1
+        }
+        await settle()
 
         state.qqLogin.quality = .high
         state.player.repeatMode = .one
         state.library.noteStarted(Track(id: "test:1", kind: .qq, title: "t",
                                        artistName: "a", artistId: nil, albumName: "",
                                        albumId: nil, artworkURL: nil, duration: 1))
+        await settle()
 
-        wait(for: [leaked], timeout: 0.5)
-        cancellable.cancel()
+        XCTAssertEqual(touches, 0, "子 store 的变化不该碰到 AppState 自己的属性")
     }
 
     /// 子 store 仍然各自发自己的通知（视图靠这个刷新）。

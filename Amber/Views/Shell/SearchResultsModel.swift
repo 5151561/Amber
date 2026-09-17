@@ -103,15 +103,10 @@ final class SearchResultsModel: CatalogPageModelProviding {
             self.commit(term: self.query, switchingScope: true)
         }
 
-        appState.$selectedProvider
-            .dropFirst()
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, self.scope == .online, !self.committedTerm.isEmpty else { return }
-                Task { await self.searchOnline(term: self.committedTerm) }
-            }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.selectedProvider }) { [weak self] _ in
+            guard let self, self.scope == .online, !self.committedTerm.isEmpty else { return }
+            Task { await self.searchOnline(term: self.committedTerm) }
+        }
     }
 
     // MARK: - 目录页引擎的口子

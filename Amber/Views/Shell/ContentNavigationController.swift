@@ -17,6 +17,7 @@ final class ContentNavigationController: NSViewController {
     private let appState: AppState
     private var stack: [StackEntry] = []
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
     /// 栈顶变了要通知窗口重建工具栏。
     var onStackChanged: (() -> Void)?
 
@@ -36,42 +37,33 @@ final class ContentNavigationController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        appState.$sidebarSelection
-            .removeDuplicates()
-            .sink { [weak self] item in
-                self?.setRoot(for: item ?? .search)
-            }
-            .store(in: &cancellables)
+        observers.observeNow({ [appState] in appState.sidebarSelection }) { [weak self] item in
+            self?.setRoot(for: item ?? .search)
+        }
 
         // 换音乐源：跟着音源走的那几页整页重建（见 `rebuildProviderRoots`）。
-        appState.$selectedProvider
-            .removeDuplicates()
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildProviderRoots() }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.selectedProvider }) { [weak self] _ in
+            self?.rebuildProviderRoots()
+        }
 
         // 「前往专辑 / 前往艺人」、目录卡片的 `NavigationLink` 垫片都只登记意图，
         // 入栈在这里做（逻辑与旧 `MainView.onChange(of: appState.pendingRoute)` 相同）。
         //
-        // **那一跳 `receive(on:)` 是必需的，不是顺手加的。** `@Published` 在 **willSet**
-        // 发布：`appState.push(route)` 那次赋值的顺序是「发布 → 订阅同步跑完 → 外层赋值
-        // 才把 route 写进存储」。少这一跳，下面那句 `pendingRoute = nil` 写完立刻被外层
-        // 赋值覆盖掉，字段永远停在最后一条路由上（`.trackGrid` 能带上百个 `Track`，
-        // 见 design-ref/reactive-ui-review.md §2.1）。推到下一轮，清空才落在赋值之后。
-        // 同一仓库里 `LibraryArtistsViewController` 的 `pendingLibraryArtistID` 早就是这么写的。
+        // **这里以前必须多挂一跳 `receive(on:)`**：`@Published` 在 **willSet** 发布，
+        // `appState.push(route)` 那次赋值的顺序是「发布 → 订阅同步跑完 → 外层赋值才把
+        // route 写进存储」，于是下面那句 `pendingRoute = nil` 写完立刻被外层赋值覆盖掉，
+        // 字段永远停在最后一条路由上（`.trackGrid` 能带上百个 `Track`，
+        // 见 design-ref/reactive-ui-review.md §2.1）。
         //
-        // 这一步只是把语义修对，**不是终态**：计划 §2 铁律 4 的终态是导航意图走响应链冒泡
-        // （或者至少换成 `PassthroughSubject`），别把「可变状态当一次性信箱」这条路留下来。
-        appState.$pendingRoute
-            .compactMap { $0 }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] route in
-                guard let self else { return }
-                self.push(route)
-                self.appState.pendingRoute = nil
-            }
-            .store(in: &cancellables)
+        // `Observations` 在值**落定之后**才发，这个坑从根上没了，那一跳也就不需要了。
+        //
+        // 但**仍然不是终态**：计划 §2 铁律 4 的终态是导航意图走响应链冒泡（或者至少换成
+        // 一条事件通道），别把「可变状态当一次性信箱」这条路留下来。
+        observers.observe({ [appState] in appState.pendingRoute }) { [weak self] route in
+            guard let self, let route else { return }
+            self.push(route)
+            self.appState.pendingRoute = nil
+        }
     }
 
     // MARK: - 栈

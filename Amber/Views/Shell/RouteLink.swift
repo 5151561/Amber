@@ -18,7 +18,7 @@ struct NavigationLink<Label: View>: View {
     private let route: Route
     private let label: Label
 
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
 
     init(value: Route, @ViewBuilder label: () -> Label) {
         self.route = value

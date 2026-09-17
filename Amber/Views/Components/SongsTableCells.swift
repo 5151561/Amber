@@ -69,7 +69,7 @@ final class SongsRichCellView: NSTableCellView {
         // 单元格读的是播放器、资料库与下载态；AppState 本体只为 ••• 菜单里的
         // 前往专辑/新建播放列表。四件各自注入，谁变了刷谁。
         let host = NSHostingView(rootView: SongsTableCellContent(state: state)
-            .environmentObject(appState)
+            .environment(appState)
             .environment(appState.player)
             .environment(appState.library)
             .environment(appState.downloads))
@@ -275,7 +275,7 @@ struct SongsTableCellContent: View {
     @Environment(LibraryStore.self) private var library
     @Environment(DownloadStore.self) private var downloads
     /// 只给 ••• 菜单用（前往专辑 / 新建播放列表这类要 `AppState` 的动作）。
-    @EnvironmentObject private var appState: AppState
+    @Environment(AppState.self) private var appState
     /// 单元格是 AppKit 表格里挂出来的 SwiftUI 子树，不在设置窗那棵环境里，走 shared
      private let settings = AppSettings.shared
 

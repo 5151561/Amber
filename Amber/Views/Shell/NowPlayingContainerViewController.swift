@@ -232,11 +232,9 @@ final class NowPlayingContainerViewController: NSViewController {
         super.viewDidLoad()
 
         // 抽屉档位跟着全局那一份走（真值在 `AppState.inspectorMode`）。
-        appState.$inspectorMode
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] mode in self?.applyInspectorMode(mode, animated: true) }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.inspectorMode }) { [weak self] mode in
+            self?.applyInspectorMode(mode, animated: true)
+        }
 
         // 封面：换歌就重取。`currentIndex` 与 `queue` 各发一次，中间那一拍两者还不同步，
         // 同一跳之后直接读 `currentTrack` 才是两者都落定的值（同 `MiniPlayerView.bind`）。

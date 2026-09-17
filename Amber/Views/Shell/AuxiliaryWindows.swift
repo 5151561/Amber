@@ -225,7 +225,7 @@ extension View {
     /// 所以这里按 `MainView` 那份清单一次注齐，而不是各窗各注各的。
     @MainActor
     func auxiliaryEnvironment(_ appState: AppState) -> some View {
-        environmentObject(appState)
+        environment(appState)
             .environment(appState.player)
             .environment(appState.library)
             .environment(appState.downloads)

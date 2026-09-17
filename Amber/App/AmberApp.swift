@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     private var windowController: MainWindowController?
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     // MARK: - 生命周期
 
@@ -59,16 +60,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // QQ 登录面板：状态在 AppState 上（音质气泡、侧栏账号按钮都只置这一位），
         // 呈现归 AuxiliaryWindows。旧版是 `.sheet(isPresented:)`，语义一一对应。
-        appState.$showingQQLogin
-            .removeDuplicates()
-            .sink { showing in
-                if showing {
-                    AuxiliaryWindows.shared.presentQQLogin()
-                } else {
-                    AuxiliaryWindows.shared.dismissQQLogin()
-                }
+        observers.observe({ [appState] in appState.showingQQLogin }) { showing in
+            if showing {
+                AuxiliaryWindows.shared.presentQQLogin()
+            } else {
+                AuxiliaryWindows.shared.dismissQQLogin()
             }
-            .store(in: &cancellables)
+        }
 
         configureDebugDestination()
 

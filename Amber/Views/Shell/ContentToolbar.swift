@@ -385,10 +385,9 @@ final class SearchPageFieldBinder: NSObject, NSSearchFieldDelegate {
         // 范围或当前音乐源改变时动态更新占位符
         observers.observeNow({ [model] in model.scope }) { [weak self] _ in self?.updatePlaceholder() }
 
-        appState.$selectedProvider
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.updatePlaceholder() }
-            .store(in: &cancellables)
+        observers.observeNow({ [appState] in appState.selectedProvider }) { [weak self] _ in
+            self?.updatePlaceholder()
+        }
 
         // 焦点请求信号（进入页面、Esc 重置后保持焦点等）
         // focusToken 是只增的计数信号，相邻去重咬不到它。
