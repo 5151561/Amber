@@ -132,7 +132,7 @@ final class AmberDatabase {
     /// 初始 schema 就是 v1。
     private static let baselineVersion: Int32 = 1
 
-    /// 升级链。**目前为空**——v1 是初始 schema，还没有任何一次升级。
+    /// 升级链。
     ///
     /// 每条在一个事务里跑：`BEGIN IMMEDIATE` → SQL → `PRAGMA user_version = n` → `COMMIT`。
     /// `user_version` 存在库头里、随事务原子提交，所以不会出现「表改了版本号没跟上」
@@ -148,7 +148,23 @@ final class AmberDatabase {
     /// 一次性把默认值物化进每一行，读出来的永远是真实值。
     ///
     /// 非加法的升级（改列类型、拆表）在跑之前先 `cp library.sqlite library.sqlite.bak-v<n>`。
-    private static let migrations: [(to: Int32, sql: String)] = []
+    private static let migrations: [(to: Int32, sql: String)] = [
+        // ── v2：`track.local_path`，一根**说好了要拆的**临时桥 ──────────────────────
+        //
+        // 「文件 › 导入…」进来的曲目，路径记在 `Track.localPath` 上，取流直接用它
+        // （`AppState` 的 providerResolver）、失联判定也扫它（`missingLocalTracks`）。
+        // 那一格计划里是要删的——本地性将来只由下载索引一处说了算，主库这边归
+        // `local_file` 表——但那是**阶段 6** 的事。
+        //
+        // 从阶段 3 起主库就是唯一真值源了，中间这三个阶段如果 `track` 表没有这一列，
+        // 表现是：本地导入的歌这一程还能放，**重启之后全部放不出来**（路径没地方存，
+        // 载入时一律是 nil）。加法升级是这里代价最小的过渡：阶段 6 拆 `localPath` 时
+        // 把这一列一并 `DROP`，那时它一个消费者都没有。
+        //
+        // 单开一步 v2 而不是改 v1 的建表语句：v1 已经在用户机器上跑过一次
+        // （阶段 2 的实弹演习），改它等于让那份已经存在的库永远拿不到这一列。
+        (to: 2, sql: "ALTER TABLE track ADD COLUMN local_path TEXT"),
+    ]
 
     /// 当前库的 `user_version`。
     func userVersion() throws -> Int32 {

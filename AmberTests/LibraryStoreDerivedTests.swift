@@ -159,8 +159,14 @@ final class LibraryStoreDerivedTests: XCTestCase {
         XCTAssertNotNil(restored.albumAddedDate(for: album))
     }
 
+    /// 老存档只有曲目的 addedAt（没有 albumAddedAt 键）：回落取碟内曲目的最大值。
+    ///
+    /// **回落算在哪儿变了，断言一个字没改。** 从前它是 `albumAddedDate(for:)` 里
+    /// 每问一次就扫一遍 `libraryTracks` 的 O(n) 兜底（「最近添加」一屏 40 张碟 = 40 遍全表扫）；
+    /// 现在迁移时算一次、写死进 `library_album.added_at`，运行期那段兜底删掉了。
+    /// fixture 里那个手算的 `timeIntervalSinceReferenceDate` 仍然有效——
+    /// SQLite 这边存的也是同一个纪元的 REAL 秒数（见 `SQLBindable` 对 `Date` 那条扩展）。
     func testAlbumAddedDateFallsBackToTracks() throws {
-        // 老存档只有曲目的 addedAt（没有 albumAddedAt 键）：回落取碟内曲目的最大值。
         // 注意 JSONEncoder 对 Date 的默认编码是「2001 参考日期以来的秒数」。
         let added = Date(timeIntervalSinceNow: -86_400).timeIntervalSinceReferenceDate
         let json = """
@@ -204,8 +210,12 @@ final class LibraryStoreDerivedTests: XCTestCase {
         XCTAssertFalse(makeStore().isFavoriteArtist(artist))
     }
 
+    /// 旧存档没有 `favoriteArtists` 键：迁移不能坏，其余字段照常搬进库里。
+    ///
+    /// 同构地搬了家：缺键 → 对应那张表 0 行。从前这条守的是 `Storage` 里一串
+    /// `decodeIfPresent`，现在守的是 `LegacyLibraryArchive` 那 17 个可选字段——
+    /// 它们的可选性表达的是「这个键可能根本不在文件里」，不是「这个值可以为空」。
     func testLegacyArchiveWithoutFavoriteArtistsDecodes() throws {
-        // 旧存档没有 `favoriteArtists` 键：解码不能坏，其余字段照常读出来。
         let json = """
         {"favorites":[],"recents":[],"favoriteAlbums":["qq:a1"]}
         """
@@ -269,6 +279,12 @@ final class LibraryStoreDerivedTests: XCTestCase {
         XCTAssertFalse(store.isAlbumInLibrary(album))
     }
 
+    /// 启动载入时清掉没有曲目的本地幽灵碟。
+    ///
+    /// **这条规则留在 `load()` 里，没有搬进迁移器。** 计划里说把它写成迁移末尾一条
+    /// `DELETE … WHERE NOT EXISTS`，但那样只管得着「从 JSON 迁过来的那一刻」——
+    /// 这条用例走的正是另一条路：库早就建好了，之后才加进一张空的本地碟、退出、重开，
+    /// 迁移一次都不会再跑。语义一字不改，只是清完顺手把表里那几行也删掉。
     func testOrphanLocalAlbumPrunedOnLoad() {
         let store = makeStore()
         let localAlbum = Album(id: Album.localIDPrefix + "ghost", kind: .qq, name: "幽灵碟",

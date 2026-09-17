@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import Foundation
 
@@ -39,10 +38,26 @@ struct LibraryChange: OptionSet, Sendable {
     static let suggestLess = LibraryChange(rawValue: 1 << 10)
 }
 
-/// 本地资料库：资料库歌曲与专辑 + 心水 + 最近播放，JSON 持久化到 Application Support。
+/// 本地资料库：资料库歌曲与专辑 + 心水 + 最近播放，落在 `library.sqlite` 主库里。
 ///
 /// Music.app 把「添加到资料库」与「心水」当成两件事：
 /// 前者决定专辑页用哪种形态（有星级 / 只有加号），后者只是行首那颗星。
+///
+/// ## 内存模型与表的关系
+///
+/// 下面那 28 个 `@Published` 全部保留，**内存这一份是真值，表跟着它镜像**。
+/// 启动时一趟 SELECT 把它们填满，之后每一次改动当场往对应的那几行写一笔定向写。
+///
+/// 从前这里是「整份 `Storage` 编码成 JSON、防抖 500 ms、`.atomic` 覆盖原文件」。
+/// 换掉它的理由按重要性排：
+///
+/// 1. **那条覆盖路径会毁数据。** 载入是 `try?` + `guard else { return }`：一个 enum case
+///    解不出来就静默空库，随后用户随手点个心水触发一次写，空快照把原文件整个盖掉。
+///    现在「读不出来」由 `AmberDatabaseMigration` 在建库那一步就拦下（旧 JSON 一个字不动、
+///    弹阻塞式警告），而写入是定向的——没有任何一条语句能用一份空快照覆盖全库。
+/// 2. **写放大随规模爆炸。** 一次播放记两笔账（起播顶「最近播放」、曲末 +1 播放次数），
+///    中间隔着一整首歌，500 ms 防抖合并不了，于是每首歌两次整份重写。
+///    现在曲末那一笔是一条单行 UPSERT。
 @MainActor
 final class LibraryStore: ObservableObject {
 
@@ -131,9 +146,8 @@ final class LibraryStore: ObservableObject {
     /// §10.10.2）。所以这里只由两处写：取流取不到文件时 `markFileMissing`，
     /// 以及用户主动发起的批量查找 `missingLocalTracks()`。
     ///
-    /// **故意不落盘**，`Storage` 里也不加这个键：文件在不在是磁盘此刻的事实，不是资料库属性。
-    /// 存进 library.json 只会带出「上次退出时盘没插、这次启动盘插着却还标着感叹号」这种
-    /// 陈旧假象。
+    /// **故意不落盘**，主库里连表都不建：文件在不在是磁盘此刻的事实，不是资料库属性。
+    /// 存下来只会带出「上次退出时盘没插、这次启动盘插着却还标着感叹号」这种陈旧假象。
     ///
     /// 与 `uncheckedTrackIDs` 同性质地**不是**`@Published`：歌曲表每一行都要查一次
     /// `isFileMissing`，做成`@Published` 只会让整页在滚动时白重画；改动自己手动发一声。
@@ -172,67 +186,32 @@ final class LibraryStore: ObservableObject {
         changeSubject.send(change)
     }
 
-    private struct Storage: Codable {
-        var favorites: [Track] = []
-        var recents: [Track] = []
-        /// 后加的字段：旧文件里没有，解码时用 decodeIfPresent 回落到空值。
-        var favoriteAlbums: [String]?
-        /// 同上，后加的可选字段：旧文件里没有 `favoriteArtists` 键，解码回落到 nil。
-        var favoriteArtists: [String]?
-        var ratings: [String: Int]?
-        var libraryTracks: [Track]?
-        var libraryAlbums: [Album]?
-        var playCounts: [String: Int]?
-        var skipCounts: [String: Int]?
-        var addedAt: [String: Date]?
-        var lastPlayedAt: [String: Date]?
-        var lastSkippedAt: [String: Date]?
-        var albumAddedAt: [String: Date]?
-        var playlists: [LibraryPlaylist]?
-        var dismissedAccountPlaylists: [String]?
-        /// 后加的可选字段：旧文件里没有这个键，解码回落到 nil ＝ 全部勾选。
-        var uncheckedTracks: [String]?
-        /// 同上，后加的可选字段：「减少推荐」的本地镜像（见 `suggestLessTrackIDs`）。
-        var suggestLessTracks: [String]?
-        var suggestLessArtists: [String]?
-        /// 最近播放的容器台账（见 `RecentContainer`）。**必须可选**：要能分出
-        /// 「旧存档根本没有这个键」（按老规则回灌一份，货架不至于空着）与
-        /// 「新存档、台账确实是空的」（什么都不回灌）。
-        var recentContainers: [RecentContainer]?
-    }
-
-    private let fileURL: URL
-    /// 待落盘的防抖任务：每次改动重新计时，到期才真写一次。
-    private var pendingSave: Task<Void, Never>?
-    private var terminationObserver: (any NSObjectProtocol)?
-    /// 写盘防抖时长。连点星级、整张碟入库这种一串连续改动会并成一次写；
-    /// 半秒短到「改完随手退出」几乎必然已经落盘，真没落也有 willTerminate 兜底。
-    private static let saveDebounce: UInt64 = 500_000_000
-    /// 串行写盘队列：防抖到期的异步写与 flushNow 的同步写共用一条，
-    /// 避免旧快照后到、把新数据盖回去。
-    private static let writeQueue = DispatchQueue(label: "Amber.LibraryStore.write", qos: .utility)
+    /// 主库连接。
+    ///
+    /// **nil ＝ 开库这一步就失败了**（磁盘满、目录没权限）。此时内存这一份照常能用，
+    /// 只是这一程的改动落不了盘——比拿一份空库把用户的东西覆盖掉好得多。
+    /// App 里走不到这里：`AppState` 先一步跑迁移，失败会弹阻塞式警告并且不以空库启动。
+    private let database: AmberDatabase?
 
     /// `directory` 供测试注入临时目录；默认落`~/Library/Application Support/Amber/`。
     init(directory: URL? = nil) {
-        let support = directory
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                .first!.appendingPathComponent("Amber", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        fileURL = support.appendingPathComponent("library.json")
+        // 开库之前先把迁移跑到：库不在就从旧 JSON 造一份，JSON 也不在就是一个空库。
+        //
+        // **`mediaFolder` 原样跟着 `directory` 走**，这一条不能省：它的默认值是
+        // 设置里那个「媒体」文件夹，而测试注入的是临时目录——不传的话，几十条用例
+        // 会一齐去读开发者本机真实的 `~/Music/Amber/媒体/index.json`，
+        // 把十几条真实的本机文件灌进一个临时库里。测试里注入的那个目录同时当媒体夹用，
+        // 与 `DownloadStore(directory:)` 的约定一致。
+        //
+        // 生产路径上 `AppState` 已经先跑过一次（那一次才有窗口可以弹错），
+        // 所以这里永远撞上「库已存在」那条幂等分支，`try?` 吞掉的只可能是测试里的畸形目录。
+        try? AmberDatabaseMigration.runIfNeeded(directory: directory, mediaFolder: directory,
+                                                renameLegacyOnSuccess: true)
+        database = try? AmberDatabase.shared(directory: directory)
         load()
-        // 防抖写盘的兜底：退出前把还没到期的那次改动同步落下去。
-        // 通知在主线程投递，queue 传 nil 保证同步执行（走 .main 队列会排到退出之后）。
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.flushNow() }
-        }
-    }
-
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
+        // **没有 willTerminate 观察者了。** 从前那一个是防抖写盘的兜底（退出前把还没到期
+        // 的那次改动同步落下去）；现在每一次改动当场落库，没有「还没写的」。
+        // 退出前唯一要收的是 WAL 旁文件，那一处观察者归 `AmberDatabase` 自己（三个 store 合一处）。
     }
 
     // MARK: - 资料库
@@ -242,7 +221,11 @@ final class LibraryStore: ObservableObject {
     func addToLibrary(_ track: Track) {
         guard insert(track) else { return }
         onTracksAdded?([track])
-        save()
+        persist("入库") { db in
+            try self.moveToFront([track], of: .library, in: db)
+            // `insert` 刚记下的添加时间。
+            try self.persistStat(id: track.id, in: db)
+        }
         notify(.tracks)
     }
 
@@ -262,10 +245,16 @@ final class LibraryStore: ObservableObject {
         // 退库会顺带动到播放列表 / 心水 / 勾选 / 空碟，各自动没动由两个 prune 自己报，
         // 别在这里一律按最坏情况发一整套（那就又退回「一个出口」了）。
         var change: LibraryChange = .tracks
-        change.formUnion(pruneAfterLibraryRemoval([track.id]))
+        let pruned = pruneAfterLibraryRemoval([track.id])
+        change.formUnion(pruned)
         change.formUnion(pruneEmptyAlbums())
         onTracksRemoved?([track.id])
-        save()
+        persist("退库") { db in
+            try self.remove([track.id], from: .library, in: db)
+            try self.persistLibraryRemoval([track.id], pruned, in: db)
+            // 空碟清理：`pruneEmptyAlbums` 已经把内存那份摘干净了，表跟着对齐。
+            if change.contains(.albums) { try self.pruneAlbumRows(in: db) }
+        }
         notify(change)
     }
 
@@ -278,7 +267,8 @@ final class LibraryStore: ObservableObject {
     /// 加专辑等于把整张碟的歌一并入库——与 Music.app 的「添加到资料库」一致。
     func addAlbumToLibrary(_ album: Album, tracks: [Track]) {
         var change: LibraryChange = []
-        if !libraryAlbumIDs.contains(album.id) {
+        let isNewAlbum = !libraryAlbumIDs.contains(album.id)
+        if isNewAlbum {
             libraryAlbumIDs.insert(album.id)
             libraryAlbums.insert(album, at: 0)
             rebuildAlbumIndex()
@@ -306,11 +296,23 @@ final class LibraryStore: ObservableObject {
             let stampedTrack = stamped(track, with: album)
             if insert(stampedTrack) { added.append(stampedTrack) }
         }
-        if !added.isEmpty {
-            onTracksAdded?(added.reversed())
+        // 于是数组最前面那一段的顺序就是 `added` 反过来——落库那一趟要的正是这一份。
+        let front: [Track] = added.reversed()
+        if !front.isEmpty {
+            onTracksAdded?(front)
             change.insert(.tracks)
         }
-        save()
+        persist("专辑入库") { db in
+            if isNewAlbum {
+                try self.prependAlbum(album, in: db)
+            } else if change.contains(.albums) {
+                // 已经在库里那张只补了封面 / 补了添加时间，位置不动。
+                // 用内存里那一份（封面可能刚被 `copy` 换过），不是传进来的 `album`。
+                if let stored = self.albumsByID[album.id] { try self.updateAlbum(stored, in: db) }
+            }
+            try self.moveToFront(front, of: .library, in: db)
+            for track in front { try self.persistStat(id: track.id, in: db) }
+        }
         notify(change)
     }
 
@@ -341,9 +343,14 @@ final class LibraryStore: ObservableObject {
         libraryTrackIDs.subtract(ids)
         libraryTracks.removeAll { ids.contains($0.id) }
         var change: LibraryChange = [.albums, .tracks]
-        change.formUnion(pruneAfterLibraryRemoval(ids))
+        let pruned = pruneAfterLibraryRemoval(ids)
+        change.formUnion(pruned)
         onTracksRemoved?(Array(ids))
-        save()
+        persist("专辑退库") { db in
+            try self.pruneAlbumRows(in: db)
+            try self.remove(ids, from: .library, in: db)
+            try self.persistLibraryRemoval(ids, pruned, in: db)
+        }
         notify(change)
     }
 
@@ -413,7 +420,11 @@ final class LibraryStore: ObservableObject {
     func createPlaylist(name: String, tracks: [Track] = []) -> LibraryPlaylist {
         let playlist = LibraryPlaylist.local(name: name, tracks: tracks)
         playlists.insert(playlist, at: 0)
-        save()
+        persist("新建列表") { db in
+            try db.run("UPDATE playlist SET position = position + 1")
+            try self.persistPlaylistRow(playlist, position: 0, in: db)
+            try self.persistPlaylistTracks(playlist, in: db)
+        }
         notify(.playlists)
         return playlist
     }
@@ -433,18 +444,28 @@ final class LibraryStore: ObservableObject {
         guard !trimmed.isEmpty, let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
         playlists[index].name = trimmed
-        save()
+        persist("列表改名") { db in
+            try db.run("UPDATE playlist SET name = ? WHERE id = ?", [trimmed, id])
+        }
         notify(.playlists)
     }
 
     /// 从资料库里删掉一份列表。账号同步来的要记一笔，否则下次同步又冒出来。
     func deletePlaylist(id: String) {
         guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
-        if playlists[index].origin == .account {
+        let wasAccountPlaylist = playlists[index].origin == .account
+        if wasAccountPlaylist {
             dismissedAccountPlaylistIDs.insert(id)
         }
         playlists.remove(at: index)
-        save()
+        persist("删列表") { db in
+            if wasAccountPlaylist {
+                try self.persistIDSet("dismissed_account_playlist", adding: [id], removing: [],
+                                      in: db)
+            }
+            // `playlist_track` 那边由 `ON DELETE CASCADE` 跟着走。
+            try db.run("DELETE FROM playlist WHERE id = ?", [id])
+        }
         notify(.playlists)
     }
 
@@ -454,17 +475,24 @@ final class LibraryStore: ObservableObject {
               playlists[index].isEditable, !tracks.isEmpty else { return }
         playlists[index].tracks.append(contentsOf: tracks)
         var change: LibraryChange = .playlists
+        var front: [Track] = []
         // 设置 › 高级 ›「添加与删除播放列表歌曲」：加进本地列表的歌同时进资料库
         //（Music 那条开关的正向语义）。关着时列表与资料库互不相干。
         if AppSettings.shared.values.syncPlaylistSongsWithLibrary {
             var added: [Track] = []
             for track in tracks.reversed() where insert(track) { added.append(track) }
             if !added.isEmpty {
-                onTracksAdded?(added.reversed())
+                front = added.reversed()
+                onTracksAdded?(front)
                 change.insert(.tracks)
             }
         }
-        save()
+        persist("列表加歌") { db in
+            // 追加到末尾，已有的行一条不动。
+            try self.appendPlaylistTracks(tracks, to: id, in: db)
+            try self.moveToFront(front, of: .library, in: db)
+            for track in front { try self.persistStat(id: track.id, in: db) }
+        }
         notify(change)
     }
 
@@ -472,7 +500,8 @@ final class LibraryStore: ObservableObject {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
         playlists[index].tracks.remove(atOffsets: offsets)
-        save()
+        let updated = playlists[index]
+        persist("列表删歌") { try self.persistPlaylistTracks(updated, in: $0) }
         notify(.playlists)
     }
 
@@ -480,7 +509,10 @@ final class LibraryStore: ObservableObject {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
         playlists[index].tracks.move(fromOffsets: offsets, toOffset: destination)
-        save()
+        // 重排没有增量写法——一次任意置换的最小描述就是新顺序本身，见 §position。
+        // 重写的范围是**这一份列表**，不是整张 `playlist_track`。
+        let updated = playlists[index]
+        persist("列表重排") { try self.persistPlaylistTracks(updated, in: $0) }
         notify(.playlists)
     }
 
@@ -494,7 +526,13 @@ final class LibraryStore: ObservableObject {
         guard !isPlaylistInLibrary(playlist) else { return }
         dismissedAccountPlaylistIDs.remove(playlist.id)
         playlists.insert(.from(playlist, origin: .added), at: 0)
-        save()
+        let added = playlists[0]
+        persist("音源歌单入库") { db in
+            try self.persistIDSet("dismissed_account_playlist", adding: [],
+                                  removing: [playlist.id], in: db)
+            try db.run("UPDATE playlist SET position = position + 1")
+            try self.persistPlaylistRow(added, position: 0, in: db)
+        }
         notify(.playlists)
     }
 
@@ -543,7 +581,13 @@ final class LibraryStore: ObservableObject {
         var working = playlists
         mutate(&working)
         playlists = working
-        save()
+        // 任意变换，除了整份镜像没有别的忠实做法（见 §position）。代价是歌单份数，
+        // 不是资料库大小；而且每份的曲目「顺序没变就一行不写」。
+        persist("整批改列表") { db in
+            try self.persistAllPlaylists(in: db)
+            // `syncAccountPlaylists` 的 `resetDismissed` 会在调这个函数之前减掉一批。
+            try self.persistDismissedPlaylists(in: db)
+        }
         notify(.playlists)
     }
 
@@ -554,9 +598,11 @@ final class LibraryStore: ObservableObject {
     }
 
     func toggleFavorite(_ track: Track) {
+        var nowFavorite = true
         if let index = favoriteTracks.firstIndex(where: { $0.id == track.id }) {
             favoriteTracks.remove(at: index)
             favoriteTrackIDs.remove(track.id)
+            nowFavorite = false
         } else {
             favoriteTracks.insert(track, at: 0)
             favoriteTrackIDs.insert(track.id)
@@ -565,7 +611,14 @@ final class LibraryStore: ObservableObject {
             // 反向那条由 `pruneAfterLibraryRemoval` 从资料库那头做）。
             if AppSettings.shared.values.syncFavoriteSongsWithLibrary { addToLibrary(track) }
         }
-        save()
+        // 入库那一笔由 `addToLibrary` 自己落（它有自己的事务），这里只管心水这一张表。
+        persist("心水") { db in
+            if nowFavorite {
+                try self.moveToFront([track], of: .favorite, in: db)
+            } else {
+                try self.remove([track.id], from: .favorite, in: db)
+            }
+        }
         // 入库那一声由 `addToLibrary` 自己发（它发的是 `.tracks`），这里只报心水这一位。
         notify(.favorites)
     }
@@ -591,8 +644,12 @@ final class LibraryStore: ObservableObject {
         // 手动发：这份集合不是 `@Published`，而歌曲表要靠这一声重画勾选列
         // （`LibrarySongsViewController.bind` 订的就是`objectWillChange`）。
         objectWillChange.send()
+        let added = updated.subtracting(uncheckedTrackIDs)
+        let removed = uncheckedTrackIDs.subtracting(updated)
         uncheckedTrackIDs = updated
-        save()
+        persist("勾选") { db in
+            try self.persistIDSet("unchecked_track", adding: added, removing: removed, in: db)
+        }
         notify(.checkmarks)
     }
 
@@ -733,6 +790,10 @@ final class LibraryStore: ObservableObject {
     /// 返回值：真改了任何一处没有。`relocateLocalTrack` 拿它决定要不要手动补一声通知。
     @discardableResult
     func updateTrack(id: String, transform: (inout Track) -> Void) -> Bool {
+        /// 改完的那一份。五处副本理应字字相同（这个函数每次都把五处一起改，就是为了这条），
+        /// 所以碰上的第一份就是权威，它就是要写进 `track` 表的那一行。
+        var canonical: Track?
+
         /// 改完返回新数组；这一份里没有要改的就返回 nil，好让调用处别去碰 `@Published`。
         func rewritten(_ tracks: [Track]) -> [Track]? {
             var changed = false
@@ -742,21 +803,23 @@ final class LibraryStore: ObservableObject {
                 transform(&edited)
                 guard edited != track else { return track }
                 changed = true
+                if canonical == nil { canonical = edited }
                 return edited
             }
             return changed ? updated : nil
         }
 
-        // 五处各属不同的细出口：改到哪一处就只叫醒读那一处的页面（改一条本地曲目的
-        // 标题，专辑网格没有任何理由重排一次）。`changed` 仍是「有没有任何一处真改了」，
-        // 语义与从前一字不差——它现在等价于「这次的变更集合非空」。
-        var change: LibraryChange = []
-        if let updated = rewritten(libraryTracks) { libraryTracks = updated; change.insert(.tracks) }
-        if let updated = rewritten(favoriteTracks) { favoriteTracks = updated; change.insert(.favorites) }
-        if let updated = rewritten(recentTracks) { recentTracks = updated; change.insert(.playbackStats) }
+        // 内存这五处照旧一起改：视图层读的是数组，一处不改那一页就还是旧值。
+        if let updated = rewritten(libraryTracks) { libraryTracks = updated }
+        if let updated = rewritten(favoriteTracks) { favoriteTracks = updated }
+        if let updated = rewritten(recentTracks) { recentTracks = updated }
         // 第五处：台账里的散曲格。其余 case 的载荷（专辑 / 歌单 / 艺人 / 心水）
         // 不含可变的曲目字段，改不到它们头上。不补这一处的话，本地文件改名或重新指路之后，
         // 货架上那张散曲卡还是旧标题、还指着老路。
+        //
+        // **表那边不用管这一格**：`recent_container` 里 `.track` 只存 `ref_id`，
+        // 曲目从 `track` 表取——底下那条 `persistTracks` 就把它一起改了。
+        // 这是「247 份副本收成 199 行」买下来的第一笔：第五处写入点没有了。
         var workingContainers = recentContainers
         var containersChanged = false
         for index in workingContainers.indices {
@@ -766,11 +829,9 @@ final class LibraryStore: ObservableObject {
             guard edited != stored else { continue }
             workingContainers[index] = .track(edited)
             containersChanged = true
+            if canonical == nil { canonical = edited }
         }
-        if containersChanged {
-            recentContainers = workingContainers
-            change.insert(.playbackStats)
-        }
+        if containersChanged { recentContainers = workingContainers }
         var workingPlaylists = playlists
         var playlistsChanged = false
         for index in workingPlaylists.indices {
@@ -779,14 +840,53 @@ final class LibraryStore: ObservableObject {
                 playlistsChanged = true
             }
         }
-        if playlistsChanged {
-            playlists = workingPlaylists
+        if playlistsChanged { playlists = workingPlaylists }
+
+        guard let canonical else {
+            // 一处都没真改（面板提交时五个字段里往往只动了一个，其余四个原样写回来）：
+            // 不发通知、不落盘，与从前一字不差。
+            return false
+        }
+        let change = relationMask(of: id)
+        persist("改曲目") { try self.persistTracks([canonical], in: $0) }
+        notify(change)
+        return true
+    }
+
+    /// 这个 id 落在哪几张关系表里 → 这一次改动该叫醒哪几位。
+    ///
+    /// **掩码语义从「哪几个数组真变了」改成了「id 落在哪几张关系表」。** 两者等价的前提是
+    /// 「同一首歌在各处的副本字字相同」——那正是 `updateTrack` 存在的理由，也是它每次都
+    /// 把各处一起改的原因。于是「这一份里那条记录变了」⟺「这一份里有这条记录，
+    /// 且这次改动不是空操作」，而后者调用方已经判过了（`canonical` 非 nil 才走到这儿）。
+    ///
+    /// 为什么值得改：曲目字段从五份副本收成了一行，「哪几个数组变了」这个问法的载体
+    /// 正在消失，而「这首歌在哪几张表里」问的是同一件事，且以后不依赖内存数组还在不在。
+    private func relationMask(of id: String) -> LibraryChange {
+        guard let db = database?.sqlite else { return [] }
+        func exists(_ sql: String) -> Bool {
+            ((try? db.value(sql, [id], { $0.int(0) })) ?? 0) != 0
+        }
+        var change: LibraryChange = []
+        if exists("SELECT EXISTS(SELECT 1 FROM library_track WHERE track_id = ?)") {
+            change.insert(.tracks)
+        }
+        if exists("SELECT EXISTS(SELECT 1 FROM favorite_track WHERE track_id = ?)") {
+            change.insert(.favorites)
+        }
+        if exists("SELECT EXISTS(SELECT 1 FROM playlist_track WHERE track_id = ?)") {
             change.insert(.playlists)
         }
-        let changed = !change.isEmpty
-        if changed { save() }
-        notify(change)
-        return changed
+        // 逐曲历史与台账里的散曲格合报 `.playbackStats`——那一位罩着的几份本来就是
+        // 同一次记账一起动的，拆开只会逼每个消费方写两条一模一样的订阅。
+        if exists("SELECT EXISTS(SELECT 1 FROM recent_track WHERE track_id = ?)")
+            || exists("""
+                SELECT EXISTS(SELECT 1 FROM recent_container
+                              WHERE kind = 'track' AND ref_id = ?)
+                """) {
+            change.insert(.playbackStats)
+        }
+        return change
     }
 
     /// 重新指路：把这条曲目的 `localPath` 改到新位置（用户在「查找」面板里选的那份文件，
@@ -856,8 +956,12 @@ final class LibraryStore: ObservableObject {
         let updated = on ? suggestLessTrackIDs.union(ids) : suggestLessTrackIDs.subtracting(ids)
         guard updated != suggestLessTrackIDs else { return }
         objectWillChange.send()
+        let added = updated.subtracting(suggestLessTrackIDs)
+        let removed = suggestLessTrackIDs.subtracting(updated)
         suggestLessTrackIDs = updated
-        save()
+        persist("减少推荐") { db in
+            try self.persistIDSet("suggest_less_track", adding: added, removing: removed, in: db)
+        }
         notify(.suggestLess)
     }
 
@@ -867,7 +971,10 @@ final class LibraryStore: ObservableObject {
         guard updated != suggestLessArtistIDs else { return }
         objectWillChange.send()
         suggestLessArtistIDs = updated
-        save()
+        persist("减少推荐（艺人）") { db in
+            try self.persistIDSet("suggest_less_artist", adding: on ? [artistID] : [],
+                                  removing: on ? [] : [artistID], in: db)
+        }
         notify(.suggestLess)
     }
 
@@ -876,12 +983,16 @@ final class LibraryStore: ObservableObject {
     }
 
     func toggleFavoriteAlbum(_ album: Album) {
-        if favoriteAlbumIDs.contains(album.id) {
-            favoriteAlbumIDs.remove(album.id)
-        } else {
+        let nowFavorite = !favoriteAlbumIDs.contains(album.id)
+        if nowFavorite {
             favoriteAlbumIDs.insert(album.id)
+        } else {
+            favoriteAlbumIDs.remove(album.id)
         }
-        save()
+        persist("喜爱专辑") { db in
+            try self.persistIDSet("favorite_album", adding: nowFavorite ? [album.id] : [],
+                                  removing: nowFavorite ? [] : [album.id], in: db)
+        }
         notify(.favoriteAlbums)
     }
 
@@ -892,12 +1003,16 @@ final class LibraryStore: ObservableObject {
     }
 
     func toggleFavoriteArtist(_ artist: Artist) {
-        if favoriteArtistIDs.contains(artist.id) {
-            favoriteArtistIDs.remove(artist.id)
-        } else {
+        let nowFavorite = !favoriteArtistIDs.contains(artist.id)
+        if nowFavorite {
             favoriteArtistIDs.insert(artist.id)
+        } else {
+            favoriteArtistIDs.remove(artist.id)
         }
-        save()
+        persist("收藏艺人") { db in
+            try self.persistIDSet("favorite_artist", adding: nowFavorite ? [artist.id] : [],
+                                  removing: nowFavorite ? [] : [artist.id], in: db)
+        }
         notify(.favoriteArtists)
     }
 
@@ -912,7 +1027,7 @@ final class LibraryStore: ObservableObject {
         } else {
             ratings[id] = clamped
         }
-        save()
+        persist("星级") { try self.persistRating(id: id, in: $0) }
         notify(.ratings)
     }
 
@@ -928,7 +1043,8 @@ final class LibraryStore: ObservableObject {
         guard playCounts[id] != nil || lastPlayedAt[id] != nil else { return }
         playCounts.removeValue(forKey: id)
         lastPlayedAt.removeValue(forKey: id)
-        save()
+        // 按 id 挂的一行账，单行 UPSERT（清掉的那两格写回 0 / NULL）。
+        persist("重设播放次数") { try self.persistStat(id: id, in: $0) }
         notify(.playbackStats)
     }
 
@@ -943,7 +1059,7 @@ final class LibraryStore: ObservableObject {
         guard AppSettings.shared.values.useListeningHistory else { return }
         skipCounts[track.id, default: 0] += 1
         lastSkippedAt[track.id] = Date()
-        save()
+        persist("跳过记账") { try self.persistStat(id: track.id, in: $0) }
         notify(.playbackStats)
     }
 
@@ -1062,6 +1178,7 @@ final class LibraryStore: ObservableObject {
     /// 顶上那条「使用听歌历史记录」的 guard 已经把台账一并罩住，不加第二条开关。
     func noteStarted(_ track: Track, container: RecentContainer? = nil) {
         guard AppSettings.shared.values.useListeningHistory else { return }
+        var containersChanged = false
         recentTracks.removeAll { $0.id == track.id }
         recentTracks.insert(track, at: 0)
         if recentTracks.count > 200 {
@@ -1081,8 +1198,15 @@ final class LibraryStore: ObservableObject {
                 updated = Array(updated.prefix(Self.recentContainerLimit))
             }
             recentContainers = updated
+            containersChanged = true
         }
-        save()
+        persist("起播记账") { db in
+            // 逐曲历史：把这一首挪到第一格，再截到 200。
+            try self.moveToFront([track], of: .recent, in: db)
+            try self.cap(.recent, to: 200, in: db)
+            // 台账没变就一个字都不写（同一份歌单接着听是常态）。
+            if containersChanged { try self.persistRecentContainers(in: db) }
+        }
         notify(.playbackStats)
     }
 
@@ -1118,43 +1242,155 @@ final class LibraryStore: ObservableObject {
         guard AppSettings.shared.values.useListeningHistory else { return }
         playCounts[track.id, default: 0] += 1
         lastPlayedAt[track.id] = Date()
-        save()
+        // **整个改造最核心的那一下**：一次记账 = 一条单行 UPSERT。
+        // 从前这里是「整份资料库重新编码一遍写盘」，而起播（`noteStarted`）与曲末
+        //（这里）是同一次播放的两笔账、中间隔着一整首歌——500 ms 防抖合并不了它们，
+        // 于是每首歌两次整份重写。
+        persist("播放记账") { try self.persistStat(id: track.id, in: $0) }
         notify(.playbackStats)
     }
 
-    // MARK: - 持久化
+    // MARK: - 载入
 
+    /// 载入成功了没有。
+    ///
+    /// **没成功就一个字都不许往回写。** 写入全是「按内存现值镜像」，而载入失败时内存
+    /// 是空的——一次 `updatePlaylists` 就能把 `playlist` 表整个清空。
+    /// 这一位是「读不出来永远不能变成写空的」在运行期这一侧的落点
+    ///（建库那一侧的落点在 `AmberDatabaseMigration`）。
+    private var isLoaded = false
+
+    /// 启动时把主库读进内存那几份 `@Published`。
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let storage = try? JSONDecoder().decode(Storage.self, from: data) else { return }
-        favoriteTracks = storage.favorites
-        recentTracks = storage.recents
-        // 再按去重键收一遍：存档里可能留着同一格的**两种身份**（同一份歌单从资料库页
-        // 与从目录页起播，去重键统一之前各记了一条）。不收的话它们要等到下次再听
-        // 那份歌单才会自己合并，在那之前货架上就是两张一模一样的卡。
-        recentContainers = Self.deduplicated(
-            storage.recentContainers ?? Self.backfilledContainers(from: recentTracks))
-        favoriteAlbumIDs = Set(storage.favoriteAlbums ?? [])
-        favoriteArtistIDs = Set(storage.favoriteArtists ?? [])
-        ratings = storage.ratings ?? [:]
-        libraryTracks = storage.libraryTracks ?? []
-        libraryAlbums = storage.libraryAlbums ?? []
-        playCounts = storage.playCounts ?? [:]
-        skipCounts = storage.skipCounts ?? [:]
-        addedAt = storage.addedAt ?? [:]
-        lastPlayedAt = storage.lastPlayedAt ?? [:]
-        lastSkippedAt = storage.lastSkippedAt ?? [:]
-        albumAddedAt = storage.albumAddedAt ?? [:]
-        playlists = storage.playlists ?? []
-        dismissedAccountPlaylistIDs = Set(storage.dismissedAccountPlaylists ?? [])
-        uncheckedTrackIDs = Set(storage.uncheckedTracks ?? [])
-        suggestLessTrackIDs = Set(storage.suggestLessTracks ?? [])
-        suggestLessArtistIDs = Set(storage.suggestLessArtists ?? [])
+        guard let db = database?.sqlite else { return }
+        do {
+            try loadFromDatabase(db)
+        } catch {
+            NSLog("[LibraryStore] 读库失败，这一程只读不写（库里那份一个字没动）：%@",
+                  String(describing: error))
+        }
+    }
+
+    /// 一趟 SELECT 填满内存模型。
+    ///
+    /// **先全读进局部变量，最后一次性赋值。** 读到一半抛错时一个属性都不许动过——
+    /// 半份内存模型会被随后的任何一次改动当成真值镜像回表里。
+    private func loadFromDatabase(_ db: SQLiteDatabase) throws {
+        // 曲目池：五张关系表存的都是 id，行本身只有这一份（原来是摊在五处的完整副本）。
+        var pool: [String: Track] = [:]
+        for track in try db.query(Self.trackSelect, [], { Self.decodeTrack($0) }) {
+            pool[track.id] = track
+        }
+        /// 关系表 → 曲目数组。取不到行的 id 直接跳过：五张表都对 `track(id)` 有外键，
+        /// 走到这一步只可能是有人拿 `sqlite3` 手工动过库。
+        func ordered(_ table: String) throws -> [Track] {
+            try db.query("SELECT track_id FROM \(table) ORDER BY position", [], { $0.text(0) })
+                .compactMap { pool[$0] }
+        }
+        let loadedLibraryTracks = try ordered("library_track")
+        let loadedFavoriteTracks = try ordered("favorite_track")
+        let loadedRecentTracks = try ordered("recent_track")
+
+        var loadedAlbums: [Album] = []
+        var loadedAlbumAddedAt: [String: Date] = [:]
+        for row in try db.query(Self.albumSelect, [], { Self.decodeAlbum($0) }) {
+            loadedAlbums.append(row.album)
+            // 缺键回落（扫碟内曲目 addedAt 的最大值）在**迁移那一刻**算好写死了，
+            // 运行期不再有那个每问一次就全表扫一遍的 O(n) 兜底。
+            if let stamped = row.addedAt { loadedAlbumAddedAt[row.album.id] = stamped }
+        }
+
+        var playlistTracks: [String: [Track]] = [:]
+        for (id, trackID) in try db.query(
+            "SELECT playlist_id, track_id FROM playlist_track ORDER BY playlist_id, position", [],
+            { ($0.text(0), $0.text(1)) }) {
+            guard let track = pool[trackID] else { continue }
+            playlistTracks[id, default: []].append(track)
+        }
+        let loadedPlaylists = try db.query(Self.playlistSelect, [], {
+            Self.decodePlaylist($0)
+        }).map { playlist -> LibraryPlaylist in
+            var result = playlist
+            result.tracks = playlistTracks[playlist.id] ?? []
+            return result
+        }
+
+        // 台账：再按去重键收一遍。库里那份**不会**有重复（`dedupe_key` 上有 UNIQUE），
+        // 收这一遍是为了与从前逐字同解——这条规则本身还要管旧存档迁过来的那一份。
+        let loadedContainers = Self.deduplicated(
+            try db.query("SELECT kind, ref_id, payload FROM recent_container ORDER BY position",
+                         [], { ($0.text(0), $0.optText(1), $0.optText(2)) })
+                .compactMap { RecentContainer.make(kind: $0.0, refID: $0.1, payload: $0.2,
+                                                   track: { pool[$0] }) })
+
+        var loadedPlayCounts: [String: Int] = [:]
+        var loadedSkipCounts: [String: Int] = [:]
+        var loadedAddedAt: [String: Date] = [:]
+        var loadedLastPlayedAt: [String: Date] = [:]
+        var loadedLastSkippedAt: [String: Date] = [:]
+        for stat in try db.query("""
+            SELECT track_id, play_count, skip_count, added_at, last_played_at, last_skipped_at
+            FROM track_stat
+            """, [], { (id: $0.text(0), play: Int($0.int(1)), skip: Int($0.int(2)),
+                        added: $0.date(3), played: $0.date(4), skipped: $0.date(5)) }) {
+            // **0 不进字典。** 从前这几本账是 `[String: Int]`，键只在真的记过一笔时才有
+            //（`resetPlayCount` 是 `removeValue`，不是置 0）。表里那一行是五本账合并来的，
+            // 「只记过添加时间」的曲目照样有一行、play_count 是 0。
+            // 把 0 也灌进字典的话，`resetPlayCount` 的「什么都没有就别白发通知」那条 guard 会失效。
+            if stat.play != 0 { loadedPlayCounts[stat.id] = stat.play }
+            if stat.skip != 0 { loadedSkipCounts[stat.id] = stat.skip }
+            if let value = stat.added { loadedAddedAt[stat.id] = value }
+            if let value = stat.played { loadedLastPlayedAt[stat.id] = value }
+            if let value = stat.skipped { loadedLastSkippedAt[stat.id] = value }
+        }
+
+        var loadedRatings: [String: Int] = [:]
+        for (id, value) in try db.query("SELECT id, value FROM rating", [],
+                                        { ($0.text(0), Int($0.int(1))) }) {
+            loadedRatings[id] = value
+        }
+        func idSet(_ table: String) throws -> Set<String> {
+            Set(try db.query("SELECT id FROM \(table)", [], { $0.text(0) }))
+        }
+        let loadedFavoriteAlbums = try idSet("favorite_album")
+        let loadedFavoriteArtists = try idSet("favorite_artist")
+        let loadedUnchecked = try idSet("unchecked_track")
+        let loadedSuggestLessTracks = try idSet("suggest_less_track")
+        let loadedSuggestLessArtists = try idSet("suggest_less_artist")
+        let loadedDismissed = try idSet("dismissed_account_playlist")
+
+        // ── 到这里一条 SQL 都不会再抛了，才开始动内存 ──────────────────────────────
+        libraryTracks = loadedLibraryTracks
+        favoriteTracks = loadedFavoriteTracks
+        recentTracks = loadedRecentTracks
+        libraryAlbums = loadedAlbums
+        albumAddedAt = loadedAlbumAddedAt
+        playlists = loadedPlaylists
+        recentContainers = loadedContainers
+        playCounts = loadedPlayCounts
+        skipCounts = loadedSkipCounts
+        addedAt = loadedAddedAt
+        lastPlayedAt = loadedLastPlayedAt
+        lastSkippedAt = loadedLastSkippedAt
+        ratings = loadedRatings
+        favoriteAlbumIDs = loadedFavoriteAlbums
+        favoriteArtistIDs = loadedFavoriteArtists
+        uncheckedTrackIDs = loadedUnchecked
+        suggestLessTrackIDs = loadedSuggestLessTracks
+        suggestLessArtistIDs = loadedSuggestLessArtists
+        dismissedAccountPlaylistIDs = loadedDismissed
         libraryTrackIDs = Set(libraryTracks.map(\.id))
         libraryAlbumIDs = Set(libraryAlbums.map(\.id))
         favoriteTrackIDs = Set(favoriteTracks.map(\.id))
+        isLoaded = true
 
-        // 清理没有曲目残留的空本地专辑（导入后被删除曲目的残留）
+        // 清理没有曲目残留的空本地专辑（导入后被删除曲目的残留）。
+        //
+        // **这一段留在载入路径上，没有搬去迁移器。** 计划里说把它写成迁移末尾一条
+        // `DELETE … WHERE NOT EXISTS`，但那样只管得着「从 JSON 迁过来的那一刻」：
+        // 库建好之后再加一张空的本地碟、退出、重开，迁移一次都不会再跑，那张幽灵碟
+        // 就永远留着了（`LibraryStoreDerivedTests.testOrphanLocalAlbumPrunedOnLoad`
+        // 走的正是这条路）。语义一字不改，只是顺手把表里那几行也删掉。
         let orphanLocalAlbums = libraryAlbums.filter { album in
             album.isLocal && !libraryTracks.contains { Self.belongs($0, to: album) }
         }
@@ -1163,9 +1399,65 @@ final class LibraryStore: ObservableObject {
             libraryAlbums.removeAll { orphanIDs.contains($0.id) }
             libraryAlbumIDs.subtract(orphanIDs)
             for id in orphanIDs { albumAddedAt.removeValue(forKey: id) }
+            persist("清理幽灵碟") { try self.pruneAlbumRows(in: $0) }
         }
 
         rebuildAlbumIndex()
+    }
+
+    private static let trackSelect = """
+        SELECT id, kind, title, artist_name, artist_id, album_name, album_id, artwork_url,
+               duration, track_number, disc_number, media_mid, lossless_available, local_path
+        FROM track
+        """
+
+    /// 列序就是上面那条 `SELECT` 的书写顺序（`Row` 按序号取，见它的注释）。
+    ///
+    /// 三态列一律走 `optInt` / `optBool`：`trackNumber` 是「音源没给」还是「第 0 首」、
+    /// `losslessAvailable` 是「不知道」还是「明确不是无损」，都是两件事。
+    private static func decodeTrack(_ row: Row) -> Track {
+        Track(id: row.text(0),
+              // 未知 rawValue 只可能来自手工改库。回落到默认音源而不是丢掉整首歌：
+              // 丢掉的话这首在库里的位置会静默空一格。
+              kind: ProviderKind(rawValue: row.text(1)) ?? .netease,
+              title: row.text(2), artistName: row.text(3), artistId: row.optText(4),
+              albumName: row.text(5), albumId: row.optText(6), artworkURL: row.optText(7),
+              duration: row.double(8), trackNumber: row.optInt(9).map(Int.init),
+              discNumber: row.optInt(10).map(Int.init), mediaMid: row.optText(11),
+              losslessAvailable: row.optBool(12), localPath: row.optText(13))
+    }
+
+    private static let albumSelect = """
+        SELECT id, kind, name, artist_name, artist_id, artwork_url, publish_date, track_count,
+               description, genre, album_type, added_at
+        FROM library_album ORDER BY position
+        """
+
+    private static func decodeAlbum(_ row: Row) -> (album: Album, addedAt: Date?) {
+        (Album(id: row.text(0), kind: ProviderKind(rawValue: row.text(1)) ?? .netease,
+               name: row.text(2), artistName: row.text(3), artistId: row.optText(4),
+               artworkURL: row.optText(5), publishDate: row.optText(6),
+               trackCount: Int(row.int(7)), description: row.optText(8),
+               genre: row.optText(9), albumType: row.optText(10)),
+         row.date(11))
+    }
+
+    private static let playlistSelect = """
+        SELECT id, name, origin, source_json, cover_url, description, created_at, added_at
+        FROM playlist ORDER BY position
+        """
+
+    /// 曲目那一格由调用方补（它们在 `playlist_track` 里，另一条 SELECT）。
+    private static func decodePlaylist(_ row: Row) -> LibraryPlaylist {
+        LibraryPlaylist(
+            id: row.text(0), name: row.text(1),
+            origin: LibraryPlaylist.Origin(rawValue: row.text(2)) ?? .local,
+            // `source` 整块存 JSON：它是音源歌单的原样快照，没有任何查询按它的内部字段筛。
+            source: row.optText(3).flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode(Playlist.self, from: $0) },
+            tracks: [], coverURL: row.optText(4), description: row.optText(5),
+            createdAt: Date(timeIntervalSinceReferenceDate: row.double(6)),
+            addedAt: Date(timeIntervalSinceReferenceDate: row.double(7)))
     }
 
     /// libraryAlbums 变了就重建两张查表。改动（入库/移出/载入）是用户级动作，
@@ -1183,61 +1475,381 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    /// 标脏并续期防抖：连续快速改动只在最后一次之后写一次盘。
-    private func save() {
-        pendingSave?.cancel()
-        pendingSave = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.saveDebounce)
-            guard !Task.isCancelled, let self else { return }
-            self.pendingSave = nil
-            // 值类型快照在主线程取，编码与写盘扔给后台队列。
-            let storage = self.snapshot()
-            let url = self.fileURL
-            Self.writeQueue.async { Self.write(storage, to: url) }
+    /// 退出前把 wal 并回主库。
+    ///
+    /// **名字与全部调用点保留。** 从前它是「立刻把防抖中的那份 JSON 同步写下去」；
+    /// 现在每一次改动当场落库，没有「还没写的」，剩下要收的只有 WAL 旁文件
+    ///（只拷走 `.sqlite` 会拿到一份陈旧的库，见`AmberDatabase.checkpoint()`）。
+    /// 测试里那几处「断言磁盘内容前先同步落一次」照旧成立，只是它现在落的是 wal。
+    func flushNow() { database?.checkpoint() }
+
+    // MARK: - 落库
+    //
+    // **内存那几份数组是真值，表跟着镜像。** 24 个改动点不各写各的 SQL，
+    // 全部经下面这十来个助手落库——散成 24 段裸 SQL 等于给自己留 24 次
+    //「忘了同步某一张表」的机会，而那一类 bug 编译器抓不到、测试也未必覆盖得全。
+    //
+    // ## position 列怎么处置
+    //
+    // **不变量只有一条：`ORDER BY position` 排出来的顺序 == 内存数组的顺序。**
+    // 不保证 position 等于数组下标，也不保证连续——删除留下的空洞原样留着。
+    //
+    // 于是「加到最前面」是一条 `UPDATE … SET position = position + k` 加 k 条单行
+    // `INSERT`，**不是**「整表删了重灌」。后者在 57 首时看不出区别，在 5 万首时就是把
+    // JSON 的整份重写原样搬进 SQLite，这次改造最主要的那条动机当场作废。
+    // 「删除」是一条 `DELETE … WHERE track_id = ?`，空洞不补：补空洞要重排它后面的
+    // 每一行，那又是一次全表写，而空洞对「按 position 排」没有任何影响。
+    //
+    // 三处例外，各有各的理由，都不是偷懒：
+    //
+    // - **`recent_container` 整表重灌。** 它的 `position` 是`INTEGER PRIMARY KEY`
+    //   （＝ rowid），逐行 +1 会在中途撞主键（0 → 1 时 1 还占着），躲开要先整体搬到负区
+    //   再搬回来，两趟全表 UPDATE。而这张表由 `recentContainerLimit` 硬封在 **50 行**、
+    //   只在**换容器**时才写（同一份歌单接着听一个字都不写，见 `noteStarted`），
+    //   50 行重灌比两趟 UPDATE 又便宜又清楚。上限是设计的一部分，不会长。
+    // - **`playlist_track` 的重排整份重写。** 一次任意置换的最小描述**就是**新顺序本身，
+    //   没有增量写法。重写的范围是**那一份列表**，不是整张表；而且先比一次 id 序列，
+    //   顺序没真变就一行不写（账号同步每次都会走到这儿，而它一首歌都没动过）。
+    // - **`updatePlaylists` 整份镜像。** 它收的是一个任意变换（摘一批、逐条改字段、
+    //   再补一批），除了整份镜像没有别的忠实做法。代价是**歌单份数**（本机 24），
+    //   不是资料库大小。
+    //
+    // 还有一条没走的路，写在这儿免得以后被当成「忘了优化」：前插那条 `UPDATE` 是 O(n) 行写，
+    // 换成「position 取 `MIN(position) - 1`」就是 O(1)。没换的理由是那样 position 会一路
+    // 往负数跑、与迁移器写下的 0…n−1 不是一副面孔，而前插只发生在用户点一下的路径上
+    // （起播那条热路径落在 `recent_track`，它有 200 行的硬上限）。真等到有人拿五万首的库
+    // 抱怨「加一首歌要卡一下」，再换不迟——不变量是同一条，换的时候不动别的代码。
+
+    /// 写库的唯一出口：一个事务 + 出错只记一笔。
+    ///
+    /// **不把错误抛给调用方**：24 个改动点全是「用户点了一下」的路径，磁盘满的时候让
+    /// 点一次心水抛个异常出去，界面层没有任何有意义的处置。内存那份照常是对的，
+    /// 而下面的助手全是「按内存现值整行写」、不是增量累加，所以下一次成功的写会把它补齐。
+    ///
+    /// `isLoaded` 那道闸见它自己的注释：**读不出来的时候一个字都不许往回写。**
+    private func persist(_ label: String, _ body: (SQLiteDatabase) throws -> Void) {
+        guard isLoaded, let db = database?.sqlite else { return }
+        do {
+            try db.transaction { try body(db) }
+        } catch {
+            NSLog("[LibraryStore] %@ 落库失败：%@", label, String(describing: error))
         }
     }
 
-    /// 立刻同步落盘。退出前兜底与测试断言磁盘内容时用。
-    func flushNow() {
-        pendingSave?.cancel()
-        pendingSave = nil
-        let storage = snapshot()
-        let url = fileURL
-        Self.writeQueue.sync { Self.write(storage, to: url) }
+    // MARK: 曲目主表
+
+    private static let trackUpsert = """
+        INSERT INTO track (id, kind, title, artist_name, artist_id, album_name, album_id,
+                           artwork_url, duration, track_number, disc_number, media_mid,
+                           lossless_available, album_key, local_path)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind, title = excluded.title, artist_name = excluded.artist_name,
+          artist_id = excluded.artist_id, album_name = excluded.album_name,
+          album_id = excluded.album_id, artwork_url = excluded.artwork_url,
+          duration = excluded.duration, track_number = excluded.track_number,
+          disc_number = excluded.disc_number, media_mid = excluded.media_mid,
+          lossless_available = excluded.lossless_available, album_key = excluded.album_key,
+          local_path = excluded.local_path
+        """
+
+    /// 曲目主表。**只 upsert，不删**——`track` 表故意不做 GC（见 schema 注释）：
+    /// 掉出「最近播放」窗口的歌行留着，上界是「这辈子见过的曲目数」，约 200 B/行。
+    ///
+    /// 五张关系表都对 `track(id)` 有外键，所以**任何关系表写入之前先过这一趟**，
+    /// 否则插进去的是一条外键立不住的行，当场抛。下面几个助手自己会调它，
+    /// 调用点不用记这件事——这正是「把同步收在十来处」要买下的东西。
+    private func persistTracks(_ tracks: [Track], in db: SQLiteDatabase) throws {
+        for track in tracks {
+            try db.run(Self.trackUpsert, [
+                track.id, track.kind.rawValue, track.title, track.artistName, track.artistId,
+                track.albumName, track.albumId, track.artworkURL, track.duration,
+                track.trackNumber, track.discNumber, track.mediaMid, track.losslessAvailable,
+                // 物化的 `album_key`：SQL 里不重算（`lower()` 只折 ASCII，算出来的
+                // 与 Swift 算的不是一个东西，专辑归位会静默错）。
+                Self.fallbackKey(for: track),
+                // 临时列，阶段 6 随 `Track.localPath` 一起拆（见 AmberDatabase 的 v2 注释）。
+                track.localPath,
+            ])
+        }
     }
 
-    private func snapshot() -> Storage {
-        Storage(favorites: favoriteTracks, recents: recentTracks,
-                favoriteAlbums: Array(favoriteAlbumIDs),
-                favoriteArtists: Array(favoriteArtistIDs), ratings: ratings,
-                libraryTracks: libraryTracks, libraryAlbums: libraryAlbums,
-                playCounts: playCounts, skipCounts: skipCounts,
-                addedAt: addedAt, lastPlayedAt: lastPlayedAt,
-                lastSkippedAt: lastSkippedAt, albumAddedAt: albumAddedAt,
-                playlists: playlists,
-                dismissedAccountPlaylists: Array(dismissedAccountPlaylistIDs),
-                uncheckedTracks: Array(uncheckedTrackIDs),
-                suggestLessTracks: Array(suggestLessTrackIDs),
-                suggestLessArtists: Array(suggestLessArtistIDs),
-                recentContainers: recentContainers)
+    // MARK: 三张有序关系表
+
+    /// 原来是三份数组的那三张表。
+    private enum TrackRelation: String {
+        case library = "library_track"
+        case favorite = "favorite_track"
+        case recent = "recent_track"
     }
 
-    private nonisolated static func write(_ storage: Storage, to url: URL) {
-        guard let data = try? JSONEncoder().encode(storage) else { return }
-        try? data.write(to: url, options: .atomic)
+    /// 把这几条挪到最前面（不在表里的就是纯粹的前插）。见上面 §position。
+    ///
+    /// `tracks` 的顺序就是它们在数组最前面的顺序。先逐条删一次是为了让这个助手
+    /// **幂等**：`noteStarted` 要的正是「已经在里面的那首挪到第一格」。
+    private func moveToFront(_ tracks: [Track], of relation: TrackRelation,
+                             in db: SQLiteDatabase) throws {
+        guard !tracks.isEmpty else { return }
+        try persistTracks(tracks, in: db)
+        let deleteSQL = "DELETE FROM \(relation.rawValue) WHERE track_id = ?"
+        for track in tracks { try db.run(deleteSQL, [track.id]) }
+        try db.run("UPDATE \(relation.rawValue) SET position = position + ?", [tracks.count])
+        let insertSQL = "INSERT INTO \(relation.rawValue) (track_id, position) VALUES (?,?)"
+        for (offset, track) in tracks.enumerated() { try db.run(insertSQL, [track.id, offset]) }
+    }
+
+    private func remove(_ ids: some Sequence<String>, from relation: TrackRelation,
+                        in db: SQLiteDatabase) throws {
+        let sql = "DELETE FROM \(relation.rawValue) WHERE track_id = ?"
+        for id in ids { try db.run(sql, [id]) }
+    }
+
+    /// 截顶：只留最前面 `limit` 条。
+    ///
+    /// 用 OFFSET 找到第 `limit` 条的 position 再删它后面的——position 允许有空洞
+    /// （删除不补洞，见 §position），所以**不能**写成 `WHERE position >= limit`。
+    /// 行数不足时子查询返回 NULL，`position > NULL` 求值是 NULL，一行都不删。
+    private func cap(_ relation: TrackRelation, to limit: Int, in db: SQLiteDatabase) throws {
+        try db.run("""
+            DELETE FROM \(relation.rawValue) WHERE position > (
+              SELECT position FROM \(relation.rawValue) ORDER BY position LIMIT 1 OFFSET ?
+            )
+            """, [limit - 1])
+    }
+
+    // MARK: 资料库专辑
+
+    private static let albumColumns = """
+        kind = ?, name = ?, artist_name = ?, artist_id = ?, artwork_url = ?, publish_date = ?,
+        track_count = ?, description = ?, genre = ?, album_type = ?, added_at = ?, album_key = ?
+        """
+
+    private func albumBinds(_ album: Album) -> [any SQLBindable] {
+        [album.kind.rawValue, album.name, album.artistName, album.artistId, album.artworkURL,
+         album.publishDate, album.trackCount, album.description, album.genre, album.albumType,
+         albumAddedAt[album.id],
+         Self.fallbackKey(name: album.name, artist: album.artistName,
+                          kind: album.kind, isLocal: album.isLocal)]
+    }
+
+    /// 新入库的一张碟：整表让一格，再插一行。
+    private func prependAlbum(_ album: Album, in db: SQLiteDatabase) throws {
+        try db.run("UPDATE library_album SET position = position + 1")
+        try db.run("""
+            INSERT INTO library_album (id, kind, name, artist_name, artist_id, artwork_url,
+                                       publish_date, track_count, description, genre, album_type,
+                                       added_at, album_key, position)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+            """, [album.id] + albumBinds(album))
+    }
+
+    /// 已经在库里那张：只按内存现值改字段，**position 一格不动**
+    ///（用户改过的评分、喜爱都挂在原条目上，位置也是原来的位置）。
+    private func updateAlbum(_ album: Album, in db: SQLiteDatabase) throws {
+        try db.run("UPDATE library_album SET \(Self.albumColumns) WHERE id = ?",
+                   albumBinds(album) + [album.id])
+    }
+
+    /// 把表里已经不在 `libraryAlbums` 里的行删掉（退库、清空碟、载入时清幽灵碟共用）。
+    ///
+    /// 不写成 `DELETE … WHERE id NOT IN (…)`：那个 IN 列表的长度是资料库里碟的张数。
+    /// 先读一遍 id（只有一列、张数级别）再逐条删，删的条数才是真正变了的那几条。
+    private func pruneAlbumRows(in db: SQLiteDatabase) throws {
+        let alive = Set(libraryAlbums.map(\.id))
+        for id in try db.query("SELECT id FROM library_album", [], { $0.text(0) })
+        where !alive.contains(id) {
+            try db.run("DELETE FROM library_album WHERE id = ?", [id])
+        }
+    }
+
+    // MARK: 播放列表
+
+    private static let playlistUpsert = """
+        INSERT INTO playlist (id, name, origin, source_json, cover_url, description,
+                              created_at, added_at, position)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name, origin = excluded.origin, source_json = excluded.source_json,
+          cover_url = excluded.cover_url, description = excluded.description,
+          created_at = excluded.created_at, added_at = excluded.added_at,
+          position = excluded.position
+        """
+
+    /// 一份列表的表头（不含曲目）。
+    private func persistPlaylistRow(_ playlist: LibraryPlaylist, position: Int,
+                                    in db: SQLiteDatabase) throws {
+        let sourceJSON = playlist.source
+            .flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+        try db.run(Self.playlistUpsert, [
+            playlist.id, playlist.name, playlist.origin.rawValue, sourceJSON,
+            playlist.coverURL, playlist.description, playlist.createdAt, playlist.addedAt,
+            position,
+        ])
+    }
+
+    /// 一份列表的曲目，整份重写。
+    ///
+    /// **顺序真变了才写**：先把表里那份 id 序列读出来比一比。账号同步每次都会走整份镜像，
+    /// 而它一首歌都没动过——不比这一下，每次同步都要把每份本地列表的曲目全重灌一遍。
+    private func persistPlaylistTracks(_ playlist: LibraryPlaylist,
+                                       in db: SQLiteDatabase) throws {
+        let existing = try db.query(
+            "SELECT track_id FROM playlist_track WHERE playlist_id = ? ORDER BY position",
+            [playlist.id], { $0.text(0) })
+        guard existing != playlist.tracks.map(\.id) else { return }
+        try persistTracks(playlist.tracks, in: db)
+        try db.run("DELETE FROM playlist_track WHERE playlist_id = ?", [playlist.id])
+        let sql = "INSERT INTO playlist_track (playlist_id, track_id, position) VALUES (?,?,?)"
+        // 主键是 (playlist_id, position) **不是** (playlist_id, track_id)：
+        // Music 允许同一首歌在一份列表里出现多次，`addTracks` 明写不去重。
+        for (position, track) in playlist.tracks.enumerated() {
+            try db.run(sql, [playlist.id, track.id, position])
+        }
+    }
+
+    /// 追加到一份列表末尾：已有的行一条不动。
+    ///
+    /// 与上面那个整份重写分开，就为了这一条常路——往一份几千首的列表里加一首歌，
+    /// 不该把那几千行重灌一遍。
+    private func appendPlaylistTracks(_ tracks: [Track], to id: String,
+                                      in db: SQLiteDatabase) throws {
+        guard !tracks.isEmpty else { return }
+        try persistTracks(tracks, in: db)
+        let last = try db.value(
+            "SELECT IFNULL(MAX(position), -1) FROM playlist_track WHERE playlist_id = ?",
+            [id], { Int($0.int(0)) }) ?? -1
+        let sql = "INSERT INTO playlist_track (playlist_id, track_id, position) VALUES (?,?,?)"
+        for (offset, track) in tracks.enumerated() {
+            try db.run(sql, [id, track.id, last + 1 + offset])
+        }
+    }
+
+    /// 整份镜像（表头 + 每份的曲目 + 摘掉数组里已经没有的）。
+    /// 只给 `updatePlaylists` 用，理由见 §position。
+    private func persistAllPlaylists(in db: SQLiteDatabase) throws {
+        let alive = Set(playlists.map(\.id))
+        for id in try db.query("SELECT id FROM playlist", [], { $0.text(0) })
+        where !alive.contains(id) {
+            // `playlist_track` 那边由 `ON DELETE CASCADE` 跟着走（`foreign_keys` 是开着的）。
+            try db.run("DELETE FROM playlist WHERE id = ?", [id])
+        }
+        for (position, playlist) in playlists.enumerated() {
+            try persistPlaylistRow(playlist, position: position, in: db)
+            try persistPlaylistTracks(playlist, in: db)
+        }
+    }
+
+    // MARK: 最近播放台账
+
+    /// 台账整表重灌。上限 50、只在换容器时写，理由见 §position。
+    private func persistRecentContainers(in db: SQLiteDatabase) throws {
+        try db.run("DELETE FROM recent_container")
+        let sql = """
+            INSERT INTO recent_container (position, dedupe_key, kind, ref_id, payload)
+            VALUES (?,?,?,?,?)
+            """
+        for (position, container) in recentContainers.enumerated() {
+            // `.track` 那一格只落 id，曲目本身从 `track` 表取——所以那行得先在。
+            // 台账里的散曲**不一定**在任何一张关系表里（听过一首没入库的散曲就是这样），
+            // 少了这一步，重开之后那张卡会整个消失。
+            if case .track(let track) = container { try persistTracks([track], in: db) }
+            let row = container.storageRow
+            try db.run(sql, [position, container.id, row.kind, row.refID, row.payload])
+        }
+    }
+
+    // MARK: 按 id 挂的账
+
+    /// 一首歌的播放统计，**一条单行 UPSERT**。
+    ///
+    /// 这是整个改造最核心的那一下：从前 `notePlayed` 一次记账要把整份资料库重编码
+    /// 一遍写盘，而起播与曲末是同一次播放的两笔账、中间隔着一整首歌，500 ms 防抖
+    /// 合并不了。现在是一行。
+    ///
+    /// 写的是**内存现值**而不是 `play_count = play_count + 1`：内存那份才是真值，
+    /// 而且这样这个助手对四个调用点（入库记添加时间、曲末 +1、跳过 +1、重设次数）
+    /// 是同一条语句，还顺手把一行漂了的账改回来。
+    ///
+    /// 这几本账**故意没有外键**：`lastPlayedAt` 的键数远多于资料库曲目数
+    /// （听过但没入库的、入库后又移出的都在里面），「账按 id 记，与在不在资料库里无关」
+    /// 是现有语义。
+    private func persistStat(id: String, in db: SQLiteDatabase) throws {
+        try db.run("""
+            INSERT INTO track_stat (track_id, play_count, skip_count, added_at,
+                                    last_played_at, last_skipped_at)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(track_id) DO UPDATE SET
+              play_count = excluded.play_count, skip_count = excluded.skip_count,
+              added_at = excluded.added_at, last_played_at = excluded.last_played_at,
+              last_skipped_at = excluded.last_skipped_at
+            """, [id, playCounts[id] ?? 0, skipCounts[id] ?? 0,
+                  addedAt[id], lastPlayedAt[id], lastSkippedAt[id]])
+    }
+
+    /// 星级，同样是按 id 挂的一行。清空（0 星）在内存里是 `removeValue`，这里就是 DELETE。
+    private func persistRating(id: String, in db: SQLiteDatabase) throws {
+        if let value = ratings[id] {
+            try db.run("""
+                INSERT INTO rating (id, value) VALUES (?,?)
+                ON CONFLICT(id) DO UPDATE SET value = excluded.value
+                """, [id, value])
+        } else {
+            try db.run("DELETE FROM rating WHERE id = ?", [id])
+        }
+    }
+
+    /// 几张只有 id 一列的集合表（心水专辑 / 收藏艺人 / 取消勾选 / 减少推荐 / 已删账号歌单）。
+    ///
+    /// 收的是**差集**而不是整份集合：取消勾选那一份可以很大（菜单里「取消勾选所选项」
+    /// 一次就能框住上千首），整份重灌等于又把写放大搬回来了。
+    /// 调用点本来就在算这个差集（`updated` 与旧集合一比），原样递进来即可。
+    private func persistIDSet(_ table: String, adding: some Sequence<String>,
+                              removing: some Sequence<String>, in db: SQLiteDatabase) throws {
+        let deleteSQL = "DELETE FROM \(table) WHERE id = ?"
+        for id in removing { try db.run(deleteSQL, [id]) }
+        // `OR IGNORE`：这几张表是**集合**，同一个 id 再加一次就是同一件事。
+        let insertSQL = "INSERT OR IGNORE INTO \(table) (id) VALUES (?)"
+        for id in adding { try db.run(insertSQL, [id]) }
+    }
+
+    /// 「用户主动删过的账号歌单」整份镜像。账号同步的 `resetDismissed` 会一次减掉一批，
+    /// 差集算起来比镜像还绕；而这份集合的大小是「用户删过几份账号歌单」，个位数。
+    private func persistDismissedPlaylists(in db: SQLiteDatabase) throws {
+        try db.run("DELETE FROM dismissed_account_playlist")
+        for id in dismissedAccountPlaylistIDs.sorted() {
+            try db.run("INSERT INTO dismissed_account_playlist (id) VALUES (?)", [id])
+        }
+    }
+
+    /// `pruneAfterLibraryRemoval` 在内存里做的那几件事，逐件落库。
+    ///
+    /// 传的是它**返回的那份 change**：两条「同步」开关关着时它一件都没做，
+    /// 这里也就一行都不许写——照最坏情况全写一遍的话，开关关着时表和内存当场对不上。
+    private func persistLibraryRemoval(_ ids: Set<String>, _ change: LibraryChange,
+                                       in db: SQLiteDatabase) throws {
+        if change.contains(.checkmarks) {
+            try persistIDSet("unchecked_track", adding: [], removing: ids, in: db)
+        }
+        if change.contains(.favorites) { try remove(ids, from: .favorite, in: db) }
+        if change.contains(.playlists) {
+            // 哪几份列表被动到了不再另记一笔：`persistPlaylistTracks` 顺序没变就一行不写，
+            // 于是「扫一遍本地列表」的代价是每份一条 SELECT，而写只落在真变了的那几份上。
+            for playlist in playlists where playlist.origin == .local {
+                try persistPlaylistTracks(playlist, in: db)
+            }
+        }
     }
 
     // MARK: - 资料库派生（艺人页）
 
-    /// 专辑的添加时间。优先取记录值；旧存档没有时回落这张碟里曲目 addedAt 的最大值，
-    /// 再没有（从未记过时间）返回 nil。
-    func albumAddedDate(for album: Album) -> Date? {
-        if let stamped = albumAddedAt[album.id] { return stamped }
-        return libraryTracks
-            .filter { Self.belongs($0, to: album) }
-            .compactMap { addedAt[$0.id] }
-            .max()
-    }
+    /// 专辑的添加时间。没有记录（从未记过时间）就是 nil。
+    ///
+    /// **那个 O(n) 的兜底没有了。** 从前这里缺键时会去扫一遍 `libraryTracks`、
+    /// 取碟内曲目 `addedAt` 的最大值，而「最近添加」那一页是逐张碟问的——一屏 40 张碟
+    /// 就是 40 遍全表扫。那条回落只为旧存档服务（它们没有 `albumAddedAt` 这个键），
+    /// 现在它搬进了迁移器：迁移时算一次，写死进 `library_album.added_at`。
+    func albumAddedDate(for album: Album) -> Date? { albumAddedAt[album.id] }
 
     /// 资料库专辑里属于这张碟的歌。判定见 `belongs(_:to:)`：**有`albumId` 就只认 id**，
     /// 没有的才按名字归位，且要艺人对得上、不跨本地/在线与音源。

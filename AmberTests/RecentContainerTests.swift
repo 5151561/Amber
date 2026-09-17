@@ -6,7 +6,7 @@ import XCTest
 /// 歌 → 格子的映射在**记账那一刻**就定下来，展示层不再按 `albumId` 反推分组。
 ///
 /// 两处宿主环境的坑照 `LocalFileMissingTests` 的两条防线躲开：
-/// - `LibraryStore` 注入临时目录，绝不碰真实的`~/Library/Application Support/Amber/library.json`；
+/// - `LibraryStore` 注入临时目录，绝不碰真实的`~/Library/Application Support/Amber/`；
 /// - 记账受「使用听歌历史记录」开关管，而那条开关读的是**真实**偏好（测试宿主就是
 ///   Amber 本身），所以整份存下来、跑完原样还回去。
 @MainActor
@@ -223,8 +223,17 @@ final class RecentContainerTests: XCTestCase {
     }
 
     // MARK: - 迁移：旧存档回灌，新存档不回灌
+    //
+    // 这两条用例现在钉的是 `AmberDatabaseMigration`：写一份旧 JSON 进临时目录、
+    // 开一个 store（构造时会把迁移跑到），断言台账是什么样。**fixture 内容一律不改。**
 
     /// 旧存档只有逐曲历史（没有 `recentContainers` 这个键）：按老规则回灌成专辑卡 / 散曲卡。
+    ///
+    /// **这条规则的家搬了，断言一个字没改。** 从前它守的是「`Storage.recentContainers`
+    /// 这个可选字段是 nil」，现在守的是 `AmberDatabaseMigration`——旧 JSON 里没有这个键
+    /// 就回灌一份写进 `recent_container` 表。fixture 的内容一个字节都没动：
+    /// 它本来就是一份「旧存档」，只是读它的人换了。守迁移器比守一个可选字段值钱得多，
+    /// 因为迁移只有一次机会。
     func testLegacyArchiveIsBackfilled() throws {
         // 同一张碟的两首 + 一首散曲：老规则是「albumId 去重、没有专辑的各成一格」。
         try writeArchive(LegacyArchive(recents: [
@@ -237,15 +246,23 @@ final class RecentContainerTests: XCTestCase {
     }
 
     /// 新存档里台账确实是空的（用户刚清空 / 一直没听）：**不**回灌。
-    /// `Storage.recentContainers` 做成可选就是为了分出这两种情况。
+    ///
+    /// 与上一条是一对，分的是「键根本不在」与「键在、值是空数组」。
+    /// `LegacyLibraryArchive.recentContainers` 做成可选就是为了分出这两种情况——
+    /// 压成同一种处置的话，用户清空一次「最近播放」，下次启动它就自己长回来了。
     func testEmptyContainersInArchiveAreNotBackfilled() throws {
         try writeArchive(CurrentArchive(recents: [makeTrack("1")], recentContainers: []))
         XCTAssertTrue(makeStore().recentContainers.isEmpty)
     }
 
-    // MARK: - 落盘往返
+    // MARK: - 经 recent_container 表往返
 
-    /// 六种 case 全走一遍编解码：合成的 Codable 能原样往返。
+    /// 六种 case 全走一遍 `recent_container` 表的往返。
+    ///
+    /// 走的是 `RecentContainer.storageRow` / `.make(kind:refID:payload:track:)` 那一对
+    /// （迁移器写进去用的也是同一对）。顺带钉住两件事：`.playlist` / `.album` / `.artist`
+    /// 那几个**故意是快照**的 case 的 payload 编码不变；`.track` 只落 id、
+    /// 曲目从 `track` 表取回来——哪怕那首散曲不在任何一张关系表里。
     func testContainersSurviveRoundTrip() {
         let track = makeTrack("9", albumId: nil, albumName: "")
         let containers: [RecentContainer] = [

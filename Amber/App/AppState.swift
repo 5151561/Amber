@@ -107,6 +107,17 @@ final class AppState: ObservableObject {
     /// 单元测试跑在 App 宿主进程里，`UserDefaults.standard` 就是`com.changlepan.Amber`
     /// 本人那份偏好，测试里随手改一下音质就会写进开发者真实的设置（见 `QQLoginStore`）。
     init(defaults: UserDefaults = .standard) {
+        // **必须在任何开库的 store 之前。** 四个 store 将来都开同一份 `library.sqlite`，
+        // 而「从旧 JSON 把库造出来」只有这一次机会——晚一步，第一个 store 就会先
+        // 建出一个空库，迁移器看见库在了就什么都不做，用户的资料库原地变空。
+        // 放在这里的第二个理由：只有这一处还有资格把失败**告诉用户**（见函数注释）。
+        //
+        // ⚠️ **这里的「之前」只管得着 init 体里那几行。** `loudness` / `trackInfo` /
+        // `audioOutput` 是带默认值的存储属性，Swift 会在 init 体**跑起来之前**就把它们造好。
+        // 这一阶段它们还各自读各自的 JSON，碰不到主库，所以现在是对的；
+        // 等 `TrackInfoStore` / `LoudnessStore` 并进主库（阶段 4）那一天，
+        // 它们的默认值初始化必须一起挪进 init 体里、挪到这一行后面。
+        Self.prepareDatabase()
         songsTable = SongsTableSettings(defaults: defaults)
         listViewSize = ListViewSizeStore(defaults: defaults)
         let neteaseAPI = NeteaseAPI()
@@ -567,6 +578,86 @@ final class AppState: ObservableObject {
 
     /// 音量的落盘键（0…1 的 Double，见 init 里的接线）。
     private static let volumeKey = "playerVolume"
+
+    // MARK: - 开库
+
+    /// 开库前那一次性的「旧 JSON → SQLite」。库已经在了就是一次空转。
+    ///
+    /// ## 失败怎么处置：**「读不出来」永远不能变成「写空的」**
+    ///
+    /// 这是这次改造顺手要堵的那个洞。从前 `LibraryStore.load()` 是`try?` +
+    /// `guard else { return }`：一个 enum case 解不出来 → 静默空库 → 用户随手点个心水
+    /// 触发一次写 → 空快照 `.atomic` **覆盖原文件** → 心水、评分、播放次数、
+    /// 几十份歌单一次全没。所以这里的每一条分支都宁可停下来问人。
+    ///
+    /// | 情形 | 处置 |
+    /// |---|---|
+    /// | `library.json` 不存在 | 正常：建一个空库照常启动 |
+    /// | `library.json` 在、非空、**解不动** | 改名 `.unreadable-<日期>` 留底 + 阻塞式警告，然后以空库启动 |
+    /// | 写库出错 / 自校验没过 | 阻塞式警告 + **退出**，JSON 一个字没动 |
+    ///
+    /// 后两者的区别在**磁盘上还有没有一份能用的真值**：解不动那一份已经证明这个版本
+    /// 的代码读不懂它，留在原地只会每次启动重试一遍同样的失败，所以改名留底、放行；
+    /// 而写库出错时 JSON 是**好的**，以空库启动等于让用户对着一个空资料库继续用，
+    /// 下一次写就把空的当成真的了——那一步绝不能迈出去。
+    private static func prepareDatabase() {
+        do {
+            try AmberDatabaseMigration.runIfNeeded(renameLegacyOnSuccess: true)
+        } catch let failure as AmberDatabaseMigration.Failure {
+            switch failure {
+            case .archiveUnreadable(let url, let underlying):
+                renameUnreadableArchive(url)
+                warn(title: "无法读取资料库",
+                     text: """
+                         Amber 读不懂 \(url.lastPathComponent) 里的内容，已经把它改名留在原处\
+                         （\(url.lastPathComponent).unreadable-…），一个字都没有改动。
+
+                         Amber 这次会以一个空的资料库启动。请把那个文件留着，别删——\
+                         里面是你的心水、评分、播放次数与全部播放列表。
+
+                         详细原因：\(underlying)
+                         """)
+            case .write, .validationFailed, .promoteFailed, .walNotCheckpointed:
+                warn(title: "无法建立资料库",
+                     text: """
+                         Amber 没能把资料库转成新格式，原来那几份 JSON 一个字都没有改动。
+
+                         为了不让你对着一个空的资料库继续用（那样下一次改动就会把空的\
+                         当成真的），Amber 这次不启动。腾出一些磁盘空间之后再打开一次即可。
+
+                         详细原因：\(failure)
+                         """)
+                // 这一步跑在 `app.run()` 之前，`NSApp.terminate` 那套收尾流程还没有
+                // 可收的东西（窗口、文档、willTerminate 观察者一个都还没建），直接退最干净。
+                exit(1)
+            }
+        } catch {
+            warn(title: "无法建立资料库", text: "\(error)")
+            exit(1)
+        }
+    }
+
+    /// 解不动的那份存档改名留底。失败不抛：留底是尽力而为，真改不动（权限）也只是
+    /// 下次启动再撞一次同样的警告，比因此起不来强。
+    private static func renameUnreadableArchive(_ url: URL) {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamped = url.deletingLastPathComponent().appendingPathComponent(
+            "\(url.lastPathComponent).unreadable-\(formatter.string(from: Date()))")
+        try? FileManager.default.moveItem(at: url, to: stamped)
+    }
+
+    /// 阻塞式警告。**必须是模态的**：它说的事用户不知情就继续用会丢数据，
+    /// 而这时候连主窗都还没建出来，没有别的地方能把话说出去。
+    private static func warn(title: String, text: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
 
     func syncAccountPlaylists(manual: Bool = false) async {
         // 设置 › 通用 ›「同步资料库」。关掉后不再把账号里的歌单往资料库里搬；

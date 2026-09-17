@@ -396,8 +396,11 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: archiveURL.path))
     }
 
-    /// 打开开关之后：三份 Application Support 的 JSON 改名留底，
-    /// 媒体夹的 `index.json` **原样留着**——它是媒体文件夹的自解释清单，不是 Amber 的存档。
+    /// 打开开关之后：改名只发生在 Application Support 那边，媒体夹的 `index.json`
+    /// **原样留着**——它是媒体文件夹的自解释清单，不是 Amber 的存档，
+    /// 换一台机器挂上这个文件夹还要靠它。
+    ///
+    /// （改名具体落到哪几份，见 `testRenameOnlyTouchesArchivesWhoseStoreHasMoved`。）
     func testRenameLegacyOnSuccessKeepsMediaManifest() throws {
         try write(LegacyLibraryArchive(), to: archiveURL)
         try write(TrackInfoArchiveFixture(), to: trackInfoURL)
@@ -406,7 +409,6 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         try migrate(renameLegacy: true)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: archiveURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: trackInfoURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: indexURL.path), "清单不改名")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: support.path)
         XCTAssertTrue(leftovers.contains { $0.hasPrefix("library.json.migrated-") }, "\(leftovers)")
@@ -769,4 +771,34 @@ final class AmberDatabaseMigrationTests: XCTestCase {
         // 歌单也在同一张表里。
         XCTAssertTrue(try match("开车").contains("playlist:local:P1"))
     }
+    // MARK: - 改名只能跟着 store 走
+
+    /// 打开改名开关之后，**只有 `library.json` 改名**；`trackinfo.json` 与 `loudness.json`
+    /// 原地不动。
+    ///
+    /// 改名的含义是「这份存档已经没人读了」。阶段 3 只有 `LibraryStore` 改读了 SQL，
+    /// 另外两个 store 仍各自读自己那份 JSON（`TrackInfoStore.init` / `LoudnessStore.init`
+    /// 里的 `fileURL`）——提前给它们改名，它们下次启动就读不到存档、当成空的从头开始，
+    /// 再把空的写回去。那正是这次改造要堵的「读不出来变成写空的」，只是换了个地方发生。
+    ///
+    /// [实测 2026-09-17] 三份一起改名跑过一次实机：`loudness.json` 从 15 条变成 6 条。
+    /// 所以这条断言钉的不是洁癖，是一次真的数据回退。阶段 4 把那两个 store 并进主库时，
+    /// 连同这条用例一起改。
+    func testRenameOnlyTouchesArchivesWhoseStoreHasMoved() throws {
+        try write(LegacyLibraryArchive(), to: archiveURL)
+        try write(TrackInfoArchiveFixture(), to: trackInfoURL)
+        try write(["qq:1": LoudnessEntry(lufs: -14.2, peakDB: -1.0, measuredAt: Date())],
+                  to: loudnessURL)
+
+        _ = try AmberDatabaseMigration.runIfNeeded(
+            directory: support, mediaFolder: media, renameLegacyOnSuccess: true)
+
+        let fm = FileManager.default
+        XCTAssertFalse(fm.fileExists(atPath: archiveURL.path), "library.json 该改名了")
+        XCTAssertTrue(fm.fileExists(atPath: trackInfoURL.path),
+                      "trackinfo.json 必须原地不动——TrackInfoStore 还在读它")
+        XCTAssertTrue(fm.fileExists(atPath: loudnessURL.path),
+                      "loudness.json 必须原地不动——LoudnessStore 还在读它")
+    }
+
 }
