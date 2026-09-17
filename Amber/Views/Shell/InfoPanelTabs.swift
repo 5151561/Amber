@@ -9,6 +9,12 @@ import AppKit
 /// 插图（Tab 1）与歌词（Tab 2）**不在这里**：它们的内容区 AX 只暴露一个标题
 /// （sample §4.2「AX 不暴露拖放区里的图像元素」、§4.3 是一整块 AXTextArea），
 /// 没有字段行可描述，由 `InfoPanelWindowController` 直接摆自定义视图。
+///
+/// 整个 enum 标 `@MainActor`：六张表只在建面板那条路上被读，全程主线程。
+/// 不走「给 `InfoPanelField` 加 `Sendable`」那条——表里装着
+/// `WritableKeyPath`，而键路径要到 Swift 6 语言模式（`InferSendableFromCaptures`）
+/// 才是 `Sendable`，现在标上只会换来另一批警告。
+@MainActor
 enum InfoPanelTabs {
 
     private typealias M = MusicMetrics.InfoPanel

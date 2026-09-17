@@ -152,7 +152,9 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit {
+    /// 计时器与观察者令牌都不是 `Sendable`，非隔离的 `deinit` 取不到它们。
+    /// 标 `isolated`：主线程上释放时照旧同步跑完，注销时机不变。
+    isolated deinit {
         mouseInterestTimer?.invalidate()
         mouseStartingInterestTimer?.invalidate()
         let center = NotificationCenter.default
@@ -557,17 +559,21 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
         focusObservers.forEach(center.removeObserver)
         focusObservers = []
         guard let window else { return }
+        // 块式观察者的闭包是 `@Sendable`；`queue: .main` 已经把投递线程钉死在主线程，
+        // 所以用 `assumeIsolated` 接回主线程隔离的自己。
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification] {
             focusObservers.append(center.addObserver(forName: name, object: window,
                                                      queue: .main) { [weak self] _ in
-                guard let self else { return }
-                self.updateRollover(interested: self.pointerInside)
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.updateRollover(interested: self.pointerInside)
+                }
             })
         }
         for name in [NSWindow.didResignKeyNotification, NSWindow.didResignMainNotification] {
             focusObservers.append(center.addObserver(forName: name, object: window,
                                                      queue: .main) { [weak self] _ in
-                self?.updateRollover(interested: false)
+                MainActor.assumeIsolated { self?.updateRollover(interested: false) }
             })
         }
         updateRollover(interested: pointerInside)
