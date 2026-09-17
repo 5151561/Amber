@@ -1,7 +1,9 @@
 import AppKit
+import AsyncAlgorithms
 import AVFoundation
 import Combine
 import Foundation
+import Observation
 import SwiftUI
 
 /// 全局应用状态：provider 注册表、播放器、资料库、导航与提示。
@@ -78,6 +80,9 @@ final class AppState: ObservableObject {
     private let qqAPI: QQAPI
     private let neteaseAPI: NeteaseAPI
     private var cancellables = Set<AnyCancellable>()
+    /// 已经迁到 `@Observable` 的 store 走这里；还是 `@Published` 的仍走 `cancellables`。
+    /// 两者在整轮迁移期间并存，最后一批做完 `cancellables` 整个消失。
+    private let observers = TaskBag()
     private var didLaunchSync = false
     /// MV 播放窗。第一支 MV 点开时才建，之后一直复用这一扇（见 `playMV`）。
     private var mvPlayerWindow: MVPlayerWindowController?
@@ -349,54 +354,55 @@ final class AppState: ObservableObject {
         }
         neteaseLogin.qrAPI = neteaseAPI
 
-        // 凭证一变就推给对应音源。`@Published` 订阅时会先发一次当前值，
-        // 上面那次播种是为了覆盖「订阅还没到、就已经有人取流」这段空窗。
-        qqLogin.$credential
-            .sink { [weak qqAPI] credential in qqAPI?.credential = credential }
-            .store(in: &cancellables)
-        neteaseLogin.$credential
-            .sink { [weak neteaseAPI] credential in neteaseAPI?.credential = credential }
-            .store(in: &cancellables)
+        // 凭证一变就推给对应音源。`observe` 丢掉首值——上面 `qqAPI.credential = …`
+        // 那次播种已经把当前值给过了，Combine 那边靠订阅时先发一次当前值来补这一下，
+        // 现在靠播种，语义一样，而且空窗期更短（不用等订阅那一跳）。
+        observers.observe({ [weak qqLogin] in qqLogin?.credential }) { [weak qqAPI] credential in
+            qqAPI?.credential = credential
+        }
+        observers.observe({ [weak neteaseLogin] in neteaseLogin?.credential }) { [weak neteaseAPI] credential in
+            neteaseAPI?.credential = credential
+        }
 
         // 档位不是直接用 `qqLogin.quality`，而是过一道设置窗的夹取（无损开关 /
         // 杜比全景声），所以三个输入任一变化都要重算一次再推下去。
-        // `@Published` 是在值改之前发的，`receive(on:)` 推到下一跳再读——
-        // 与仓库里其它订阅同口径（见 `PlayQueueModel` 那几条）。
+        //
+        // 原来是 `Publishers.Merge3(…).receive(on:)`：合三路是为了只写一次重算，
+        // `receive(on:)` 是因为 `@Published` 在值改**之前**发、当场回读会拿到旧值。
+        // 换成 `Observations` 之后事件在值落定之后才到，回读就是新值，那一跳不需要了；
+        // 合三路也不必——三条各自观察、都调同一个重算，效果一样还少一层。
+        // （`AppSettings` 还是 `@Published`，批 7 才迁，那一条暂时仍走 Combine。）
         let seededQuality = effectiveQuality
         qqAPI.quality = seededQuality
         neteaseAPI.quality = seededQuality
-        Publishers.Merge3(
-            qqLogin.$quality.map { _ in () },
-            AppSettings.shared.$values.map { _ in () },
-            audioOutput.$output.map { _ in () }
-        )
-        .receive(on: DispatchQueue.main)
-        .sink { [weak self] in
-            guard let self else { return }
-            let quality = self.effectiveQuality
-            self.qqAPI.quality = quality
-            self.neteaseAPI.quality = quality
+        observers.observe({ [weak qqLogin] in qqLogin?.quality }) { [weak self] _ in
+            self?.pushEffectiveQuality()
         }
-        .store(in: &cancellables)
+        observers.observe({ [weak audioOutput] in audioOutput?.output }) { [weak self] _ in
+            self?.pushEffectiveQuality()
+        }
+        AppSettings.shared.$values
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.pushEffectiveQuality() }
+            .store(in: &cancellables)
 
         // 账号里的歌单进资料库、登录态校验：都由 MainView 在上屏时触发
         //（init 里不发网络请求也不动资料库——AppState 只是被构造出来时不该有副作用），
         // 之后登录态一变再同步一次歌单。
-        qqLogin.$credential
-            .dropFirst()
-            .removeDuplicates { $0?.cookie == $1?.cookie }
-            .sink { [weak self] _ in
-                Task { [weak self] in await self?.syncAccountPlaylists() }
+        // `Observations` 对 Equatable 自带相邻去重，但这里要的是「只看 cookie 变没变」
+        // ——换了头像昵称不该重拉歌单——所以仍要显式的 removeDuplicates(by:)。
+        observers.add(Task { [weak self, weak qqLogin] in
+            let changes = Observations { qqLogin?.credential }.dropFirst()
+            for await _ in changes.removeDuplicates(by: { $0?.cookie == $1?.cookie }) {
+                await self?.syncAccountPlaylists()
             }
-            .store(in: &cancellables)
-
-        neteaseLogin.$credential
-            .dropFirst()
-            .removeDuplicates { $0?.cookie == $1?.cookie }
-            .sink { [weak self] _ in
-                Task { [weak self] in await self?.syncAccountPlaylists() }
+        })
+        observers.add(Task { [weak self, weak neteaseLogin] in
+            let changes = Observations { neteaseLogin?.credential }.dropFirst()
+            for await _ in changes.removeDuplicates(by: { $0?.cookie == $1?.cookie }) {
+                await self?.syncAccountPlaylists()
             }
-            .store(in: &cancellables)
+        })
 
         // 取流失败（VIP／网络）以前只写进 player.lastError，界面上一点提示都没有，
         // 表现就是「点了没反应」。统一弹到顶部 toast。
@@ -409,14 +415,19 @@ final class AppState: ObservableObject {
         // 都把所有 `@EnvironmentObject var appState` 的视图重画一遍。
         // 各子 store 自己作为 environmentObject 注入（见 AmberApp），需要谁就观察谁。
 
-        // 在设置里关掉当前正在浏览的源时，换到还开着的第一个源
-        providerSettings.$enabled.sink { [weak self] kinds in
+        // 在设置里关掉当前正在浏览的源时，换到还开着的第一个源。
+        // 用 `observeNow` 不是 `observe`：原来这条没有 `dropFirst`，订阅当场就会校正一次
+        // ——上次退出时选中的源这次可能已经被关掉了，丢掉首值就会停在一个无效选择上。
+        //
+        // **纠正是异步的**：Combine 那边 sink 在写入那一刻同步回调，这里要过一跳。
+        // 于是 `setEnabled(false, …)` 返回时 `selectedProvider` 可能还指着刚禁用的源，
+        // 下一个 tick 才补正。界面看不出来（同一轮 runloop 内），但别假设它当场就合法。
+        observers.observeNow({ [weak providerSettings] in providerSettings?.enabled ?? [] }) { [weak self] kinds in
             guard let self, !kinds.contains(self.selectedProvider),
                   let fallback = ProviderKind.allCases.first(where: kinds.contains)
             else { return }
             self.selectedProvider = fallback
         }
-        .store(in: &cancellables)
     }
 
     /// 设置里启用的音乐源（音乐源切换器只列这些）
@@ -594,6 +605,16 @@ final class AppState: ObservableObject {
     /// - 「杜比全景声」= 关闭 → 跳过沉浸声那一档。
     ///
     /// 夹取只改**起点**，降级阶梯照旧——这首歌没有目标档位时仍然一路往下试。
+    /// 把当前的 `effectiveQuality` 推给两个音源。
+    ///
+    /// 三个输入（登录态档位 / 设置里的无损开关与杜比全景声 / 输出设备）各自观察，
+    /// 变了就调这里重算一次——比合三路再 sink 少一层，效果一样。
+    private func pushEffectiveQuality() {
+        let quality = effectiveQuality
+        qqAPI.quality = quality
+        neteaseAPI.quality = quality
+    }
+
     var effectiveQuality: StreamQuality {
         let values = AppSettings.shared.values
         return qqLogin.quality.clamped(losslessEnabled: values.losslessEnabled,

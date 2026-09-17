@@ -169,8 +169,8 @@ private struct SettingsPane<Content: View>: View {
 /// 底部按钮行：通栏细线 + 右下角成对的「取消 / 好」（[AX] 各 52×26，相隔 10）。
 private struct SettingsButtonRow: View {
     @EnvironmentObject private var settings: AppSettings
-    @EnvironmentObject private var qqLogin: QQLoginStore
-    @EnvironmentObject private var providerSettings: ProviderSettingsStore
+    @Environment(QQLoginStore.self) private var qqLogin
+    @Environment(ProviderSettingsStore.self) private var providerSettings
     @EnvironmentObject private var listViewSize: ListViewSizeStore
     var model: SettingsDraftModel
 
@@ -310,7 +310,7 @@ private func settingsButtonRow(_ label: String,
 /// 通用页。[AX] 自上而下六组：资料库 / 听歌历史 / 更大字体 / 显示+列表大小 / 通知 / 隐私链接。
 struct GeneralSettingsPane: View {
     @Bindable var model: SettingsDraftModel
-    @EnvironmentObject private var qqLogin: QQLoginStore
+    @Environment(QQLoginStore.self) private var qqLogin
     @State private var showingPrivacy = false
 
     var body: some View {
@@ -543,9 +543,9 @@ struct ProviderSettingsPane: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var player: PlayerController
     @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var qqLogin: QQLoginStore
-    @EnvironmentObject private var neteaseLogin: NeteaseLoginStore
-    @EnvironmentObject private var providerSettings: ProviderSettingsStore
+    @Environment(QQLoginStore.self) private var qqLogin
+    @Environment(NeteaseLoginStore.self) private var neteaseLogin
+    @Environment(ProviderSettingsStore.self) private var providerSettings
     /// 两扇登录面板共用一条呈现状态。
     ///
     /// 从前是两条 `@State` + 链在同一个视图上的两个`.sheet(isPresented:)`，两处都关不掉：
@@ -617,12 +617,12 @@ struct ProviderSettingsPane: View {
                     .environmentObject(appState)
                     .environmentObject(player)
                     .environmentObject(library)
-                    .environmentObject(qqLogin)
-                    .environmentObject(providerSettings)
+                    .environment(qqLogin)
+                    .environment(providerSettings)
                     .environmentObject(player.clock)
             case .netease:
                 NeteaseLoginView { loginSheet = nil }
-                    .environmentObject(neteaseLogin)
+                    .environment(neteaseLogin)
             }
         }
     }

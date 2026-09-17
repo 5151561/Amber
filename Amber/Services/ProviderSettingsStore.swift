@@ -6,7 +6,8 @@ import Foundation
 /// 关掉的源只是从「搜索 / 主页」的音乐源切换里消失，AppState 的 provider 注册表
 /// 始终保留全部实现——资料库里已经收藏的该源歌曲仍要能取流播放。
 @MainActor
-final class ProviderSettingsStore: ObservableObject {
+@Observable
+final class ProviderSettingsStore {
 
     /// 首次启动的默认：只开 QQ 音乐。
     /// 网易云接口没接登录，匿名下绝大多数曲目取不到流，开着只会一路报错。
@@ -14,9 +15,9 @@ final class ProviderSettingsStore: ObservableObject {
     /// 主 actor 之外读到它。`Set<ProviderKind>` 是 Sendable，跨 actor 读没有风险。
     nonisolated static let initialEnabled: Set<ProviderKind> = [.qq]
 
-    @Published private(set) var enabled: Set<ProviderKind>
+    private(set) var enabled: Set<ProviderKind>
     /// 启动时选中的音乐源，始终是已启用的源之一
-    @Published var defaultProvider: ProviderKind {
+    var defaultProvider: ProviderKind {
         didSet { persist() }
     }
 

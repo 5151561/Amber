@@ -38,6 +38,7 @@ final class MainWindowController: NSWindowController {
     private let appState: AppState
     private let rootViewController: RootViewController
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
     private var currentIdentifiers: [NSToolbarItem.Identifier] = []
     private weak var currentTopPage: ContentPageController?
 
@@ -86,11 +87,11 @@ final class MainWindowController: NSWindowController {
         // 永远活着），也不判自己是不是栈顶：一次开关就把整条工具栏拆光重建三遍；
         // 此刻栈顶要是歌曲页、用户正在标题栏搜索框里打字，
         // 搜索框会被拔出来重插、焦点当场丢。
-        appState.providerSettings.$enabled
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refreshPageToolbar() }
-            .store(in: &cancellables)
+        // `observe` 自带 dropFirst；`receive(on:)` 也不需要了——`for await` 的循环体
+        // 就跑在本控制器所在的主 actor 上。
+        observers.observe({ [weak appState] in appState?.providerSettings.enabled ?? [] }) { [weak self] _ in
+            self?.refreshPageToolbar()
+        }
         // 「播放中」展开时页面项全部让位（Music 那时工具栏是空的），红绿灯照旧。
         // 用推来的值，不回读属性：`@Published` 在 willSet 发布，回读拿到的是上一次的值，
         // 开合一次之后工具栏的显隐就整个反过来。

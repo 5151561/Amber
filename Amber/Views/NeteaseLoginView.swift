@@ -14,7 +14,7 @@ import SwiftUI
 /// 网易云在手机上点取消不会回一个专门的码，就一直停在 802（已扫码待确认），
 /// 所以 `QRLoginState.refused` 在这条路上不会出现。
 struct NeteaseLoginView: View {
-    @EnvironmentObject private var neteaseLogin: NeteaseLoginStore
+    @Environment(NeteaseLoginStore.self) private var neteaseLogin
 
     /// 关掉这扇面板。与 `QQLoginView` 同：AppKit 宿主传的是 `endSheet`。
     var onDismiss: (() -> Void)?
