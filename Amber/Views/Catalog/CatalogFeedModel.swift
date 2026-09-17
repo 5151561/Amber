@@ -161,8 +161,15 @@ final class CatalogFeedModel {
             return
         }
         // 一段都摆不出来：断网与「音源真的没有内容」在界面上必须分得开（§2.6-8）。
-        let offline = await Self.isNetworkUnavailable()
-        guard !Task.isCancelled else { return }
+        //
+        // 判据是**错误码**，不再问系统的连通性：任何一格带回了连接类 `URLError`
+        // （`CatalogSlotResult.failure`，由音源层的 `CatalogFailureSink` 填）就是断网。
+        // 这比问 `NWPathMonitor` 准——「网卡连着、但这家音源的域名解析不了 / 连不上」
+        // 在系统看来路径是 satisfied 的，而对用户来说页面确实是空的，
+        // 该说的仍旧是「网络不可用」而不是「音源暂无内容」。
+        //
+        // 这一支只在已经确定一件都摆不出来时才走到；正常那条路连 `failure` 都不读。
+        let offline = results.values.contains { $0.failure != nil }
         state = offline ? .error(Self.offlineMessage) : .content(title: title, sections: [])
     }
 
@@ -170,13 +177,12 @@ final class CatalogFeedModel {
     /// 只是从前没人发 `.error`，取不到就一律落到「当前音乐源暂无推荐内容。」。
     static let offlineMessage = "网络不可用"
 
-    /// 现在是断网，还是音源真的交不出内容？
+    /// 现在是断网，还是音源真的交不出内容？——**只剩分类浏览页还在用这一条**。
     ///
-    /// 计划里写的是「从错误码（`URLError` 的连接类）判断就够，不必引入`NWPathMonitor`」，
-    /// 但 `MusicProvider.catalogItems` / `playlists(tag:)` 这两条**都不抛错**
-    /// （`Providers/MusicProvider.swift:52,57`：交不出来就回`.empty`/空数组，
-    /// 那一层归批 G），错误码根本到不了这里。在不动音源层的前提下，
-    /// 判连通性只剩系统给的这一条路——它也不多发一个请求。
+    /// 目录页三页自己已经改成看 `CatalogSlotResult.failure` 的错误码了（见上面）。
+    /// 留着它是因为 `CatalogRoomViewController:369` 走的是 `MusicProvider.playlists(tag:)`，
+    /// 那条的返回值是光秃秃的 `[Playlist]`，没有搭 `failure` 的地方；给它配一条同样的
+    /// 失败通道要连着改那个控制器，不在本批的文件范围内。
     ///
     /// 只在**已经确定一件都摆不出来**时才问，正常那条路一次都不走。
     /// `NWPathMonitor` 自 macOS 14 起就是 `AsyncSequence`，首个元素就是当前路径

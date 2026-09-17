@@ -404,7 +404,15 @@ final class QQAPI: MusicProvider {
     // MARK: - 目录页取数
 
     /// 页面结构由 CatalogPages 定死（照 Apple Music），这里只按格子交数据。
+    ///
+    /// 外面这一层只做一件事：把这一格底下所有请求里的连接类失败收上来，
+    /// 一格都没交出内容时填进 `CatalogSlotResult.failure`，让目录页分得开
+    /// 「断网」与「音源没这一格」（§2.6-8）。机理见 `CatalogFailureSink`。
     func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult {
+        await CatalogFailureSink.attach { await self.catalogSlot(slot) }
+    }
+
+    private func catalogSlot(_ slot: CatalogSlot) async -> CatalogSlotResult {
         switch slot {
         case .recentlyPlayed, .musicMemories:
             return .empty   // 本地资料库来的，页面自己填
