@@ -134,8 +134,12 @@ struct DMAPRawNode {
     }
 
     /// 大写十六进制。配对 GUID（`cmpg`，8 字节）就用这个转成 16 位 hex。
+    /// `String(_:radix:uppercase:)` 不像 `%02X` 那样自带宽度，小于 `0x10` 的自己补个零。
     var hexValue: String {
-        payload.map { String(format: "%02X", $0) }.joined()
+        payload.map { byte in
+            let hex = String(byte, radix: 16, uppercase: true)
+            return byte < 0x10 ? "0" + hex : hex
+        }.joined()
     }
 
     /// 直接子节点里第一个叫 `code` 的。
@@ -159,8 +163,11 @@ enum DMAPDecoder {
     /// 判断该不该往里递归，猜不出来（容器的载荷和一段二进制数据长得一模一样）。
     static func parse(_ data: Data,
                       containers: Set<String> = DMAPCodes.containerCodes) -> [DMAPRawNode] {
-        let bytes = [UInt8](data)
-        return parse(bytes, from: 0, to: bytes.count, containers: containers)
+        // 从前这里先 `[UInt8](data)` 把整份载荷拷成数组再开解——一份 DAAP 应答能有几 MB，
+        // 那一下就是白拷一遍。`data.bytes` 只是借出这份 `Data` 的字节视图，一个字节不搬；
+        // 真正要留下的拷贝只剩每个节点自己那份 `payload`。
+        let bytes = data.bytes
+        return parse(bytes, of: data, from: 0, to: bytes.byteCount, containers: containers)
     }
 
     static func find(_ code: String, in data: Data,
@@ -171,27 +178,48 @@ enum DMAPDecoder {
         return nil
     }
 
-    private static func parse(_ bytes: [UInt8], from start: Int, to end: Int,
+    /// `s` 是 `data` 的字节视图，`start` / `end` 都是 `s` 上的 0 基偏移；`data` 只用来切出
+    /// 节点载荷那一份 `Data`——`DMAPRawNode.payload` 必须自己持有字节，不能是借来的视图。
+    /// （`Data` 切片的下标不从 0 起，所以切载荷时要把 `startIndex` 加回去。）
+    ///
+    /// `RawSpan` 读越界是 **trap 而不是返回 nil**，所以每次取字节之前范围都得先算干净：
+    /// `i + 8 <= end` 管住 tag 与长度头这 8 个字节，`bodyStart + length <= end` 管住载荷，
+    /// 而 `end` 本身由调用方保证不超过 `s.byteCount`（入口传 `byteCount`，递归传 `bodyEnd`，
+    /// 后者刚被上一行挡过）。
+    private static func parse(_ s: RawSpan, of data: Data, from start: Int, to end: Int,
                               containers: Set<String>) -> [DMAPRawNode] {
         var nodes: [DMAPRawNode] = []
+        let base = data.startIndex
         var i = start
         while i + 8 <= end {
-            guard let code = String(bytes: bytes[i..<(i + 4)], encoding: .ascii) else { break }
-            let length = (Int(bytes[i + 4]) << 24) | (Int(bytes[i + 5]) << 16)
-                | (Int(bytes[i + 6]) << 8) | Int(bytes[i + 7])
+            guard let code = asciiCode(s, of: data, at: i) else { break }
+            // 4 字节大端长度。带 `ByteOrder` 参数的 `load` 要 macOS 27，这里分两步写。
+            let length = Int(s.load(fromByteOffset: i + 4, as: UInt32.self).bigEndian)
             let bodyStart = i + 8
             // 长度头坏了就整段停下：宁可少解一截，也不要顺着一个错长度乱走。
-            guard length >= 0, bodyStart + length <= end else { break }
+            // （从前这里还挡一道 `length >= 0`；长度是 `UInt32` 拓宽成 `Int`，本来就非负。）
+            guard bodyStart + length <= end else { break }
             let bodyEnd = bodyStart + length
             let children = containers.contains(code)
-                ? parse(bytes, from: bodyStart, to: bodyEnd, containers: containers)
+                ? parse(s, of: data, from: bodyStart, to: bodyEnd, containers: containers)
                 : []
             nodes.append(DMAPRawNode(code: code,
-                                     payload: Data(bytes[bodyStart..<bodyEnd]),
+                                     payload: Data(data[(base + bodyStart)..<(base + bodyEnd)]),
                                      children: children))
             i = bodyEnd
         }
         return nodes
+    }
+
+    /// `s` 从 `offset` 起的 4 字节 tag。有一个字节越出 ASCII（≥ `0x80`）就返回 nil——
+    /// 与从前 `String(bytes:encoding:.ascii)` 解不出来是同一个判据（`0x00` 照收）。
+    /// 四个字节的最高位一次取出来比：`0x8080_8080` 按位与为 0 就是四个都在 ASCII 里；
+    /// 既然如此，按 UTF-8 解就与按 ASCII 解逐字节等价，也不会解出替换字符。
+    /// 调用方必须先保证这 4 个字节在界内——`load` 越界是 trap。
+    private static func asciiCode(_ s: RawSpan, of data: Data, at offset: Int) -> String? {
+        guard s.load(fromByteOffset: offset, as: UInt32.self) & 0x8080_8080 == 0 else { return nil }
+        let lo = data.startIndex + offset
+        return String(decoding: data[lo..<(lo + 4)], as: UTF8.self)
     }
 }
 
