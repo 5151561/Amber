@@ -54,24 +54,29 @@ struct Track: Identifiable, Codable, Hashable, Sendable {
     /// 音源是否提供无损档（仅表示音源侧可用；实际播哪一档看音质偏好与降级结果）。
     /// 用 Optional 而非带默认值的 Bool：旧的 library.json 里没有这个键，
     /// 合成的 Decodable 对非可选属性缺键会直接抛错。
+    ///
+    /// **这里没有「本机文件在哪」那一格。** 从前有一个 `localPath`，它与下载索引
+    /// 是同一件事的两份真相，而实测已经坐实那份副本会腐败（用户本机 8 条`localPath`
+    /// 全部指向改名前的媒体夹、8 个文件全不存在，同期索引里 14 条是活的）。
+    /// 现在「这首歌在本机有没有文件、在哪」只有一处能回答：`DownloadStore`
+    /// （落库是主库的`local_file` 表）。
     var losslessAvailable: Bool? = nil
-    /// 「文件 › 导入…」进来的本机文件的绝对路径。非 nil ＝ 音频就在这台机器上，
-    /// 取流不必问音源（见 `AppState` 的`providerResolver`）。
-    /// 同样是后加的可选字段：旧 library.json 里没有这个键。
-    var localPath: String? = nil
 }
 
 extension Track {
     /// 本地导入曲目的 id 前缀。**没有新增 `ProviderKind.local`**：`ProviderKind.allCases`
     /// 是「音源」清单——设置 › 音源逐条列开关、`syncAccountPlaylists` 逐个问账号歌单、
     /// `AppState.provider(_:)` 还是强解包，多一个没有 provider 的成员要在四五处开特例。
-    /// 本地性改用「id 前缀 + `localPath`」表示，`kind` 仍是一个真音源（导入时的默认音源），
+    /// 本地性只由这个 **id 前缀**表示，`kind` 仍是一个真音源（导入时的默认音源），
     /// 于是「查歌词 / 找封面 / 前往艺人」这些按 kind 走 provider 的路一行都不用改。
+    ///
+    /// 它回答的是「这首歌从哪儿来的」（用户自己导进来的，不是从音源点出来的），
+    /// **不回答「文件此刻在不在、在哪」**——那是 `DownloadStore` 一处的事。
+    /// 两个问题从前挤在一个字段上（`isLocal` 与`localPath` 互相当对方的判据），
+    /// 于是文件被删之后既不算「本地」也不算「在线」。
     static let localIDPrefix = "local:"
 
     var isLocal: Bool { id.hasPrefix(Track.localIDPrefix) }
-
-    var localURL: URL? { localPath.map { URL(fileURLWithPath: $0) } }
 
     /// 能否跳转到艺人页：有在线 artistId，或者艺人名有效（可在线检索或在资料库内定位）。
     var canGoToArtist: Bool {

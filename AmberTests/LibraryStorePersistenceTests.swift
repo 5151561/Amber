@@ -397,8 +397,6 @@ final class LibraryStorePersistenceTests: XCTestCase {
         XCTAssertEqual(reopened.playlist(id: playlist.id)?.name, "改过名的单子", "歌单改名")
         XCTAssertEqual(reopened.playlist(id: playlist.id)?.tracks.map(\.id),
                        [a1.id, a2.id, loose.id], "歌单内曲目顺序")
-        // 注意别用 `track(withID:)` 查：它只回答「带 localPath 的那几首」（服务于查找丢失的
-        // 文件），名字看着像通用查找，其实不是。这里要的是资料库数组里那一份。
         XCTAssertEqual(reopened.libraryTracks.first { $0.id == a1.id }?.title, "改过的标题",
                        "updateTrack 改的字段")
         XCTAssertEqual(reopened.playlist(id: playlist.id)?.tracks.first { $0.id == a1.id }?.title,

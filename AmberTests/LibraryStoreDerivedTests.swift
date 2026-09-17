@@ -90,7 +90,7 @@ final class LibraryStoreDerivedTests: XCTestCase {
         store.addAlbumToLibrary(imported, tracks: [
             Track(id: Track.localIDPrefix + "f1", kind: .qq, title: "本地曲", artistName: "告五人",
                   artistId: nil, albumName: "太阳之子", albumId: nil, artworkURL: nil,
-                  duration: 180, localPath: "/tmp/f1.flac"),
+                  duration: 180),
         ])
         store.addAlbumToLibrary(online, tracks: [
             makeTrack("qq:t1", title: "在线曲", artist: "告五人", album: online),

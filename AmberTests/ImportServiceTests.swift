@@ -134,8 +134,7 @@ final class ImportServiceTests: XCTestCase {
     func testMediaFolderNamingMatchesDownloads() {
         let track = Track(id: "local:abc123def456", kind: .qq, title: "夜曲",
                           artistName: "周杰伦", artistId: nil, albumName: "十一月的萧邦",
-                          albumId: nil, artworkURL: nil, duration: 230, trackNumber: 3,
-                          localPath: "/tmp/夜曲.flac")
+                          albumId: nil, artworkURL: nil, duration: 230, trackNumber: 3)
         XCTAssertEqual(DownloadStore.relativePath(for: track, ext: "m4a", organized: true),
                        "周杰伦/十一月的萧邦/03 夜曲.m4a")
         XCTAssertEqual(DownloadStore.relativePath(for: track, ext: "m4a", organized: false),
@@ -220,7 +219,6 @@ final class ImportServiceTests: XCTestCase {
         XCTAssertTrue(imported.track.id.hasPrefix("local:"))
         XCTAssertFalse(imported.external, "勾了「拷贝到媒体文件夹」就该是媒体文件夹里那份")
         XCTAssertTrue(imported.fileURL.path.hasPrefix(media.path))
-        XCTAssertEqual(imported.track.localPath, imported.fileURL.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: imported.fileURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path), "原件不该被搬走")
     }
@@ -365,8 +363,7 @@ final class ImportServiceTests: XCTestCase {
         let options = makeOptions(encoder: .aac, copy: true, mediaFolder: media)
         let track = Track(id: "local:a", kind: .qq, title: "夜曲", artistName: "周杰伦",
                           artistId: nil, albumName: "十一月的萧邦", albumId: nil,
-                          artworkURL: nil, duration: 230, trackNumber: 3,
-                          localPath: "/tmp/夜曲.flac")
+                          artworkURL: nil, duration: 230, trackNumber: 3)
         let wanted = "周杰伦/十一月的萧邦/03 夜曲.m4a"
 
         var mine = options
@@ -396,8 +393,7 @@ final class ImportServiceTests: XCTestCase {
         options.organized = false
         let track = Track(id: "local:a", kind: .qq, title: "夜曲", artistName: "周杰伦",
                           artistId: nil, albumName: "十一月的萧邦", albumId: nil,
-                          artworkURL: nil, duration: 230, trackNumber: 3,
-                          localPath: "/tmp/夜曲.flac")
+                          artworkURL: nil, duration: 230, trackNumber: 3)
 
         options.occupied = ["local:b": "local_b.m4a", "local:c": "周杰伦/十一月的萧邦/03 夜曲.m4a"]
         let placed = ImportWorker.mediaFolderDestination(for: track, ext: "m4a", options: options)
@@ -463,7 +459,7 @@ final class ImportServiceTests: XCTestCase {
 
         let track = Track(id: "local:deadbeef", kind: .qq, title: "歌", artistName: "人",
                           artistId: nil, albumName: "碟", albumId: nil, artworkURL: nil,
-                          duration: 1, localPath: outside.path)
+                          duration: 1)
         store.adoptLocalFile(at: outside, for: track, external: true)
         XCTAssertTrue(store.isDownloaded(track.id))
         XCTAssertEqual(store.state(for: track.id), .downloaded(outside))
@@ -487,7 +483,7 @@ final class ImportServiceTests: XCTestCase {
 
         let track = Track(id: "local:deadbeef", kind: .qq, title: "歌", artistName: "人",
                           artistId: nil, albumName: "碟", albumId: nil, artworkURL: nil,
-                          duration: 1, localPath: copied.path)
+                          duration: 1)
         store.adoptLocalFile(at: copied, for: track, external: false)
         store.remove(ids: [track.id])
         XCTAssertFalse(FileManager.default.fileExists(atPath: copied.path))

@@ -767,7 +767,7 @@ final class DownloadStoreTests: XCTestCase {
     /// `reloadFromManifest()` 就是阶段 9 那两条挂载通知的落点：重新按清单对一遍，
     /// 状态与投影一起跟上。这里用「文件没了」模拟，断言投影跟着清单走、不是各走各的。
     @MainActor
-    func testReloadFromManifestDropsFilesThatWentAway() throws {
+    func testFileThatWentAwayStopsBeingDownloadedButKeepsItsRecord() throws {
         try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"])
         let store = DownloadStore(directory: directory)
         XCTAssertEqual(try localFileRows().count, 1)
@@ -775,9 +775,36 @@ final class DownloadStoreTests: XCTestCase {
         try FileManager.default.removeItem(at: directory.appendingPathComponent("qq_1.flac"))
         store.reloadFromManifest()
 
-        XCTAssertEqual(store.state(for: "qq:1"), .none)
-        XCTAssertTrue(try localFileRows().isEmpty, "清单里没了，投影也该没了")
-        XCTAssertTrue(try readIndex().isEmpty)
+        XCTAssertEqual(store.state(for: "qq:1"), .none, "界面上它就该是「没下载」")
+        XCTAssertNil(store.fileURL(for: "qq:1"), "拿不到可用的文件")
+        XCTAssertEqual(store.absoluteURL(for: "qq:1"),
+                       directory.appendingPathComponent("qq_1.flac"),
+                       "但**记着的那条路**还在——「查找丢失的文件」全靠它")
+        XCTAssertEqual(try localFileRows().count, 1, "投影里那行留着")
+        XCTAssertEqual(try readIndex().count, 1, "清单里那条也留着")
+    }
+
+    /// 上面那条的跨重启版本，**这才是这条规则真正要守的东西**。
+    ///
+    /// 从前「这首歌的文件该在哪儿」记在 `Track.localPath` 上、无条件持久；阶段 6 把
+    /// `localPath` 拆掉之后，唯一的落点就是清单与 `local_file`。载入时把「文件不见了」
+    /// 的条目顺手摘掉的话，编译过、测试也过，只有一个症状：**关掉 App 再打开，
+    /// 批量「查找丢失的文件」找不到东西可修**——而那正是用户在外面挪了一批文件之后
+    /// 唯一的修复入口（指一份回来 → 推出位移规律 → 其余几十首一起找回）。
+    @MainActor
+    func testTheRecordSurvivesAReopen() throws {
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"])
+        _ = DownloadStore(directory: directory)
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("qq_1.flac"))
+
+        // 关掉再打开：新 store 从磁盘上的清单重新载入。
+        let reopened = DownloadStore(directory: directory)
+
+        XCTAssertEqual(reopened.state(for: "qq:1"), .none)
+        XCTAssertEqual(reopened.absoluteURL(for: "qq:1"),
+                       directory.appendingPathComponent("qq_1.flac"),
+                       "重启之后仍然记得它该在哪儿")
+        XCTAssertEqual(try localFileRows().count, 1)
     }
 
     /// 换「媒体」文件夹：文件整份搬过去，相对路径一个字不变，投影跟着搬——
