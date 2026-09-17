@@ -205,10 +205,10 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 
 | 批 | 主题 | 覆盖 | 文件 | 状态 |
 | :-: | --- | --- | --- | --- |
-| **A** | 铁律 2 收口（= 计划阶段 8 的其余部分） | §2.1-1、-2、-3 | `Components/SongsTableCells.swift`、`Views/SidebarOutline.swift`、`Shell/DetailHeaderViews.swift`、`Shell/TrackTableViewController.swift` | 未开始 |
-| **B** | 意图上响应链（= 铁律 4 的终态） | §2.2-2、-3、-7 | `App/AppState.swift`、`Shell/ContentNavigationController.swift`、`Shell/LibraryArtistsViewController.swift` | 未开始 |
-| **C** | 撤销与命令层 | §2.2-1、-4、-5、-6、-8 | `App/MainMenu.swift`、`App/AmberApp.swift`、`Shell/MainWindowController.swift`、`Services/LibraryStore.swift`、`Components/SongsTableView.swift`、`Components/TrackMenu.swift`、`Shell/LibrarySongsViewController.swift`、`Shell/PlayQueueViewController.swift`、`Player/PlayQueueModel.swift` | 未开始 |
-| **D** | 本地优先最后一公里 + 目录页键盘可达 | §2.6-1、-2、-8；§2.5-1 | `Catalog/CatalogFeedModel.swift`、`Shell/CatalogPageViewController.swift`、`Shell/CatalogRoomViewController.swift`、`Shell/SearchLandingViewController.swift`、`Shell/AlbumDetailViewController.swift`、`Shell/PlaylistDetailViewController.swift` | 未开始 |
+| **A** | 铁律 2 收口（= 计划阶段 8 的其余部分） | §2.1-1、-2、-3 | `Components/SongsTableCells.swift`、`Views/SidebarOutline.swift`、`Shell/DetailHeaderViews.swift`、`Shell/TrackTableViewController.swift` | **已完成** 2026-09-17 |
+| **B** | 意图上响应链（= 铁律 4 的终态） | §2.2-2、-3、-7 | `App/AppState.swift`、`Shell/ContentNavigationController.swift`、`Shell/LibraryArtistsViewController.swift` | **已完成** 2026-09-17 |
+| **C** | 撤销与命令层 | §2.2-1、-4、-5、-6、-8 | `App/MainMenu.swift`、`App/AmberApp.swift`、`Shell/MainWindowController.swift`、`Services/LibraryStore.swift`、`Components/SongsTableView.swift`、`Components/TrackMenu.swift`、`Shell/LibrarySongsViewController.swift`、`Shell/PlayQueueViewController.swift`、`Player/PlayQueueModel.swift` | **已完成** 2026-09-17 |
+| **D** | 本地优先最后一公里 + 目录页键盘可达 | §2.6-1、-2、-8；§2.5-1 | `Catalog/CatalogFeedModel.swift`、`Shell/CatalogPageViewController.swift`、`Shell/CatalogRoomViewController.swift`、`Shell/SearchLandingViewController.swift`、`Shell/AlbumDetailViewController.swift`、`Shell/PlaylistDetailViewController.swift` | **已完成** 2026-09-17 |
 | **E** | 增量快照三页 + Compositional | §2.6-3；§2.1-5 | `Shell/LibraryAlbumsViewController.swift`、`Shell/LibraryAllPlaylistsViewController.swift`、`Shell/LibraryRecentlyAddedViewController.swift`、`Shell/LibraryGridCards.swift` | 未开始 |
 | **F** | 渲染与 AX 收尾 | §2.3 全部；§2.5-2、-3、-6、-7 | `Lyrics/**`、`Shell/MiniPlayerView.swift`、`Shell/MiniPlayerContentView.swift`、`Shell/NowPlayingChromeViews.swift`、`Shell/MiniPlayerBackdropMetalView.swift`、`Services/ImageCache.swift`、`Services/ArtworkSize.swift`、`Catalog/ArtistPageCards.swift` | 未开始 |
 | **G** | 观察粒度 + 网络韧性 | §2.4-2~9、-11、-12；§2.6-5、-6、-7、-9、-10 | `Player/PlayerController.swift`、`Player/AudioTap.swift`、`Services/DownloadStore.swift`、`Services/AppSettings.swift`、`Services/ImportTranscoder.swift`、`Observation/TaskBag.swift`、`Observation/EventChannel.swift`、`Providers/RequestCache.swift`、`Providers/MusicProvider.swift`、`Support/SwiftFeatures.xcconfig` | 未开始 |
@@ -267,3 +267,57 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 7. **鼠标**：资料库专辑页滚到中段，让一次入库发生——滚动位置与选中态不该被抹掉（§2.6-3）。
 8. **鼠标**：迷你播放器换歌——封面不该白一帧（§2.3-3）。
 9. **VoiceOver**：焦点落到播放进度条上，应该念得出当前位置（§2.5-2）。
+
+## 7. 第一轮整改的结果（2026-09-17）
+
+A/B/C/D 四批按文件所有权并行落地，各自一个 worktree。主会话做了两道接缝、一次合并、
+一次全量测试。
+
+### 收工核对
+
+- **合并**：四个分支零冲突。
+- **clean build**：`BUILD SUCCEEDED`，16 条警告与整改前**逐条相同**（`LibraryArtistsViewController` 6 条、
+  四个 store 的 `try?`、`MenuSpec` / `MainWindowController` 两条弃用、`CatalogCardItems:254`、
+  `QQAPI` / `AudioOutputMonitor` / `InstrumentalContentLayer` 各一条），**新增 0**。
+- **`xcodebuild test`**：**1138 项，0 失败，1 跳过**（整改前 1119 项；新增 19 条
+  ——批 C 的 `LibraryUndoTests` 16 条、批 D 的 `CatalogKeyboardActivationTests` 3 条）。
+- 两道接缝各自的理由见提交 `ee65d2c` 与 `e8883f6`。
+
+### 四批各自推翻了审查单的哪一条
+
+**这一节是本轮最该留下的东西**：五条里有四条是「照单执行会把对的东西改错」。
+子代理被要求先验证再动手，所以拦住了。
+
+| 审查单原文 | 实际 | 谁查出的 / 依据 |
+| --- | --- | --- |
+| 铁律 2：「`sizingOptions = []`（Apple 文档原话：减少布局测量；帧比内容小时内容居中）」 | **两句话并成了一件事**。「内容居中」是 `NSHostingView` **无条件**行为，与 `sizingOptions` 无关；`[]` 买到的只有性能 | 批 A，查 `NSHostingView.sizingOptions` 文档原文。**已订正 `AGENTS.md`**（提交 `02c39eb`），`SongsTableCells` 三段按错误归因写的注释一并改对 |
+| §2.1-3 修法：空态「与 `LibraryAlbumsViewController:149` 统一成 overlay」 | **改 overlay 是错的**。`TrackTableViewController.swift:256` 那条 [实测] 记着 Music 的 `AMPEmptyStateLockup` 不是覆盖层、是 `docStack` 的第三个 arranged subview；改 overlay 既破「像素一个不改」又与 Music 相反 | 批 A。改走纯 AppKit，反而让该文件零 `NSHostingView` |
+| §2.2-8：「进入全屏幕」标题不会翻 | **假发现**。原结论是静态 grep「退出全屏幕」搜不到得出的，而那个字符串由 AppKit 提供：`toggleFullScreen:` 全框架只有 `NSWindow` 实现，`-[NSWindow validateMenuItem:]` 会自己改写标题 | 批 C，[实测 probe]：建一扇同形态的窗，标题先写成「进入全屏幕」再 validate 一次，当场被改成系统串。**代码一行没加**，证据记在 `MainMenu.swift:218-223` |
+| §2.2-4 修法：「`SearchFieldBinder.focus()` 已经现成」 | **API 名写错**。`SearchFieldBinder`（`ContentToolbar.swift:135`）没有 `focus()`；有的是 `SearchPageFieldBinder`（`:360`，方法在 `:407`），那是搜索页的 | 批 C。改成直接 `makeFirstResponder(binder.field)` |
+| §2.6-8 修法：「从错误码判断就够，不必引入 `NWPathMonitor`」 | **不成立**。`MusicProvider.catalogItems` 与 `playlists(tag:)` **都不 throws**（对照 `playlistDetail` 是 `async throws`），交不出来就回 `.empty`，`URLError` 根本到不了界面层；改签名要动 `MusicProvider.swift`（归批 G） | 批 D。用了一次性 `NWPathMonitor`，只在「确定一件都摆不出来」时问一次 |
+
+### 几处与计划不同的落地决定
+
+1. **批 B 的导航意图没有并进 `Route`。** `.libraryArtist(id:)` 既不造页也不入栈，塞进 `Route`
+   会逼 `ContentPageFactory` 合成一页假的；改成载体 `NavigationIntent` 自己的一条落点。
+2. **批 B 一个调用点都没改**（§5 第 3 条的约定兑现了），代价是四类调用点响应链够不着——
+   主会话在接缝二里用 `MainSplitViewController` + `AppDelegate` 两环转发补齐。
+3. **批 C 的撤销放得回条目、放不回文件。** 退库会清下载、本地曲目还可能被移进废纸篓；
+   撤销之后条目以「失联」形态回来（`missingFileTrackIDs` 本来就有这一档）。
+4. **批 C 的退库撤销放回数组最前面，不是原位**——三张有序关系表只有 `moveToFront` 一个写入口，
+   按原位插回要另开写盘路径，违背「恢复路径与正向路径同一个落库口」。添加日期原样还回去，
+   所以按日期排的页看到的仍是原位置。
+5. **批 C 把 `toggleFavorite` 的撤销从「取反」改成「置成某个状态」**——取反那条在
+   「注册之后用户自己又点回去」时会把状态推过头。有专门用例钉住。
+6. **批 D 有本地内容时不报错**（照 `SearchResultsModel` 的既定口径）。副作用：资料库非空的用户
+   断网时看不到「网络不可用」那屏，要去分类浏览页才看得到。
+7. **批 D 的焦点环没做**，按回退路径退了——驱动它要改卡片基类（不归 D）。
+   留的线索：页面侧 `hoveredCard` 是鼠标驱动、每帧随滚动重算，**焦点态不能复用同一个字段**。
+
+### 这一轮新暴露、等用户定夺的
+
+| 项 | 情况 |
+| --- | --- |
+| **「删除播放列表」的确认框** | 批 C **没加**并把决定交回来：三个调用点（`LibraryPlaylistViews` / `LibraryGridCards` / `DetailHeaderViews`）都不归它，而把 `NSAlert` 塞进 `LibraryStore` 会让这个 Foundation-only 的服务类长出 UI、变成异步，还会改掉三处现有用例的语义。**而且撤销已经补上了这条路的回头路**——HIG 对可撤销的操作更倾向不弹确认框，Music 自己却是弹的。两条路都说得通，等定夺 |
+| **没有 `.lproj` 会不会让系统串退成英文** | 撤销项的完整标题由 Foundation 拼（zh_CN 的格式串是「撤销%@」，**没有空格**），全屏标题由 AppKit 提供。Amber 的 bundle 里没有任何 `.lproj`（§3-1），这两条离线验证不了，实机看一眼就知道。若真退成 "Undo 删除播放列表" / "Enter Full Screen"，§3-1 的优先级要往上提 |
+| **艺人页曲目行的第一响应者** | 批 B 指出：该页曲目行 `mouseDown` 不调 `super`（`LibraryArtistsViewController.swift:1940`），只点右侧曲目行、从没点过左列时 ⌘I 可能仍灰。属于交互修，不在任何批范围内 |
