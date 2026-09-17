@@ -295,8 +295,8 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
                     continue
                 }
                 // 勾选列同理：它是 AppKit 的格子，不像富单元格那样自己跟着重画。
-                // 菜单「勾选所选项」一次改一批，改完由 `LibraryStore.objectWillChange`
-                // 走到这里，把可见行的勾重新落一遍。
+                // 菜单「勾选所选项」一次改一批，改完由 `LibraryStore` 那一位 `.checkmarks`
+                // 细出口走到这里，把可见行的勾重新落一遍。
                 if let checkbox = cell as? SongsCheckboxCellView {
                     let library = appState.library
                     checkbox.configure(checked: library.isChecked(track)) { [weak library] checked in
@@ -482,12 +482,15 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         return true
     }
 
-    /// ⌫ / ⌘⌫ 把选中的曲目移出资料库（Music 的 `doDeleteTracksFromLibrary:`）。
+    /// 把选中的曲目移出资料库（Music 的 `doDeleteTracksFromLibrary:`）。
+    ///
+    /// **入口是页面级命令 `amberDeleteSelection(_:)`**（「编辑 ▸ 删除」与表格里的 ⌫
+    /// 走同一条，见 `LibrarySongsViewController` 与 `TrackDisplayTableView.keyDown`），
+    /// 这里只是它的执行体。
     ///
     /// 两张对话框（确认 + 「文件去哪」）整段在 `LibraryDeleteAlert` 里，理由见那边的
     /// 类型注释（spec §10.2）。都是窗口页签（sheet），所以真正的删除落在回调里；
-    /// 返回 true 只表示这一下按键已经被接住了，不该再往 super 传
-    /// （否则 ⌫ 会被当成别的操作）。
+    /// 返回 true 只表示这一下已经被接住了。
     @discardableResult
     func deleteSelection() -> Bool {
         guard let table = tableView else { return false }
@@ -496,7 +499,11 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         LibraryDeleteAlert.confirm(tracks: picked, in: table.amberWindow,
                                    appState: appState) { [weak self, weak table] in
             guard let self else { return }
-            for track in picked { self.appState.library.removeFromLibrary(track) }
+            // 一次删一批 = 一步撤销（撤销放得回条目、放不回已经进废纸篓的文件，
+            // 见 `LibraryStore.LibraryRemoval`）。
+            self.appState.library.withUndoGrouping("从资料库中删除") {
+                for track in picked { self.appState.library.removeFromLibrary(track) }
+            }
             table?.deselectAll(nil)
         }
         return true
@@ -900,9 +907,13 @@ final class TrackDisplayTableView: NSTableView {
             if flags.isDisjoint(with: [.command, .option, .control]),
                controller?.playSelection() == true { return }
         // ⌫ 与 ⌘⌫ 走同一条：菜单里没有 ⌘⌫ 的等价键，命令键事件没人接就照常派发成 keyDown，
-        // 这里不看修饰键，两下都落到同一个「先弹确认再删」上。
+        // 这里不看修饰键。**两下都往响应链上发「编辑 ▸ 删除」那一个选择器**，
+        // 不再直接调控制器——这样菜单与键盘是同一条命令，验证与撤销名字都只有一处
+        // （实现在 `LibrarySongsViewController.amberDeleteSelection(_:)`）。
+        // 选中集为空时不发：让事件照旧落到 super，「没得删就哔一声」不变。
         case 51:                                        // ⌫ / ⌘⌫
-            if controller?.deleteSelection() == true { return }
+            if controller?.selectedTracks().isEmpty == false,
+               tryToPerform(MainMenu.Action.deleteSelection, with: self) { return }
         default: break
         }
         super.keyDown(with: event)
