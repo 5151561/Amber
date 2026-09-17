@@ -29,10 +29,10 @@ final class LibraryStoreDerivedTests: XCTestCase {
     }
 
     private func makeTrack(_ id: String, title: String, artist: String, album: Album,
-                           trackNumber: Int? = nil) -> Track {
+                           trackNumber: Int? = nil, discNumber: Int? = nil) -> Track {
         Track(id: id, kind: .qq, title: title, artistName: artist, artistId: nil,
               albumName: album.name, albumId: album.id, artworkURL: nil, duration: 180,
-              trackNumber: trackNumber)
+              trackNumber: trackNumber, discNumber: discNumber)
     }
 
     // MARK: - 艺人派生
@@ -73,6 +73,104 @@ final class LibraryStoreDerivedTests: XCTestCase {
         // 全部曲目按「最近添加的碟在前」，碟内按曲序
         XCTAssertEqual(store.tracks(byArtist: "告五人").map(\.title),
                        ["曲三", "曲二", "曲一"])
+    }
+
+    // MARK: - 排序切成 SQL + Swift 两半之后
+
+    /// **同一张碟、同一个音轨号、标题里带数字**：逼最后那道比较子出场，
+    /// 钉住它排的是**自然序**而不是字节序。
+    ///
+    /// `tracks(byArtist:)` 的排序现在切成两半——碟序与碟内曲序由 SQL 排，
+    /// 标题那一级在 Swift 里对「SQL 认为并列」的那一撮做。标题那级用的是
+    /// `localizedStandardCompare`：数字按值比，`第2首` 在 `第10首` 前面。
+    /// 换成 SQLite 的 `ORDER BY title` 就是 UTF-8 字节序，`'1' < '2'`，
+    /// `第10首` 会跑到前面去。
+    ///
+    /// **危险的地方在于大部分歌看起来还是对的**：音轨号一路唯一时最后那道比较子
+    /// 根本不出场，改坏了也没人报 bug。所以这里三首歌的音轨号故意撞在一起——
+    /// 不撞就什么都测不到。第三首（`第1首`、音轨号 2）守的是另一半：
+    /// 标题只在并列的那一撮里说话，不许越过音轨号那一级。
+    func testTitlesTiedOnDiscAndNumberSortNaturallyNotByBytes() {
+        let store = makeStore()
+        let album = makeAlbum("qq:a1", name: "同一张碟", artist: "告五人")
+        store.addAlbumToLibrary(album, tracks: [
+            makeTrack("qq:t1", title: "第10首", artist: "告五人", album: album, trackNumber: 1),
+            makeTrack("qq:t2", title: "第2首", artist: "告五人", album: album, trackNumber: 1),
+            makeTrack("qq:t3", title: "第1首", artist: "告五人", album: album, trackNumber: 2),
+        ])
+
+        XCTAssertEqual(store.tracks(byArtist: "告五人").map(\.title),
+                       ["第2首", "第10首", "第1首"],
+                       "标题那一级不是自然序了（字节序会排成 第10首 / 第2首）")
+    }
+
+    /// 碟号那一级由 SQL 排，`COALESCE(disc_number, 0)` 对应内存那版的 `discNumber ?? 0`：
+    /// 没写碟号的算第 0 碟，排在第 2 碟前面。碟号相同才轮到音轨号。
+    func testDiscNumberOrdersBeforeTrackNumber() {
+        let store = makeStore()
+        let album = makeAlbum("qq:a1", name: "双碟", artist: "告五人")
+        store.addAlbumToLibrary(album, tracks: [
+            makeTrack("qq:d2t1", title: "二碟首曲", artist: "告五人", album: album,
+                      trackNumber: 1, discNumber: 2),
+            makeTrack("qq:d1t9", title: "一碟末曲", artist: "告五人", album: album,
+                      trackNumber: 9, discNumber: 1),
+            makeTrack("qq:d0t5", title: "没写碟号", artist: "告五人", album: album,
+                      trackNumber: 5),
+        ])
+
+        XCTAssertEqual(store.tracks(byArtist: "告五人").map(\.title),
+                       ["没写碟号", "一碟末曲", "二碟首曲"])
+    }
+
+    /// 艺人的音源取自**第一张**挂这个名字的入库专辑，专辑都没有才退到单曲——
+    /// 这份「先专辑后单曲」的优先级现在由 SQL 那条 `UNION ALL` 的 `tier` 列表达，
+    /// 去重与排序仍在 Swift 里。
+    func testArtistKindComesFromAlbumNotTrack() {
+        let store = makeStore()
+        let album = Album(id: "nc:a1", kind: .netease, name: "网易的碟", artistName: "告五人",
+                          artistId: nil, artworkURL: nil, publishDate: nil, trackCount: 1,
+                          description: nil)
+        store.addAlbumToLibrary(album, tracks: [])
+        // 同名艺人的一首 QQ 单曲：晚于专辑，抢不走音源
+        store.addToLibrary(Track(id: "qq:t1", kind: .qq, title: "单曲", artistName: "告五人",
+                                 artistId: nil, albumName: "别的碟", albumId: nil,
+                                 artworkURL: nil, duration: 180))
+
+        XCTAssertEqual(store.libraryArtists().map(\.kind), [.netease])
+    }
+
+    /// **写库失败之后，界面读到的仍然是对的。**
+    ///
+    /// 这是关系查询从读内存数组换成读表之后多出来的失败形状：`persist` 吞错只记日志
+    ///（理由见它自己的注释），一次写失败会让表落在内存后面，而读表的查询当场就答错
+    /// ——刚入库的碟不出现在艺人页上，不用等重启。处置是 `LibraryStore.mirrorIsStale`：
+    /// 写失败就把读路径退回内存那份现算，口径回到「写库失败只丢持久化，不丢当场的正确性」。
+    ///
+    /// 失败是真造出来的：把连接设成 `query_only`，`persist` 里那句 `BEGIN IMMEDIATE`
+    /// 当场拿到 `SQLITE_READONLY`（实测：query_only 下写事务开都开不起来）。
+    func testDerivedQueriesFallBackToMemoryAfterAFailedWrite() throws {
+        let store = makeStore()
+        let first = makeAlbum("qq:a1", name: "第一张", artist: "告五人")
+        store.addAlbumToLibrary(first, tracks: [
+            makeTrack("qq:t1", title: "曲一", artist: "告五人", album: first, trackNumber: 1),
+        ])
+        XCTAssertFalse(store.mirrorIsStale)
+
+        // store 与这里共用同一条连接（`AmberDatabase.shared(directory:)` 按目录记忆化）
+        let database = try AmberDatabase.shared(directory: directory)
+        try database.sqlite.execute("PRAGMA query_only = ON")
+        defer { try? database.sqlite.execute("PRAGMA query_only = OFF") }
+
+        let second = makeAlbum("nc:a2", name: "第二张", artist: "宇多田光")
+        store.addAlbumToLibrary(second, tracks: [
+            makeTrack("nc:t2", title: "曲二", artist: "宇多田光", album: second, trackNumber: 1),
+        ])
+        XCTAssertTrue(store.mirrorIsStale, "落库失败了却没把陈旧位竖起来")
+
+        // 表里只有第一张碟，内存里有两张——三条派生查询都必须答内存那份
+        XCTAssertEqual(store.libraryArtists().map(\.name), ["告五人", "宇多田光"])
+        XCTAssertEqual(store.albums(byArtist: "宇多田光").map(\.name), ["第二张"])
+        XCTAssertEqual(store.tracks(byArtist: "宇多田光").map(\.title), ["曲二"])
     }
 
     // MARK: - 同名专辑不串曲目

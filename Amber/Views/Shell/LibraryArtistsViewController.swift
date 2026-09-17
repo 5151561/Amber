@@ -49,7 +49,18 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     private var detailTableView: NSTableView!
 
     // 数据缓存
+    /// 左列真正在列的那份：`allLibraryArtists` 过了「仅喜爱」与搜索、再排序。
     private var artists: [Artist] = []
+    /// 资料库里全部的艺人，**一次 refresh 现算一次、这一页全程复用**。
+    ///
+    /// `LibraryStore.libraryArtists()` 是现算的派生量（从入库专辑与曲目的艺人名去重
+    /// 派生），而这一页从前一轮刷新里要问它 **6 次**：`refreshData()` 自己一次、
+    /// `updateDetailContent()` 按 id 找当前那位一次、`resolveAvatars()` 一次，
+    /// 外加播放、切喜爱、弹 ⋯ 菜单三处各一次。它下沉到 SQL 之后，那就是 6 次查询。
+    ///
+    /// 按 id 找人的那四处用这份缓存而不是现问，还顺带把一致性钉死了：用户点的是
+    /// **屏幕上这一份**，动作落到的也就该是这一份，而不是「点下去那一刹那库里的那一份」。
+    private var allLibraryArtists: [Artist] = []
     private var selectedID: String?
     /// 我们自己往左列写选中时置位，免得代理回调把这一下再回灌进 `selectedID`
     /// （照侧栏 `SidebarOutlineController.isSyncing` 的写法）。
@@ -423,9 +434,10 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
 
     private func refreshData() {
         let library = appState.library
-        let allLibArtists = library.libraryArtists()
+        // 这一轮刷新的那一份，下面与几处动作路径全用它（见 `allLibraryArtists`）。
+        allLibraryArtists = library.libraryArtists()
 
-        if allLibArtists.isEmpty {
+        if allLibraryArtists.isEmpty {
             splitView.isHidden = true
             showEmptyLibraryView()
             return
@@ -434,7 +446,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         splitView.isHidden = false
         emptyLibraryHost?.isHidden = true
 
-        var list = allLibArtists
+        var list = allLibraryArtists
         if model.favoritesOnly {
             list = list.filter { artist in
                 library.albums(byArtist: artist.name).contains { !library.tracks(in: $0).isEmpty && library.isFavoriteAlbum($0) }
@@ -546,7 +558,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         } else {
             headerView.isHidden = false
             headerHeightConstraint.constant = M.headerHeight
-            let artist = library.libraryArtists().first(where: { $0.id == selectedID })
+            let artist = allLibraryArtists.first(where: { $0.id == selectedID })
             let artistName = artist?.name ?? ""
             currentAlbums = library.albums(byArtist: artistName).filter { !library.tracks(in: $0).isEmpty }
             detailRows = currentAlbums.map { DetailRow.album($0) }
@@ -582,7 +594,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         // 队列面板「继续播放」分区头的「来自《…》」＝这位艺人，点它回艺人页。
         // 对整个详情面（没指定艺人）时落到当前选中的那位；「所有艺人」那档没有单一落点。
         let selected = selectedID.flatMap { id in
-            id == Self.allArtistsID ? nil : library.libraryArtists().first { $0.id == id }
+            id == Self.allArtistsID ? nil : allLibraryArtists.first { $0.id == id }
         }
         let source = (artist ?? selected).map {
             PlayerController.QueueSource(title: $0.name, route: .artist($0))
@@ -601,7 +613,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
             target = artist
         } else {
             guard let selectedID, selectedID != Self.allArtistsID else { return }
-            target = library.libraryArtists().first(where: { $0.id == selectedID })
+            target = allLibraryArtists.first(where: { $0.id == selectedID })
         }
         guard let target else { return }
         library.toggleFavoriteArtist(target)
@@ -636,7 +648,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
         actions.play = { [weak self] in self?.play(shuffled: false, artist: artist) }
         actions.shuffle = { [weak self] in self?.play(shuffled: true, artist: artist) }
 
-        let target = artist ?? library.libraryArtists().first(where: { $0.id == selectedID })
+        let target = artist ?? allLibraryArtists.first(where: { $0.id == selectedID })
         if let target, selectedID != Self.allArtistsID || artist != nil {
             if library.isFavoriteArtist(target) {
                 actions.undoFavorite = { [weak self] in self?.toggleFavoriteArtist(target) }
@@ -689,7 +701,7 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     /// 这一轮没搜到头像的（音源查无此人、或者网络当时不通）会在处理完时从
     /// `avatarQueuedNames` 里摘掉，下一次`refreshData()` 还会重新排上——与从前同。
     private func resolveAvatars() {
-        let pending = appState.library.libraryArtists().filter {
+        let pending = allLibraryArtists.filter {
             resolvedAvatars[$0.name] == nil && !avatarQueuedNames.contains($0.name)
         }
         guard !pending.isEmpty else { return }
