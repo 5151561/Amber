@@ -1519,8 +1519,41 @@ final class LibraryStore {
     private var isLoaded = false
 
     /// 启动时把主库读进内存那几份可观察属性。
+    ///
+    /// ## 这一趟花多久（`[实测]` 2026-09-17，本机 Debug `-Onone`）
+    ///
+    /// 复刻这条路的独立基准（曲目全表 + 三张关系表 + `playlist_track` + `track_stat`，
+    /// 同一份 `library.sqlite`，best of 7）：
+    ///
+    /// | 曲目行数 | Debug `-Onone` | Release `-O -wmo` |
+    /// | ---: | ---: | ---: |
+    /// | 203（本机今天这份） | **0.675 ms** | 0.209 ms |
+    /// | 50,203（同一份库灌到 5 万行） | **73.2 ms** | 50.3 ms |
+    ///
+    /// 也就是约 1.4 µs/行（Debug）、1.0 µs/行（Release），**严格线性**——曲目全表的
+    /// 解码（13 列，多数是 `String`）就是全部代价，五张关系表只是 id 查表。
+    /// 按 120 Hz 一帧 8.3 ms 算，越过一帧的分界线在 **6,000 首**上下。
+    ///
+    /// 审查单 §2.6-4 说的「整座资料库在首帧之前、主线程上同步读完」属实
+    ///（`AppDelegate.appState` 是存储属性，在 `applicationDidFinishLaunching` 之前就跑），
+    /// 但**它今天值 0.675 ms**。所以那条的修法（拆两段 / 把 `track_stat` 挪后）这一轮
+    /// 没有做，理由与替代方案记在 `loadFromDatabase` 的注释里。
+    ///
+    /// 埋点在这里：真到了越线那天，Instruments 的 os_signpost 仪器一眼就能看见，
+    /// 不用再靠推。区间名 `LibraryStore.load`，结束时带四个计数。
     private func load() {
         guard let db = database?.sqlite else { return }
+        let signposter = AmberDiagnostics.launch
+        let interval = signposter.beginInterval("LibraryStore.load")
+        // `defer` 而不是在 `do` 末尾收口：读到一半抛错时区间也要闭合，
+        // 否则 Instruments 上留一条永不结束的区间，比没埋更难看。
+        // 计数取的是**收口那一刻**的内存现值——抛错那一路仍是空的，正好说明问题。
+        defer {
+            signposter.endInterval("LibraryStore.load", interval, """
+                tracks=\(self.libraryTracks.count) albums=\(self.libraryAlbums.count) \
+                playlists=\(self.playlists.count) recents=\(self.recentTracks.count)
+                """)
+        }
         do {
             try loadFromDatabase(db)
         } catch {
@@ -1535,12 +1568,40 @@ final class LibraryStore {
     ///
     /// **先全读进局部变量，最后一次性赋值。** 读到一半抛错时一个属性都不许动过——
     /// 半份内存模型会被随后的任何一次改动当成真值镜像回表里。
+    ///
+    /// ## 为什么没按 §2.6-4 拆成两段（2026-09-17，本批的结论）
+    ///
+    /// 审查单给的修法是「同步只读头 N 行喂首屏 + 其余异步补齐后一次 `notify`」，
+    /// 或者退一步「把 `track_stat` / `recent_*` 挪到 `runLaunchTasksOnce`」。三条不成立：
+    ///
+    /// 1. **异步补齐要有「同时能干的别的事」才是优化，而这一刻没有。**
+    ///    这趟读发生在 `AppDelegate.appState` 这个存储属性上，也就是 `main()` 里
+    ///    `AppDelegate()` 那一行，`app.run()` 之前——主线程此刻**没有第二件事**可做。
+    ///    把它挪到后台只是让主线程空等，除非肯先画一帧**空资料库**。而那一帧一空，
+    ///    「本地优先」（§2.6-1 刚修好的那条）就从另一个方向破了。
+    /// 2. **退一步那条省不下东西。** 上面那张表说得很清楚：代价全在曲目全表的解码上，
+    ///    `track_stat` 是按 id 挂的一行账，`recent_track` 有 200 条的窗口上限
+    ///    （见 `recentContainers` 的注释）。把这两张挪后，省下的是零头；
+    ///    而 `addedAt` 正是歌曲页默认排序与「最近添加」分段的依据，挪后那一帧的**顺序是错的**。
+    /// 3. **异步那一次 `notify` 有一个已知的落点是会炸的**：组合布局在「已进窗口但宽度
+    ///    还是 0」的那一拍灌快照，会几秒吃掉几十 GB 内存（记忆
+    ///    `am-collectionview-zero-width-explodes`）。补齐那一下正好落在窗口刚建起来
+    ///    的那几拍里，是命中概率最高的时机。要拆，得先确认 18 个页控制器各自的
+    ///    `changes(affecting:)` 订阅都在场——那是 `Views/**` 的事，不在本批的文件里。
+    ///
+    /// 所以这一轮**只埋点**（见 `load()`）：区间里三条 `emitEvent` 把这一趟切成
+    /// 「曲目全表 / 歌单与专辑 / 统计与标记」三段，越线那天在 Instruments 上直接看得出
+    /// 是哪一段涨的，不用再拿基准去猜。
     private func loadFromDatabase(_ db: SQLiteDatabase) throws {
+        let signposter = AmberDiagnostics.launch
+        // 事件不是区间：不成对、抛错也不会留下半条，所以敢放在 `try` 之间。
+        // 消息里的插值在没人采样时不求值，计数本身是 O(1)。
         // 曲目池：五张关系表存的都是 id，行本身只有这一份（原来是摊在五处的完整副本）。
         var pool: [String: Track] = [:]
         for track in try db.query(Self.trackSelect, [], { Self.decodeTrack($0) }) {
             pool[track.id] = track
         }
+        signposter.emitEvent("LibraryStore.read.tracks", "rows=\(pool.count)")
         /// 关系表 → 曲目数组。取不到行的 id 直接跳过：五张表都对 `track(id)` 有外键，
         /// 走到这一步只可能是有人拿 `sqlite3` 手工动过库。
         func ordered(_ table: String) throws -> [Track] {
@@ -1582,6 +1643,10 @@ final class LibraryStore {
                          [], { ($0.text(0), $0.optText(1), $0.optText(2)) })
                 .compactMap { RecentContainer.make(kind: $0.0, refID: $0.1, payload: $0.2,
                                                    track: { pool[$0] }) })
+        signposter.emitEvent("LibraryStore.read.playlists", """
+            albums=\(loadedAlbums.count) playlists=\(loadedPlaylists.count) \
+            containers=\(loadedContainers.count)
+            """)
 
         var loadedPlayCounts: [String: Int] = [:]
         var loadedSkipCounts: [String: Int] = [:]
@@ -1618,6 +1683,11 @@ final class LibraryStore {
         let loadedSuggestLessTracks = try idSet("suggest_less_track")
         let loadedSuggestLessArtists = try idSet("suggest_less_artist")
         let loadedDismissed = try idSet("dismissed_account_playlist")
+
+        signposter.emitEvent("LibraryStore.read.stats", """
+            stats=\(loadedAddedAt.count) ratings=\(loadedRatings.count) \
+            unchecked=\(loadedUnchecked.count)
+            """)
 
         // 搜索索引那份正文指纹。放在读的这一段里：它自己也是「读完了才赋值」，
         // 而且必须在下面那次 `persist("清理幽灵碟")` 之前就绪——那一次写会去删索引行。
@@ -2235,10 +2305,27 @@ final class LibraryStore {
     ///    （`taylor` 命中）。这是**有意的**变化，Apple Music 自己就是词前缀匹配，
     ///    别当 bug 改回去——`LibrarySearchTests.testLatinMatchesWordPrefixNotArbitrarySubstring`
     ///    专门钉住它。退路那一条走的仍是子串，所以故障时召回只会更宽、不会更窄。
+    ///
+    /// ## 为什么这条路这一轮没搬去 actor（§2.4-1 点名的两条只读路之一）
+    ///
+    /// 搬它要把签名改成 `async`，而**七个调用点一个都不在本批的文件里**：
+    /// `LibrarySongsViewController:421`、`SearchResultsModel:231,235`、
+    /// `LibraryRecentlyAddedViewController:176`、`LibraryArtistsViewController:469`、
+    /// `PlaylistDetailViewController:204`、`LibraryAllPlaylistsViewController:133`、
+    /// `LibraryAlbumsViewController:149`——七处全是「同步刷新函数里取一次 filter
+    /// 再当场筛数组」的形状，改 `async` 等于把七页的刷新链一起改成异步，
+    /// 还要各自处理「筛到一半用户又敲了一个字」。另有 8 处测试是同步断言。
+    ///
+    /// 这不是「难」，是**归属**：审查单 §5 明写各批文件不重叠，这条得等一个同时握着
+    /// 那七页的批次。埋点先留下（区间 `LibraryStore.search`），好让下一轮拿着
+    /// 「一次 MATCH 到底几毫秒」的实测数去决定值不值得动那七页。
     func searchFilter(_ raw: String, kind: LibrarySearchIndex.Kind) -> LibraryTextFilter {
         let keyword = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let query = LibrarySearch.ftsQuery(keyword) else { return .all }
         guard !mirrorIsStale, let db = database?.sqlite else { return .substring(keyword) }
+        let signposter = AmberDiagnostics.launch
+        let interval = signposter.beginInterval("LibraryStore.search", "kind=\(kind.rawValue)")
+        defer { signposter.endInterval("LibraryStore.search", interval) }
         do {
             return .ids(try LibrarySearchIndex.matchedIDs(kind, query: query, in: db))
         } catch {
