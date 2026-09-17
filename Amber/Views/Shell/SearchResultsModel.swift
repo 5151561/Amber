@@ -241,21 +241,22 @@ final class SearchResultsModel: ObservableObject, CatalogPageModelProviding {
     /// 艺人从命中的专辑/单曲去重派生；派生艺人没有本地头像，
     /// 由 resolveLibraryArtistAvatars 按艺人名向音源解析，不用专辑封面顶替。
     private func commitLibrarySearch(term: String) {
-        let needle = term.lowercased()
         var tracks = library.libraryTracks
         // 心水歌曲是用户数据的一部分（Music 资料库搜索同样能搜到已心水但未入库的歌）。
         for favorite in library.favoriteTracks
         where !tracks.contains(where: { $0.id == favorite.id }) {
             tracks.append(favorite)
         }
+        // 曲目与专辑各问一次（七处同一个口，见 `LibraryStore.searchFilter`）。
+        // 艺人不单独问：这一页的艺人是从**命中的**专辑与曲目现派生的，
+        // 而不是「资料库里叫这个名字的艺人」——下面那两段就是它的定义。
+        let trackMatches = library.searchFilter(term, kind: .track)
         let matchedTracks = tracks.filter {
-            $0.title.localizedCaseInsensitiveContains(needle)
-                || $0.artistName.localizedCaseInsensitiveContains(needle)
-                || $0.albumName.localizedCaseInsensitiveContains(needle)
+            trackMatches.keeps($0.id, [$0.title, $0.artistName, $0.albumName])
         }
+        let albumMatches = library.searchFilter(term, kind: .album)
         let matchedAlbums = library.libraryAlbums.filter {
-            $0.name.localizedCaseInsensitiveContains(needle)
-                || $0.artistName.localizedCaseInsensitiveContains(needle)
+            albumMatches.keeps($0.id, [$0.name, $0.artistName])
         }
         var artists: [Artist] = []
         for album in matchedAlbums where !artists.contains(where: { $0.name == album.artistName }) {

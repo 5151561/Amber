@@ -116,13 +116,8 @@ final class LibraryAlbumsViewController: LibraryPageController,
         let library = appState.library
         var result = library.libraryAlbums.filter { !library.tracks(in: $0).isEmpty }
         if model.favoritesOnly { result = result.filter { library.isFavoriteAlbum($0) } }
-        let keyword = model.search.trimmingCharacters(in: .whitespaces)
-        if !keyword.isEmpty {
-            result = result.filter {
-                $0.name.localizedCaseInsensitiveContains(keyword)
-                    || $0.artistName.localizedCaseInsensitiveContains(keyword)
-            }
-        }
+        let matches = library.searchFilter(model.search, kind: .album)
+        result = result.filter { matches.keeps($0.id, [$0.name, $0.artistName]) }
         albums = sorted(result)
         collectionView?.reloadData()
         updateEmptyState()

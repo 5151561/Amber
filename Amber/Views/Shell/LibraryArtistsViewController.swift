@@ -452,10 +452,10 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
                 library.albums(byArtist: artist.name).contains { !library.tracks(in: $0).isEmpty && library.isFavoriteAlbum($0) }
             }
         }
-        let keyword = model.search.trimmingCharacters(in: .whitespaces)
-        if !keyword.isEmpty {
-            list = list.filter { $0.name.localizedCaseInsensitiveContains(keyword) }
-        }
+        // 索引里艺人那一档的 id 与这里派生出来的是同一批（都出自
+        // `LibraryStore.artists(from:)`，见 `LibrarySearchIndex.derivedArtists`）。
+        let matches = library.searchFilter(model.search, kind: .artist)
+        list = list.filter { matches.keeps($0.id, [$0.name]) }
         list.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         artists = list
         leftTableView.reloadData()

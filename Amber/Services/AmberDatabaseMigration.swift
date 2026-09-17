@@ -688,7 +688,15 @@ enum AmberDatabaseMigration {
                 try insertTrackInfo(plan, into: sqlite)
                 try insertLoudness(plan, into: sqlite)
                 try insertLocalFiles(plan, into: sqlite)
-                try insertSearchIndex(plan, into: sqlite)
+                // 搜索索引这一轮**就填**，不留到接线那一步：填的成本只有一次全量插入，
+                // 而不填的代价是「库里有数据、搜索表是空的」这种半成品状态。
+                //
+                // 填法是**照搬运行期那一个**（`LibrarySearchIndex.rebuild`），不另写一份：
+                // 它要的四样东西（`track` / `library_album` / `playlist` / 派生艺人）
+                // 上面几行刚好全灌完，而且它本来就要在升级链的 v4 上跑。
+                // 另写一份的代价不是啰嗦——是「迁过来那份索引」与「重建出来那份索引」
+                // 可以悄悄不一样，而这种不一样在界面上的表现只是「有几首歌搜不到」。
+                try LibrarySearchIndex.rebuild(in: sqlite)
             }
         } catch let error as SQLiteError {
             throw Failure.write(error)
@@ -948,58 +956,6 @@ enum AmberDatabaseMigration {
                              row.addedAt, row.quality, row.codec, row.sampleRate, row.bitDepth,
                              row.tier, row.tagged, row.tagVersion])
         }
-    }
-
-    /// 搜索索引这一轮**就填**，不留到接线那一步。
-    ///
-    /// 填的成本只有一次全量插入，而不填的代价是「库里有数据、搜索表是空的」这种半成品状态——
-    /// 接线那一步会以为自己接错了。四种对象共用六列，用不上的列由 `indexRow` 填空串。
-    private static func insertSearchIndex(_ plan: Plan, into db: SQLiteDatabase) throws {
-        let sql = """
-            INSERT INTO search_index (name, artist, album, phonetic, owner_kind, owner_id)
-            VALUES (?,?,?,?,?,?)
-            """
-        func insert(_ row: LibrarySearch.IndexRow, kind: String, id: String) throws {
-            try db.run(sql, [row.name, row.artist, row.album, row.phonetic, kind, id])
-        }
-
-        for track in plan.tracks {
-            try insert(LibrarySearch.indexRow(name: track.title, artist: track.artistName,
-                                              album: track.albumName),
-                       kind: "track", id: track.id)
-        }
-        for album in plan.archive.libraryAlbums ?? [] {
-            try insert(LibrarySearch.indexRow(name: album.name, artist: album.artistName),
-                       kind: "album", id: album.id)
-        }
-        for playlist in plan.archive.playlists ?? [] {
-            // 歌单的 `artist` 列放创建者：本地自建列表没有创建者，那一列就是空串。
-            try insert(LibrarySearch.indexRow(name: playlist.name,
-                                              artist: playlist.source?.creatorName ?? ""),
-                       kind: "playlist", id: playlist.id)
-        }
-        for artist in libraryArtists(plan) {
-            try insert(LibrarySearch.indexRow(name: artist.name), kind: "artist", id: artist.id)
-        }
-    }
-
-    /// 资料库派生的艺人：与 `LibraryStore.libraryArtists()` 同解——先从入库专辑的艺人名
-    /// 去重，再补上只有单曲入库的艺人，id 是 `library-artist:<艺人名>`。
-    ///
-    /// 这里重算而不是调那个函数，是因为它是 `LibraryStore` 的**实例**方法（读 `@Published`
-    /// 数组），迁移时那个 store 还没建出来。排序不重算：索引表不在乎顺序。
-    private static func libraryArtists(_ plan: Plan) -> [(id: String, name: String)] {
-        var names: [String] = []
-        var seen: Set<String> = []
-        for album in plan.archive.libraryAlbums ?? []
-        where !album.artistName.isEmpty && seen.insert(album.artistName).inserted {
-            names.append(album.artistName)
-        }
-        for track in plan.archive.libraryTracks ?? []
-        where !track.artistName.isEmpty && seen.insert(track.artistName).inserted {
-            names.append(track.artistName)
-        }
-        return names.map { (id: Artist.libraryIDPrefix + $0, name: $0) }
     }
 
     // MARK: - 校验

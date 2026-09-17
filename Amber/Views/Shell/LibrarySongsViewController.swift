@@ -377,12 +377,11 @@ final class LibrarySongsViewController: ContentPageController {
         if let duplicatesMatch {
             result = DuplicateTracksFilter.duplicates(in: result, match: duplicatesMatch)
         }
-        let keyword = search.trimmingCharacters(in: .whitespaces)
-        if !keyword.isEmpty {
-            result = result.filter { track in
-                [track.title, track.artistName, track.albumName]
-                    .contains { $0.localizedCaseInsensitiveContains(keyword) }
-            }
+        // 搜索走 `LibrarySearch`（七处同一个口，见 `LibraryStore.searchFilter`）：
+        // 拿回命中的 id，筛的仍是手里这份数组，上面判重、下面排序都不受影响。
+        let matches = library.searchFilter(search, kind: .track)
+        result = result.filter {
+            matches.keeps($0.id, [$0.title, $0.artistName, $0.albumName])
         }
         // 开插图列**不改行序**：插图那一列是「本行与上一行是不是同一张专辑」逐行切出来的
         // （见 SongsAlbumArt / `rebuildAlbumArtTypes`），按标题排就是一首一块，

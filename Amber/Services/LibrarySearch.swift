@@ -10,8 +10,9 @@ import Foundation
 /// MATCH '七里香' → 命中      MATCH '里香' → 不命中
 /// ```
 ///
-/// 今天七处 `localizedCaseInsensitiveContains` 搜得到的东西，换成裸 FTS5 反而搜不到——
-/// 那不是升级，是功能回归。
+/// 从前那七处 `localizedCaseInsensitiveContains` 搜得到的东西，换成裸 FTS5 反而搜不到——
+/// 那不是升级，是功能回归。（七处现在收在 `LibraryStore.searchFilter(_:kind:)` 一个口上，
+/// 表那一头见 `LibrarySearchIndex`。）
 ///
 /// **解法是「空格插值 + 短语邻近」。** 入库时把汉字 / 假名 / 谚文逐字垫空格（`segment`），
 /// 一个字就是一个 token；查询时**用同一个 `segment` 切**，再按用户敲的空白分组、组内并成

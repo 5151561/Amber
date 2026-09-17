@@ -176,17 +176,36 @@ final class PlaylistDetailViewController: TrackTableViewController {
         defaults.set(sortAscending, forKey: "\(sortDefaultsKey)-ascending")
     }
 
+    /// 这一页摆着的曲目，`search_index` 认不认识它们的 id。
+    ///
+    /// **认识的只有落过库的那两种**：心水歌曲（`favorite_track`）与本地自建列表
+    /// （`playlist_track`）。另外两种的曲目是**刚从音源取回来的**，从未落库——
+    /// 目录里浏览的歌单压根没进过资料库，镜像账号歌单虽然自己在库里，
+    /// 但每次打开都拿服务端那份最新曲目重铺（`showLibrary(_:tracks: detail.tracks…)`），
+    /// 服务端加的那首歌本机一个字都没有。
+    ///
+    /// 这两种要是也走 id 集合，搜什么都是**零命中**——那不是「收成一个口」，是把一页搜废。
+    /// 所以它们仍按内存子串筛（与这次改造之前逐字相同），代价是同一个搜索框在这一页的
+    /// 两种来源下规则不同。收窄这条缝要么把音源那份曲目也灌进索引（凭空多出一份
+    /// 谁也不负责回收的行），要么在 Swift 里把 FTS5 的短语 / 前缀语义重实现一遍
+    /// （两份规则迟早漂）——都比这条缝贵。
+    private var tracksAreIndexed: Bool {
+        switch source {
+        case .favorites: return true
+        case .library(let id): return appState.library.playlist(id: id)?.source == nil
+        case .catalog: return false
+        }
+    }
+
     /// 原始顺序 → 筛选 → 排序，得到真正上屏的那一批。
     private func displayTracks() -> [Track] {
         var result = loadedTracks
-        let keyword = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !keyword.isEmpty {
-            // 标题 / 艺人 / 专辑三列都认——与曲目表里看得见的那几列一致。
-            result = result.filter {
-                $0.title.localizedCaseInsensitiveContains(keyword)
-                    || $0.artistName.localizedCaseInsensitiveContains(keyword)
-                    || $0.albumName.localizedCaseInsensitiveContains(keyword)
-            }
+        // 标题 / 艺人 / 专辑三列都认——与曲目表里看得见的那几列一致。
+        let matches = tracksAreIndexed
+            ? appState.library.searchFilter(filterText, kind: .track)
+            : LibraryTextFilter.inMemory(filterText)
+        result = result.filter {
+            matches.keeps($0.id, [$0.title, $0.artistName, $0.albumName])
         }
         let library = appState.library
         switch sortKey {
