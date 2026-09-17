@@ -1942,7 +1942,27 @@ private final class LibraryArtistTrackRowView: NSView {
         titleToDuration.isActive = !ratingFits
     }
 
+    /// 三条分支照旧（双击起播 / 悬浮点 ▶ 起播 / 单击选中），前面多一句「把第一响应者
+    /// 交给右侧那张表」。
+    ///
+    /// **为什么需要**：⌘I 是响应链命令（`MainMenu` 里 `target = nil`），
+    /// `LibraryArtistsViewController.validateMenuItem` 只有在页面处于**第一响应者的
+    /// 响应链上**时才会被问到。这一行是裸 `NSView`，`mouseDown` 又整只吃掉了事件，
+    /// 底下那张 `NSTableView` 收不到点击、也就不会 `makeFirstResponder(self)`——
+    /// 于是「从侧栏点进艺人页 → 只点右侧曲目行」这条路上第一响应者还停在侧栏那棵
+    /// outline 上，本页不在链上，⌘I 恒灰（验收清单第 12 条记的「已知边界」）。
+    /// `selectedTrackID` 其实已经写上了，灰的原因**不是**没选中。
+    ///
+    /// **为什么不是照批 B 说的「调 `super.mouseDown`」**：`NSView` 的默认实现只是
+    /// 把事件顺着响应链往上传，它本身**不改第一响应者**。真要靠它生效，得指望事件
+    /// 一路传到 `NSTableView` 的 `mouseDown:`，让表格顺手做两件事——`makeFirstResponder`
+    /// 与**选中那一行**（这里一行 = 一整张专辑块），还会当场进它的拖选事件循环。
+    /// 要的是第一件，另外两件是白搭进来的副作用。所以只做第一件。
+    ///
+    /// 焦点给**表格**而不是给这一行：行是 `NSTableCellView` 里的子视图，随滚动复用，
+    /// 一旦被移出视图树第一响应者就掉回窗口，⌘I 又灰了；表格是常驻的。
     override func mouseDown(with event: NSEvent) {
+        takeFirstResponderForMenuCommands()
         let point = convert(event.locationInWindow, from: nil)
         // 双击整行起播；悬浮时点 ▶ 那一格也直接播；其余单击＝选中
         if event.clickCount >= 2 {
@@ -1952,6 +1972,20 @@ private final class LibraryArtistTrackRowView: NSView {
             playFromHere()
         } else {
             onSelect?()
+        }
+    }
+
+    /// 往上找到装着自己的那张表，把第一响应者交给它。找不到（还没进表里）就什么都不做。
+    private func takeFirstResponderForMenuCommands() {
+        var ancestor = amberSuperview
+        while let current = ancestor {
+            if let table = current as? NSTableView {
+                if table.amberWindow?.firstResponder !== table {
+                    table.amberWindow?.makeFirstResponder(table)
+                }
+                return
+            }
+            ancestor = current.amberSuperview
         }
     }
 
