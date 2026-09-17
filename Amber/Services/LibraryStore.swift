@@ -1596,7 +1596,9 @@ final class LibraryStore {
     /// 是哪一段涨的，不用再拿基准去猜。
     private func loadFromDatabase(_ db: SQLiteDatabase) throws {
         // 下面三条用的是**事件**不是区间：事件不成对，读到一半抛错也不会留下半条，
-        // 所以敢直接摆在几条 `try` 之间。消息里的插值在没人采样时不求值，计数是 O(1)。
+        // 所以敢直接摆在几条 `try` 之间；而且实测一条事件只要 271 ns，区间要 560 ns
+        // （表在 `AmberDiagnostics.launch`——**没人采样时也不是零**，别照着往热路径里加）。
+        // 三条一共不到 1 µs，对着这一趟 0.675 ms 是零头。
         let signposter = AmberDiagnostics.launch
 
         // 曲目池：五张关系表存的都是 id，行本身只有这一份（原来是摊在五处的完整副本）。
@@ -2326,6 +2328,10 @@ final class LibraryStore {
         let keyword = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let query = LibrarySearch.ftsQuery(keyword) else { return .all }
         guard !mirrorIsStale, let db = database?.sqlite else { return .substring(keyword) }
+        // 这条埋点在**每次敲键**的路径上，所以先算过账：一条区间实测 560 ns
+        //（表在 `AmberDiagnostics.launch`），而这一行下面是一次 FTS5 MATCH 加
+        // 调用方那边几千行的数组筛选。埋在 `ftsQuery` 与两道降级闸**之后**：
+        // 空查询与退回内存那两条根本不进来，量到的就是「真发了一次 MATCH」那一次。
         let signposter = AmberDiagnostics.launch
         let interval = signposter.beginInterval("LibraryStore.search", "kind=\(kind.rawValue)")
         defer { signposter.endInterval("LibraryStore.search", interval) }
