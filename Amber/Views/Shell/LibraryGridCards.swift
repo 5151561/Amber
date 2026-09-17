@@ -13,6 +13,64 @@ import SwiftUI
 // 底垫 10。数字见 `MusicMetrics.LibraryGrid` / `MusicMetrics.Card`，出处标在那边。
 // 悬浮态由卡片自己持有（铁律 3），右键菜单是卡片自己的 `NSMenu`（铁律 4）。
 
+// MARK: - 快照身份
+
+/// 三张资料库网格页（专辑 / 最近添加 / 所有播放列表）灌 diffable 快照时的**身份规则**
+/// （审查单 §2.6-3）。
+///
+/// 单摆一处不是为了省那几行，是为了**能被用例钉住**：身份错了，增量快照比 `reloadData()`
+/// 更糟——后者只是慢，前者会错位（`reactive-ui-review.md §2.2` 点名的两类坑：掺下标、
+/// 掺会变的内容）。这里三条规则一条都不含下标、不含会变的内容，也都不碰界面，
+/// 所以是纯函数、不上主 actor。
+enum LibraryGridIdentity {
+
+    /// 「所有播放列表」网格里一格的身份。
+    ///
+    /// 做成枚举而不是「`"favorites"` 这个约定字符串 + 歌单 id」：后者只要有人真的建了
+    /// 一份 id 是 `favorites` 的歌单就撞，而撞上的后果是 diffable 抛异常。枚举把这条路
+    /// 从根上关掉。歌单改名、换封面、增删曲目都不改 `playlist.id`，那几件只重配、不重建。
+    enum PlaylistEntry: Hashable {
+        case favorites
+        case playlist(String)
+    }
+
+    /// 按 id 去重，**保持原序**，重复的留第一份。
+    ///
+    /// 库里这两位（`Album.id` / `LibraryPlaylist.id`）本来就唯一：内存侧有
+    /// `libraryAlbumIDs` 与 `isPlaylistInLibrary` 把着，落盘侧是 `id TEXT PRIMARY KEY`。
+    /// 但 diffable 遇到重复身份是**抛异常**，而 `reloadData()` 只是照画两遍——
+    /// 真有上游 bug 时少画一张，胜过拿整扇窗口去赌。
+    static func deduplicated<Item: Identifiable>(_ items: [Item]) -> [Item]
+    where Item.ID == String {
+        var seen = Set<String>()
+        seen.reserveCapacity(items.count)
+        return items.filter { seen.insert($0.id).inserted }
+    }
+
+    /// 「最近添加」的分段：按添加日期归档，段序**固定照 `RecentAddedBucket.allCases`**，
+    /// 空档整段不出现。
+    ///
+    /// 段身份就是 `RecentAddedBucket` 这一位语义键，**不是段序号**：序号进身份，
+    /// 一次入库开出「今天」这一段，下面每一段都会被判成「删了再加」，整页重建
+    /// （与 `reactive-ui-review.md §3` 第 14 条「货架横滚位置按 `section.id` 存而不是
+    /// 按段序号」同一条理由）。
+    ///
+    /// 分档是一次**划分**——同一张碟只落进一段，所以 `Album.id` 在整份快照里天然
+    /// 全局唯一（diffable 要的正是全局唯一，不是段内唯一）。
+    /// `addedDate` 交不出日期的落「更早」档（旧存档没有 `albumAddedAt` 时的回落路径，
+    /// 见 `LibraryStore.albumAddedDate(for:)`）。
+    static func recentSections(_ albums: [Album],
+                               addedDate: (Album) -> Date?) -> [(RecentAddedBucket, [Album])] {
+        let grouped = Dictionary(grouping: deduplicated(albums)) { album -> RecentAddedBucket in
+            guard let date = addedDate(album) else { return .earlier }
+            return RecentAddedBucket.bucket(of: date)
+        }
+        return RecentAddedBucket.allCases.compactMap { bucket in
+            grouped[bucket].map { (bucket, $0) }
+        }
+    }
+}
+
 // MARK: - 列宽换算
 
 /// 资料库网格页（专辑 / 最近添加 / 所有播放列表）共用的列宽换算与重排。
@@ -133,12 +191,16 @@ final class LibraryGridCollectionView: NSCollectionView {
     }
 
     /// **判据不能只是「还是不是同一个对象」。** 卡片自己那一位`isHovering` 会在
-    /// `prepareForReuse` 里被清成 false，而`reloadData()` 正是让在屏 item 全走一遍
-    /// `prepareForReuse`——重载之后`hoveredCard` 仍指着同一个对象，只按对象相等短路的话
+    /// `prepareForReuse` 里被清成 false，而只要有 item 被丢回复用队列再出队，
+    /// `hoveredCard` 就可能仍指着同一个对象、那一位却已经是 false 了。只按对象相等短路的话
     /// 这一下就再也发不出去：光标停在一张卡上，此时一个下载完成或别处点了个喜爱，
     /// 这张卡的暗罩和悬浮播放键当场消失、鼠标不动就回不来，播放键也点不到
     /// （design-ref/reactive-ui-review.md 故障 10 前半）。
     /// 所以再加一条「卡自己记的那一位与期望不一致也重新下发」。
+    ///
+    /// 三页换成增量快照（审查单 §2.6-3）之后，从前那个「一次`reloadData()` 把在屏 item
+    /// **全部**走一遍 `prepareForReuse`」的大口子已经没有了——身份没变的卡根本不复用。
+    /// 这一条仍然留着：diffable 判成删+加的那几件照样进复用队列，代价只是一次比较。
     private func setHoveredCard(_ card: LibraryGridCardView?) {
         if card === hoveredCard, card?.isHovering ?? true { return }
         hoveredCard?.setHovering(false)
@@ -148,9 +210,9 @@ final class LibraryGridCollectionView: NSCollectionView {
 
     /// 每轮布局落定之后按鼠标现在压在哪儿重判一次。
     ///
-    /// 挂在 `layout()` 而不是各页重载完各调一次：`reloadData()` 会把在屏 item 全丢回
-    /// 复用队列，同一个卡视图很可能被换去装另一张碟——那时「悬浮的是哪张卡」已经变了，
-    /// 而鼠标一动不动，不会再来 `mouseMoved`。列宽变了（改窗宽、开合侧栏）也是同一回事。
+    /// 挂在 `layout()` 而不是各页灌完数据各调一次：一次增删会让后面每张卡都挪一格，
+    /// 光标底下那张就换成了另一张碟——「悬浮的是哪张卡」已经变了，而鼠标一动不动，
+    /// 不会再来 `mouseMoved`。列宽变了（改窗宽、开合侧栏）也是同一回事。
     /// 这里做一次 hitTest 就全覆盖了，各页也不用各记一次；且必须在`super.layout()`
     /// 之后——卡片的 frame 是那一句才落定的。
     override func layout() {
