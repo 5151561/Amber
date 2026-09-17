@@ -65,29 +65,71 @@ extension SyncedLyricsLineLayer {
     /// Amber 用 `CIFilter` 顶替私有的`CAFilter`，靠`name` 让 keyPath 找得到它。
     /// 模糊那个原版是在别处建的（`setBlurRadius` 第一次动它之前就存在），
     /// 这里一并建出来——两个都在才保证 `filters` 数组的顺序是先模糊后亮度。
+    ///
+    /// 两段分开判：**滤镜对象**建一次就一直留着，**`filters` 数组**会被
+    /// `detachFocusFilters()` 摘下来（见`needsCoreImageFilters` 那一段），所以
+    /// 「对象在、数组不在」是合法状态，挂回去时不重建对象——里面的
+    /// `inputRadius` / `inputBrightness` 原样就是摘下来那一刻的值。
     func installFocusFiltersIfNeeded() {
-        guard brightnessFilter == nil else { return }
+        if brightnessFilter == nil {
+            let blur = blurFilter ?? {
+                let f = CIFilter(name: "CIGaussianBlur")
+                f?.name = "gaussianBlur"
+                f?.setValue(0, forKey: "inputRadius")
+                return f
+            }()
+            blurFilter = blur
 
-        let blur = blurFilter ?? {
-            let f = CIFilter(name: "CIGaussianBlur")
-            f?.name = "gaussianBlur"
-            f?.setValue(0, forKey: "inputRadius")
-            return f
-        }()
-        blurFilter = blur
+            let brightness = CIFilter(name: "CIColorControls")
+            brightness?.name = "colorBrightness"
+            brightness?.setValue(0, forKey: "inputBrightness")
+            brightnessFilter = brightness
 
-        let brightness = CIFilter(name: "CIColorControls")
-        brightness?.name = "colorBrightness"
-        brightness?.setValue(0, forKey: "inputBrightness")
-        brightnessFilter = brightness
+            // 滤镜要画到行框之外（模糊的尾巴、辉光），不能裁。
+            masksToBounds = false
+            // 下面 `setLineFocused` 的动画收尾会开`shouldRasterize`，而
+            // `rasterizationScale` 默认 1.0——不在这里钉死，缓存位图就按 1× 画。
+            rasterizationScale = renderingScale
+            contentsScale = renderingScale
+        }
+        if filters == nil {
+            filters = [blurFilter, brightnessFilter].compactMap { $0 }
+        }
+    }
 
-        // 滤镜要画到行框之外（模糊的尾巴、辉光），不能裁。
-        masksToBounds = false
-        // 下面 `setLineFocused` 的动画收尾会开`shouldRasterize`，而
-        // `rasterizationScale` 默认 1.0——不在这里钉死，缓存位图就按 1× 画。
-        rasterizationScale = renderingScale
-        contentsScale = renderingScale
-        filters = [blur, brightness].compactMap { $0 }
+    /// 这一行现在要不要走进程内渲染（＝滤镜要不要真的落到像素上）。
+    ///
+    /// 两个输入都停在恒等式上（模糊半径 0、亮度 0）时，整条 Core Image 路是白开的：
+    /// 画面一像素不差，代价却是这棵子树退出进程外渲染（见
+    /// `SyncedLyricsLineView.setCoreImageFiltersActive`）。
+    ///
+    /// 亮度那一路只看 `isLineFocused`：它与「亮度不为 0」一一对应
+    /// （`setLineFocused` 里目标值就是`focused ? ±1 : 0`，两支汇合后写这个字段）。
+    ///
+    /// **动画还在跑的那 0.12s 也算「要」**：这条路一关，滤镜当场不落像素，
+    /// 去模糊 / 去提亮的淡变会被砍成瞬移。两条 keyPath 就是动画的 key
+    /// （`layer.add(anim, forKey: keyPath)`），问图层自己就够，不必另记账。
+    ///
+    /// 只读，没有副作用——开合由宿主视图那一侧做（`NSView` 是 `@MainActor` 的，
+    /// `CALayer` 不是，这个方向的调用在本仓一处都没有，不从这里开头）。
+    var needsCoreImageFilters: Bool {
+        hasFilterInput
+            || animation(forKey: Self.blurKeyPath) != nil
+            || animation(forKey: Self.brightnessKeyPath) != nil
+    }
+
+    /// 两个滤镜输入现在是不是恒等式。**两个字段读，不查图层的动画表**——
+    /// 这条每帧对全表问一遍（`SyncedLyricsLineView.syncCoreImageFilterUsage`），
+    /// 而「已经关着、输入也还是恒等式」是最常见的那一档，不该为它去查两次动画。
+    var hasFilterInput: Bool { blurRadius > 0 || isLineFocused }
+
+    /// 把 `filters` 数组摘下来。滤镜对象留着，`installFocusFiltersIfNeeded` 会原样挂回。
+    ///
+    /// **只允许在 `needsCoreImageFilters == false` 时调**：数组不在时那两条 keyPath
+    /// （`filters.gaussianBlur.inputRadius` / `filters.colorBrightness.inputBrightness`）
+    /// 写进去会石沉大海。唯一的调用点是 `SyncedLyricsLineView.setCoreImageFiltersActive`。
+    func detachFocusFilters() {
+        filters = nil
     }
 
     /// 切换聚焦（悬停）外观。复现原版的 `focused:animated:` 那条。

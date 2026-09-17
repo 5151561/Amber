@@ -115,6 +115,8 @@ final class SyncedLyricsViewController: NSViewController {
         // 那一帧永远轮不到，模糊会卡在停之前的样子。恢复时链子重开，
         // 回填由第一帧自己做。
         manager?.syncBlurToPlaybackState()
+        // 同理：链停了就没有下一帧来收「淡变跑完了，这一行可以退回进程外渲染」。
+        manager?.syncCoreImageFilterUsage()
     }
 
     /// 停机：停每帧驱动、撤在跑的动画、摘掉块式观察者。

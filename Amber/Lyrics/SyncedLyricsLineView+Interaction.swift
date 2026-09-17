@@ -35,6 +35,8 @@ extension SyncedLyricsLineView {
         // `highlightView*` 那四个 spec 字段（8% 白底 / 圆角 16 / 外扩 16 / 标签 0.85）
         // 的消费者没有定位到，所以这里不画底板。
         lineLayer?.setLineFocused(hovered, animated: false)
+        // 提亮是**不带动画**的，所以这条路必须这一刻就通——晚一帧就是「亮了一帧才亮」。
+        syncCoreImageFilterUsage()
     }
 }
 

@@ -58,9 +58,12 @@ final class ImageCache: @unchecked Sendable {
         // 这种地址不走网络那条路：URLSession 认 file 协议，但再往磁盘缓存里存一份
         // 只是把同一张图抄了两遍，而且那份抄件会被 30 天的清理误删。
         if url.isFileURL {
-            guard let data = try? Data(contentsOf: url), let image = Self.decode(data) else {
-                return nil
-            }
+            // 片段里带着档位就按档解码，没带就按原尺寸（与改这条之前一致）。
+            // 键用的是**带片段的整串**，所以 40pt 的行与 400pt 的头各占一条，
+            // 小档不会把大档的位图顶掉、大档也不会被小档污染。
+            guard let data = try? Data(contentsOf: url),
+                  let image = Self.decode(data, maxPixelSize: Self.requestedPixelSize(url))
+            else { return nil }
             store(image, for: urlString)
             return image
         }
@@ -117,25 +120,50 @@ final class ImageCache: @unchecked Sendable {
     /// 不同尺寸的层上就要重新光栅化几次，几张图同时在解码时会互相串进对方的位图，
     /// 屏幕上就是「一块封面由几条别人的封面横带拼成」。
     ///
-    /// 本地导入的封面尤其容易撞上：`ArtworkSize.url` 认不出 `file://` 地址，原样返回，
-    /// 于是 40pt 的列表行、240pt 的专辑块、400pt 的详情头共用**同一个** `NSImage` 实例
-    /// （网络封面每档尺寸各有各的地址，反而各解各的）。
-    ///
     /// `CGImageSourceCreateImageAtIndex` + `kCGImageSourceShouldCacheImmediately` 把解码
     /// 提前到这里（后台线程、每张图各自一份），`NSImage(cgImage:size:)` 之后只是一层壳，
     /// 交给 CoreAnimation 时直接就是位图，没有「用的时候再画一遍」。
-    nonisolated static func decode(_ data: Data) -> NSImage? {
+    ///
+    /// - Parameter maxPixelSize: 给了就按这个长边降采样。本地导入曲目的内嵌封面常见
+    ///   1500–3000px，一张就吃掉 `totalCostLimit` 的百分之几，而 40pt 的行只要 80px；
+    ///   档位由 `ArtworkSize.url` 写进 `file://` 地址的片段里（网络封面每档尺寸各有
+    ///   各的地址，档位在服务端就分好了，走的是 nil 这一支）。
+    nonisolated static func decode(_ data: Data, maxPixelSize: Int? = nil) -> NSImage? {
         guard !data.isEmpty,
-              let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, [
-                  kCGImageSourceShouldCache: true,
-                  kCGImageSourceShouldCacheImmediately: true,
-              ] as CFDictionary)
+              let source = CGImageSourceCreateWithData(data as CFData, nil)
         else { return nil }
+        var options: [CFString: Any] = [
+            kCGImageSourceShouldCache: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        let cgImage: CGImage?
+        if let maxPixelSize {
+            // `…FromImageAlways`：内嵌缩略图往往没有或太小，一律拿原图现缩。
+            // 源图本来就比要的小时它**不放大**（[实测 probe] 1200px 的源要 4000px，
+            // 回来的还是 1200），所以这一档只会砍、不会插值糊。
+            // 故意不传 `kCGImageSourceCreateThumbnailWithTransform`：上面那条不降采样的
+            // 路也不转 EXIF 朝向，两支要给出同一张图，不能只有一支会转。
+            options[kCGImageSourceCreateThumbnailFromImageAlways] = true
+            options[kCGImageSourceThumbnailMaxPixelSize] = maxPixelSize
+            cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        } else {
+            cgImage = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
+        }
+        guard let cgImage else { return nil }
         // 尺寸按像素给：封面都是位图，再按 DPI 折算成 point 只会让 40pt 的行拿到一张
         // 「size 500×500」的图去缩放，NSCache 的 cost 也会跟着算错。
         return NSImage(cgImage: cgImage,
                        size: CGSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    /// 从 `file://` 地址的片段里读出请求档位（像素）。没有标记就回 nil = 按原尺寸解。
+    private static func requestedPixelSize(_ url: URL) -> Int? {
+        guard let fragment = url.fragment,
+              fragment.hasPrefix(ArtworkSize.localPixelMarker),
+              let pixels = Int(fragment.dropFirst(ArtworkSize.localPixelMarker.count)),
+              pixels > 0
+        else { return nil }
+        return pixels
     }
 
     /// NSCache 的 cost 用「像素数 × 4」估位图占用（RGBA8）。
