@@ -62,14 +62,14 @@ extension AppState {
             .environmentObject(self)
             .environmentObject(player)
             .environmentObject(library)
-            .environmentObject(downloads)
+            .environment(downloads)
             .environment(qqLogin)
             .environment(neteaseLogin)
             .environment(providerSettings)
             .environmentObject(player.clock)
-            .environmentObject(songsTable)
-            .environmentObject(listViewSize)
-            .environmentObject(AppSettings.shared))
+            .environment(songsTable)
+            .environment(listViewSize)
+            .environment(AppSettings.shared))
     }
 }
 

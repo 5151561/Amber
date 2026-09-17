@@ -381,10 +381,7 @@ final class AppState: ObservableObject {
         observers.observe({ [weak audioOutput] in audioOutput?.output }) { [weak self] _ in
             self?.pushEffectiveQuality()
         }
-        AppSettings.shared.$values
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.pushEffectiveQuality() }
-            .store(in: &cancellables)
+        observers.observe({ AppSettings.shared.values }) { [weak self] _ in self?.pushEffectiveQuality() }
 
         // 账号里的歌单进资料库、登录态校验：都由 MainView 在上屏时触发
         //（init 里不发网络请求也不动资料库——AppState 只是被构造出来时不该有副作用），

@@ -403,12 +403,9 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
             .store(in: &cancellables)
 
         // 下载列要跟着进度走：`DownloadStore.states` 每整百分点发一次
-        appState.downloads.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.refreshTrackStates()
-            }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.downloads.states }) { [weak self] _ in
+            self?.refreshTrackStates()
+        }
     }
 
     /// 刷新入口：合批 + 可见性闸。

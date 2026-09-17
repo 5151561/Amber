@@ -76,6 +76,24 @@ final class ObservationInfraTests: XCTestCase {
         XCTAssertEqual(seen, ["b", "c", "b"], "换回 b 会再发——相邻去重不记历史")
     }
 
+    /// **登记之后、任务跑起来之前**改的那一下不能丢。
+    ///
+    /// 这是 `observe` 里那道基线保护挡的坑：`Observations` 的首个元素是「订阅时的当前值」，
+    /// 而任务要过一跳才开始迭代——中间改了的话首个元素已经是新值，简单的 `dropFirst()`
+    /// 会把这条改动整个吞掉。Combine 的 `.sink` 是同步登记的，没有这段窗口，
+    /// 所以迁移时不补这一手就是静默丢事件（实测：DownloadStore 改媒体夹那两条测试全红）。
+    func testChangeBetweenSubscribeAndFirstTurnIsNotSwallowed() async {
+        let model = Model()
+        let bag = TaskBag()
+        var seen: [Int] = []
+        bag.observe({ model.count }) { seen.append($0) }
+        // 故意不 settle：这一行就落在那道窗口里。
+        model.count = 42
+        await settle()
+
+        XCTAssertEqual(seen, [42], "登记到首次迭代之间的改动必须照发")
+    }
+
     func testCancelAllStopsDelivery() async {
         let model = Model()
         let bag = TaskBag()

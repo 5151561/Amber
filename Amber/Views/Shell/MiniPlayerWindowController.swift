@@ -81,6 +81,8 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
     private let airPlaySelector = MiniPlayerRoutePickerView()
 
     private var cancellables = Set<AnyCancellable>()
+
+    private let observers = TaskBag()
     /// `NSApplication` 没有公开的`isTerminating`，用`willTerminateNotification` 自己记一位：
     /// spec §6 要求「App 不在退出中」时才把状态归档回 UserDefaults。
     private var appIsTerminating = false
@@ -233,21 +235,15 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
     /// spec §2 的两条 KVO（`toolbarDefaultObserver` / `alwaysOnTopObserver`）。
     /// Amber 的偏好走 `AppSettings`，所以用同语义的 Combine 订阅：两条都要**实时**生效。
     private func observeDefaults() {
-        AppSettings.shared.$values
-            .map(\.miniPlayerOnTop)
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] onTop in self?.window?.level = Self.level(onTop: onTop) }
-            .store(in: &cancellables)
+        observers.observe({ AppSettings.shared.values.miniPlayerOnTop }) { [weak self] onTop in
+            self?.window?.level = Self.level(onTop: onTop)
+        }
         // [实测] `miniPlayerAlwaysOnTop` 为真 →`window.level = 3` = `.floating`。
         window?.level = Self.level(onTop: AppSettings.shared.values.miniPlayerOnTop)
 
-        AppSettings.shared.$values
-            .map(\.useToolbarInMiniPlayer)
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.installToolbarIfNeeded() }
-            .store(in: &cancellables)
+        observers.observe({ AppSettings.shared.values.useToolbarInMiniPlayer }) { [weak self] _ in
+            self?.installToolbarIfNeeded()
+        }
     }
 
     /// spec §6 + §2：一次性状态迁移。失败静默吞掉。

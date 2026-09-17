@@ -39,7 +39,7 @@ struct PlayerMoreMenu: View {
     /// 表本身读的是 `appState.library` / `.downloads`，这里再声明一次是为了**依赖登记**：
     /// 心水、入库这些状态一变，这棵子树才跟着重建。
     @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var downloads: DownloadStore
+    @Environment(DownloadStore.self) private var downloads
 
     var body: some View {
         MenuSpec.Rows(Self.entries(track: track, appState: appState,

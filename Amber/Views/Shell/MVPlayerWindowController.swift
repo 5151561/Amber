@@ -22,6 +22,7 @@ final class MVPlayerWindowController: NSWindowController, NSWindowDelegate {
     private let videoPlayer = AVPlayer()
     private let playerView = AVPlayerView()
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
 
     /// 当前这扇窗在播的 MV（重复点同一支时不必重新取流）。
     private(set) var currentMV: MV?
@@ -53,11 +54,9 @@ final class MVPlayerWindowController: NSWindowController, NSWindowDelegate {
 
         // 设置 › 高级 ›「在其他所有窗口前端播放视频」。订阅而不是开窗时读一次：
         // 用户在设置窗里一按「好」这扇窗就该跟着变，不用关掉重开。
-        AppSettings.shared.$values
-            .map(\.videoOnTop)
-            .removeDuplicates()
-            .sink { [weak window] onTop in window?.level = onTop ? .floating : .normal }
-            .store(in: &cancellables)
+        observers.observe({ AppSettings.shared.values.videoOnTop }) { [weak window] onTop in
+            window?.level = onTop ? .floating : .normal
+        }
     }
 
     @available(*, unavailable)

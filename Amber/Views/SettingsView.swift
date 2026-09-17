@@ -168,10 +168,10 @@ private struct SettingsPane<Content: View>: View {
 
 /// 底部按钮行：通栏细线 + 右下角成对的「取消 / 好」（[AX] 各 52×26，相隔 10）。
 private struct SettingsButtonRow: View {
-    @EnvironmentObject private var settings: AppSettings
+    @Environment(AppSettings.self) private var settings
     @Environment(QQLoginStore.self) private var qqLogin
     @Environment(ProviderSettingsStore.self) private var providerSettings
-    @EnvironmentObject private var listViewSize: ListViewSizeStore
+    @Environment(ListViewSizeStore.self) private var listViewSize
     var model: SettingsDraftModel
 
     var body: some View {

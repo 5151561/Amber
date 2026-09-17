@@ -316,7 +316,7 @@ final class DownloadStoreTests: XCTestCase {
 
     /// 改路径：文件、index.json 一起搬过去，状态里的绝对 URL 跟着换，并回一句 toast。
     @MainActor
-    func testChangingMediaFolderMovesEverything() throws {
+    func testChangingMediaFolderMovesEverything() async throws {
         let source = try makeDirectory("A")
         let target = try makeDirectory("B")
         try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"], in: source)
@@ -329,6 +329,7 @@ final class DownloadStoreTests: XCTestCase {
         store.onMediaFolderChanged = { message = $0 }
 
         settings.values.mediaFolderPath = target.path
+        await settleObservations()
 
         XCTAssertEqual(store.state(for: "qq:1"),
                        .downloaded(target.appendingPathComponent("qq_1.flac")))
@@ -343,7 +344,7 @@ final class DownloadStoreTests: XCTestCase {
 
     /// 有序命名下的子目录也要一起搬（索引里存的是带 `/` 的相对路径）。
     @MainActor
-    func testChangingMediaFolderMovesNestedFiles() throws {
+    func testChangingMediaFolderMovesNestedFiles() async throws {
         let source = try makeDirectory("A")
         let target = try makeDirectory("B")
         try write(file: "告五人/某碟/03 傻鱼-9MnYb.flac",
@@ -354,6 +355,7 @@ final class DownloadStoreTests: XCTestCase {
                                   databaseDirectory: try makeDirectory("support"))
 
         settings.values.mediaFolderPath = target.path
+        await settleObservations()
 
         XCTAssertTrue(exists("告五人/某碟/03 傻鱼-9MnYb.flac", in: target))
         XCTAssertTrue(store.isDownloaded("qq:1"))
@@ -810,7 +812,7 @@ final class DownloadStoreTests: XCTestCase {
     /// 换「媒体」文件夹：文件整份搬过去，相对路径一个字不变，投影跟着搬——
     /// 键与新清单逐个相同，所以旧卷那些行被 UPSERT 原地改掉，不会留下孤儿。
     @MainActor
-    func testChangingMediaFolderKeepsProjectionRows() throws {
+    func testChangingMediaFolderKeepsProjectionRows() async throws {
         let source = try makeDirectory("A")
         let target = try makeDirectory("B")
         let support = try makeDirectory("support")
@@ -820,6 +822,7 @@ final class DownloadStoreTests: XCTestCase {
                                   settings: settings, databaseDirectory: support)
 
         settings.values.mediaFolderPath = target.path
+        await settleObservations()
 
         XCTAssertTrue(store.isDownloaded("qq:1"))
         let rows = try localFileRows(in: support)

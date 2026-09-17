@@ -72,7 +72,7 @@ final class SongsRichCellView: NSTableCellView {
             .environmentObject(appState)
             .environmentObject(appState.player)
             .environmentObject(appState.library)
-            .environmentObject(appState.downloads))
+            .environment(appState.downloads))
         host.translatesAutoresizingMaskIntoConstraints = false
         // 一格只准画自己那块矩形。NSTableCellView 默认不裁剪，SwiftUI 那边算出来的内容
         // 比当前列宽宽时就直接画到右边那一列上去了——插图格最明显：列拖窄之后
@@ -273,11 +273,11 @@ struct SongsTableCellContent: View {
 
     @EnvironmentObject private var player: PlayerController
     @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var downloads: DownloadStore
+    @Environment(DownloadStore.self) private var downloads
     /// 只给 ••• 菜单用（前往专辑 / 新建播放列表这类要 `AppState` 的动作）。
     @EnvironmentObject private var appState: AppState
     /// 单元格是 AppKit 表格里挂出来的 SwiftUI 子树，不在设置窗那棵环境里，走 shared
-    @ObservedObject private var settings = AppSettings.shared
+     private let settings = AppSettings.shared
 
     private typealias M = MusicMetrics.SongsTable
 

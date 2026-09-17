@@ -72,11 +72,12 @@ enum LibraryDownloadAction: Equatable {
 /// 于是「跑一次完整的投影重建，external 行一个不变」是这张表的核心不变量，
 /// 由重建语句那句 `WHERE scope = 'media'` 保证。
 @MainActor
-final class DownloadStore: ObservableObject {
+@Observable
+final class DownloadStore {
 
     /// 每首歌的当前状态。`@Published` 让整张表跟着刷新；
     /// 进度是 1% 一跳（见 `report`），不是每个数据包都发一次。
-    @Published private(set) var states: [String: DownloadState] = [:]
+    private(set) var states: [String: DownloadState] = [:]
 
     /// 由 AppState 注入：解析曲目的**远端**流地址。
     /// 必须是「不查本地」的那一条，否则下载会去读自己刚写下的文件（见 AppState.init）。
@@ -108,6 +109,7 @@ final class DownloadStore: ObservableObject {
     private let directoryIsPinned: Bool
     private let settings: AppSettings
     private var cancellables = Set<AnyCancellable>()
+    private let observers = TaskBag()
     /// id → 索引条目。`states` 是它加上「正在下的那几首」的视图。
     ///
     /// **内存这一份是这一程的真值**，清单与主库那张表都跟着它镜像（见 `save(changed:removed:)`）。
@@ -282,15 +284,10 @@ final class DownloadStore: ObservableObject {
         // `dropFirst` 跳过当前值：上面已经按它开的目录。
         // 取的是**闭包参数**里的目录，不是 `settings.values`：`@Published` 在`willSet`
         // 发消息，订阅回调里读回去拿到的还是旧值。
-        settings.$values
-            .map(\.mediaFolder)
-            .removeDuplicates()
-            .dropFirst()
-            .sink { [weak self] folder in
-                guard let self, !self.directoryIsPinned else { return }
-                self.migrate(to: folder)
-            }
-            .store(in: &cancellables)
+        observers.observe({ [settings] in settings.values.mediaFolder }) { [weak self] folder in
+            guard let self, !self.directoryIsPinned else { return }
+            self.migrate(to: folder)
+        }
 
         // 媒体夹放在外接盘上时，拔插一次就是「这批文件整体消失 / 整体回来」。
         // 两条通知都落到 `reloadFromManifest()`（阶段 5 就是为这一刻留的那个口）。

@@ -206,19 +206,21 @@ final class LibrarySongsViewController: ContentPageController {
             .store(in: &cancellables)
 
         // 下载态同理（云端列按它排序），否则下完一首、按云端列排的表不会重排
-        appState.downloads.objectWillChange
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.downloads.states }) { [weak self] _ in
+            self?.setNeedsRefresh()
+        }
 
         // 列、排序、筛选、显示插图、始终显示插图都在这里
-        appState.songsTable.objectWillChange
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        observers.observeAny({ [appState] in
+            let t = appState.songsTable
+            return (t.columns, t.sort, t.filter, t.showArtwork,
+                    t.alwaysShowArtwork, t.artworkSize, t.showTrackArtwork)
+        }) { [weak self] in self?.setNeedsRefresh() }
 
         // 行高与字号跟全局的列表尺寸偏好走（Music 的 setupListFontFromPrefs: 每次都去问 prefs）
-        appState.listViewSize.objectWillChange
-            .sink { [weak self] _ in self?.setNeedsRefresh() }
-            .store(in: &cancellables)
+        observers.observe({ [appState] in appState.listViewSize.size }) { [weak self] _ in
+            self?.setNeedsRefresh()
+        }
 
         // 搜索词由标题栏那颗搜索框给（`SongsPageModel` + `SearchFieldBinder`）。
         // 改搜索词是**用户主动换了看法**，这一类才滚回选中行——排序与筛选那两条

@@ -137,19 +137,15 @@ final class SidebarViewController: NSViewController {
             .sink { [weak self] _ in self?.reloadEntries() }
             .store(in: &cancellables)
         // 通用页「显示 › iTunes Store」：关掉时整组连同组标题一起消失（Music 同）。
-        AppSettings.shared.$values
-            .map(\.showITunesStore)
-            .removeDuplicates()
-            .sink { [weak self] shown in
-                guard let self else { return }
-                // 选中项不能停在一个侧栏里已经不存在的页上（那样右边还显示着 iTunes Store，
-                // 侧栏却没有一行是高亮的），退回主页。
-                if !shown, self.appState.sidebarSelection == .store {
-                    self.appState.sidebarSelection = .home
-                }
-                self.reloadEntries()
+        observers.observeNow({ AppSettings.shared.values.showITunesStore }) { [weak self] shown in
+            guard let self else { return }
+            // 选中项不能停在一个侧栏里已经不存在的页上（那样右边还显示着 iTunes Store，
+            // 侧栏却没有一行是高亮的），退回主页。
+            if !shown, self.appState.sidebarSelection == .store {
+                self.appState.sidebarSelection = .home
             }
-            .store(in: &cancellables)
+            self.reloadEntries()
+        }
         // 外部改选中（工具栏「在当前音乐源中搜索」、上面那条退回主页……）→ 高亮跟着走。
         // **必须用推下来的值**：`@Published` 在 willSet 发布，这时回读
         // `appState.sidebarSelection` 拿到的还是上一项，高亮就会永远慢一拍
