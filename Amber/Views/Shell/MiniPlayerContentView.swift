@@ -1925,7 +1925,8 @@ private final class MPBadgeView: NSView {
 /// 没有复用 `MiniProgressView`：那一颗把底栏胶囊的`centerContentInset` / `progressBottom`
 /// 一组 [AX] 常量焊死在 `layoutBars()` 里，搬到这里位置全是错的。
 @MainActor
-private final class MPProgressBar: NSView {
+/// 自绘轨道继承 `NSControl` 的理由见 `NowPlayingVolumeBar`（不然拖它会把窗口拖走）。
+private final class MPProgressBar: NSControl {
 
     private typealias M = MusicMetrics.MiniPlayerWindow
 
