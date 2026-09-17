@@ -209,10 +209,10 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 | **B** | 意图上响应链（= 铁律 4 的终态） | §2.2-2、-3、-7 | `App/AppState.swift`、`Shell/ContentNavigationController.swift`、`Shell/LibraryArtistsViewController.swift` | **已完成** 2026-09-17 |
 | **C** | 撤销与命令层 | §2.2-1、-4、-5、-6、-8 | `App/MainMenu.swift`、`App/AmberApp.swift`、`Shell/MainWindowController.swift`、`Services/LibraryStore.swift`、`Components/SongsTableView.swift`、`Components/TrackMenu.swift`、`Shell/LibrarySongsViewController.swift`、`Shell/PlayQueueViewController.swift`、`Player/PlayQueueModel.swift` | **已完成** 2026-09-17 |
 | **D** | 本地优先最后一公里 + 目录页键盘可达 | §2.6-1、-2、-8；§2.5-1 | `Catalog/CatalogFeedModel.swift`、`Shell/CatalogPageViewController.swift`、`Shell/CatalogRoomViewController.swift`、`Shell/SearchLandingViewController.swift`、`Shell/AlbumDetailViewController.swift`、`Shell/PlaylistDetailViewController.swift` | **已完成** 2026-09-17 |
-| **E** | 增量快照三页 + Compositional | §2.6-3；§2.1-5 | `Shell/LibraryAlbumsViewController.swift`、`Shell/LibraryAllPlaylistsViewController.swift`、`Shell/LibraryRecentlyAddedViewController.swift`、`Shell/LibraryGridCards.swift` | 未开始 |
-| **F** | 渲染与 AX 收尾 | §2.3 全部；§2.5-2、-3、-6、-7 | `Lyrics/**`、`Shell/MiniPlayerView.swift`、`Shell/MiniPlayerContentView.swift`、`Shell/NowPlayingChromeViews.swift`、`Shell/MiniPlayerBackdropMetalView.swift`、`Services/ImageCache.swift`、`Services/ArtworkSize.swift`、`Catalog/ArtistPageCards.swift` | 未开始 |
-| **G** | 观察粒度 + 网络韧性 | §2.4-2~9、-11、-12；§2.6-5、-6、-7、-9、-10 | `Player/PlayerController.swift`、`Player/AudioTap.swift`、`Services/DownloadStore.swift`、`Services/AppSettings.swift`、`Services/ImportTranscoder.swift`、`Observation/TaskBag.swift`、`Observation/EventChannel.swift`、`Providers/RequestCache.swift`、`Providers/MusicProvider.swift`、`Support/SwiftFeatures.xcconfig` | 未开始 |
-| **H** | 两处漏网的主线程重绘位图 | §2.3-7 | `Shell/InfoPanelWindowController.swift`；`Views/SidebarOutline.swift` 的 QQ 头像那一格（批 A 合并之后才能开，同一文件） | 未开始 |
+| **E** | 增量快照三页 + Compositional | §2.6-3；§2.1-5 | `Shell/LibraryAlbumsViewController.swift`、`Shell/LibraryAllPlaylistsViewController.swift`、`Shell/LibraryRecentlyAddedViewController.swift`、`Shell/LibraryGridCards.swift` | **已完成** 2026-09-17 |
+| **F1/F2** | 渲染与 AX 收尾（派发时拆成两批：F1 歌词与图片、F2 播放器与卡片） | §2.3 全部；§2.5-2、-3、-6、-7 | `Lyrics/**`、`Shell/MiniPlayerView.swift`、`Shell/MiniPlayerContentView.swift`、`Shell/NowPlayingChromeViews.swift`、`Shell/MiniPlayerBackdropMetalView.swift`、`Services/ImageCache.swift`、`Services/ArtworkSize.swift`、`Catalog/ArtistPageCards.swift` | **已完成** 2026-09-17 |
+| **G** | 观察粒度 + 网络韧性 | §2.4-2~9、-11、-12；§2.6-5、-6、-7、-9、-10 | `Player/PlayerController.swift`、`Player/AudioTap.swift`、`Services/DownloadStore.swift`、`Services/AppSettings.swift`、`Services/ImportTranscoder.swift`、`Observation/TaskBag.swift`、`Observation/EventChannel.swift`、`Providers/RequestCache.swift`、`Providers/MusicProvider.swift`、`Support/SwiftFeatures.xcconfig` | **已完成** 2026-09-17 |
+| **H** | 两处漏网的主线程重绘位图 | §2.3-7 | `Shell/InfoPanelWindowController.swift`；`Views/SidebarOutline.swift` 的 QQ 头像那一格（批 A 合并之后才能开，同一文件） | **已完成** 2026-09-17 |
 
 ### 切批前主会话定下的四条（2026-09-17）
 
@@ -321,3 +321,59 @@ A/B/C/D 四批按文件所有权并行落地，各自一个 worktree。主会话
 | **「删除播放列表」的确认框** | **已定：加，照 Music 的做法**（用户 2026-09-17 定）。做成接缝三，等批 E 合并后一次改完四个文件——形状照 `Components/LibraryDeleteAlert.swift:37-67`（`hasDestructiveAction` 引了 HIG 原文；中文「取消」拿不到系统替补的 esc，要手绑 `\u{1b}`；默认键留在破坏性按钮上的取舍那里也写清了）。落点：新增一支 `confirmPlaylistDeletion`，调用点 `Views/LibraryPlaylistViews.swift:56-61`、`Shell/LibraryGridCards.swift:500-505`（**归批 E，要等**）、`Shell/DetailHeaderViews.swift:676-680 / 699-701 → :712-717`。原委：批 C **没加**并把决定交回来：三个调用点（`LibraryPlaylistViews` / `LibraryGridCards` / `DetailHeaderViews`）都不归它，而把 `NSAlert` 塞进 `LibraryStore` 会让这个 Foundation-only 的服务类长出 UI、变成异步，还会改掉三处现有用例的语义。**而且撤销已经补上了这条路的回头路**——HIG 对可撤销的操作更倾向不弹确认框，Music 自己却是弹的。两条路都说得通，等定夺 |
 | **没有 `.lproj` 会不会让系统串退成英文** | 撤销项的完整标题由 Foundation 拼（zh_CN 的格式串是「撤销%@」，**没有空格**），全屏标题由 AppKit 提供。Amber 的 bundle 里没有任何 `.lproj`（§3-1），这两条离线验证不了，实机看一眼就知道。若真退成 "Undo 删除播放列表" / "Enter Full Screen"，§3-1 的优先级要往上提 |
 | **艺人页曲目行的第一响应者** | 批 B 指出：该页曲目行 `mouseDown` 不调 `super`（`LibraryArtistsViewController.swift:1940`），只点右侧曲目行、从没点过左列时 ⌘I 可能仍灰。属于交互修，不在任何批范围内 |
+
+## 8. 第二轮整改的结果（2026-09-17）
+
+E / F1 / F2 / G 四批并行（F 在派发时拆成两批：F1 歌词与图片解码、F2 播放器 AX 与焦点环；
+H 并进 F2）。主会话另做两道接缝。
+
+### 收工核对
+
+| | 整改前 | 现在 |
+| --- | ---: | ---: |
+| clean build 警告 | 16 | **14** |
+| `xcodebuild test` | 1119 | **1155**（0 失败，1 跳过） |
+| 实机 | — | `d10fa2c` 起得来，CPU 0%，RSS 177 MB，无崩溃 |
+
+七个批次 + 四道接缝，共 32 个提交。两条警告是被顺手消掉的
+（`CatalogCardItems:254` 归批 F2、`DownloadStore:266` 归批 G）。
+
+### 第二轮又推翻了审查单的哪些条
+
+连同 §7 的五条，**审查单 48 条缺口里被推翻了 11 条**。第二轮这六条：
+
+| 审查单原文 | 实际 | 谁 / 依据 |
+| --- | --- | --- |
+| §2.5-2「两条播放进度滑块报了 `.slider` 却从不写 `accessibilityValue`」 | **假发现，两条都写了**。值是宿主在 `updateTime` 里写的（`Shell/MiniPlayerView.swift:624`、`Shell/MiniPlayerContentView.swift:1326`），格式正是要求的 mm:ss。原结论只看了视图 `init` 那三行 | 批 F2。`git log -S` 确认自初始提交就在。**一行没改** |
+| §2.5-6「按住持续发射的两端控件没实现 `accessibilityPerformPress`」 | **假发现，实现了**（`Shell/NowPlayingChromeViews.swift:749-753`），且「按一次发一颗」真成立——`ReactionEmitter.start` 在起计时器之前先发一颗（`Components/ReactionEffect.swift:166-168`） | 批 F2。**一行没改** |
+| §2.1-5「换组合布局可以把 `reflow` 与两条 `NotificationCenter` 观察一起删」 | **三样一样都删不掉**。`LibraryGridCards.swift:91` 驱动的是**悬浮**（滚轮不发 `mouseMoved`）、`LibraryRecentlyAddedViewController.swift:63` 驱动的是**标题联动**，都与布局无关；`reflow` 还要按新列宽重取封面档位，组合布局只接管其中的 `invalidateLayout()` | 批 E。据此**没做** ②，理由是「收益不存在，成本要拿像素赌」 |
+| §2.6-3「收益是滚动位置与选中态不再被抹掉」 | **「选中态」是空头支票**：`LibraryGridCardView.mouseDown` 是空实现且不调 `super`，这三页根本没有鼠标选中这条路。「滚动位置」也要打折——件数没变时 `reloadData()` 本来就不动偏移。**真正治好的**是「整表重载把在屏 item 全丢回复用队列 → 封面重取、悬浮态掉」 | 批 E |
+| §2.3-1 的隐患方向 | **反了**。任务书担心「照抄 `0/0/120` 会崩」；[实测 probe] `CADisplayLink` 在 macOS 上**一个区间都不校验**，全部原样收下。会崩的只有 `CAAnimation`。真正的风险是**静默要不到高刷** | 批 F1 |
+| §2.4-12「把 target 级那三条搬进 xcconfig」 | **漏了工程级两行**。两个 target 的 `XCBuildConfiguration` 都**没有** `baseConfigurationReference`，只有工程级 Debug/Release 各引一次（`pbxproj:211`/`:242`），所以工程级的 `SWIFT_VERSION` 同样覆盖 xcconfig。共 **14** 行不是 12 行 | 批 G。接缝四按 14 行执行，`-showBuildSettings` 逐条验过生效值 |
+
+另有两条**修法**（不是发现）被推翻：
+
+- **§2.3-2 指的落点会当场坏掉悬停提亮**——只挂在 `syncBlurToPlaybackState` 上不行，亮度那一路由 `setLineFocused` 驱动、不在那条路上。判据必须同时看模糊量、聚焦态**和「淡变还在跑吗」**（批 F1）。
+- **§2.5-7 指的观察点（`MiniPlayerBackdropMetalView.swift:264`）等不到「关掉」那一下**——降级 = 把 Metal 视图整只换掉，命中时它不在场。判据做成类型属性，观察点放在宿主（批 F2）。
+
+### 几条实测结论（都带探针，值得记住）
+
+1. **`CADisplayLink` 与 `CAAnimation` 对 `preferredFrameRateRange` 的校验不同**：前者不校验，后者 `0/0/120` 当场抛 `NSInvalidArgumentException`（`LayerPropertyAnimator.swift:76` 记的属实）。
+2. **`layerUsesCoreImageFilters` 的 Apple 文档在 macOS 26 上不准**：文档说「为 false 时给层加滤镜会触发异常」，[实测] 不抛、不日志；切换这一位**不重建背衬层、不摘子层、不打断正在跑的动画**。
+3. **焦点环 `NSSetFocusRingStyle` 从填充路径往外扩正好 3.0pt、内部不填**（[实测 probe]，160×160 画布正中填 80×80，墨迹盒 37…123），首像素对得上 `keyboardFocusIndicatorColor`。所以 `inset = 3` 是 `[实测]` 不是 `[推]`。
+4. **`kCGImageSourceThumbnailMaxPixelSize` 砍长边且不放大**；URL 片段（`#amber-px=80`）不参与文件定位，`Data(contentsOf:)` 与 `URLSession` 都照读原文件——所以档位可以搭在缓存键上而不动 `memoryCachedImage(for:)` 的签名。
+5. **`TapShared.dsp` 换 `Atomic` 在实时回调里是免费的**（批 G 的 SIL 对比，`-O -wmo` 全模块）：`retain`/`release`/堆分配前后都是 **0**，净变化是一条 `ldar` 取代一条普通 load，外加**少掉一对独占性访问检查**。顺带修掉一个真实窗口——原 `tapPrepare` 是「先释放旧的、再赋新的」，中间那一拍 `dsp` 指着已释放内存；`installDSP` 的 exchange 语义让释放永远发生在「不可能再被读到」之后。
+6. **Swift 6 不许图层回调视图**：`CALayer` 不是 `@MainActor` 而 `NSView` 是，层里直调视图方法先报 `[#ActorIsolatedCall]`，套 `MainActor.assumeIsolated` 后直接编译失败（`sending 'self' risks causing data races`）。与记忆 `am-calayer-not-mainactor` 同一条。
+7. **反向哨兵真的兜住了一次**：批 G 中间版本在「指针 → 整数」那半边多标了 `unsafe`，`[#UnnecessaryUnsafe]` 当场报出来。
+
+### 留给下一轮
+
+| 项 | 归属 |
+| --- | --- |
+| **`CatalogSlotResult` 加 `var failure: URLError? = nil`**，而**不是**把 `MusicProvider.catalogItems` / `playlists(tag:)` 改成 `throws` | 批 G 的建议，理由三条：`.empty` 对这两条是有意义的返回值（音源本来就没那一格），改 `throws` 会把「没这一格」与「取不到」混成一件事；而加一个带默认值的字段是**源码兼容的加法**，现存构造点一行不动。做完之后批 D 的 `NWPathMonitor` 可以退回按错误码判断 |
+| provider 层三个收口点加连接类重试 | `QQAPI.swift:95 musicu`、`NeteaseAPI.swift:113 get`、`:178 eapiRaw`。**明确不要加**的三处：扫码登录状态机（`QQAPI.swift:1750/1775/1832`） |
+| `AppSettings` 三个消费方改用新投影出口 | `App/AppState.swift:366`、`Components/SongsTableSettings.swift:141`、`Player/PlayQueueModel.swift:144`，各一行 |
+| 目录曲目行（`CatalogCardItemsWide.swift:298` 的 `CatalogTrackRowView`）没有焦点环 | 它是裸 `NSView`，不在批 F2 的卡片基类体系里 |
+| 整窗播放器的 Metal 底衬没接「减弱透明度」 | `Shell/NowPlayingContainerViewController.swift:45` |
+| `Components/TrackRowParts.swift:193` 报 `.slider` 但无 value | 全仓第 5 条自绘条，审查单没提 |
+| §2.4-1（SQLite 收进 `actor`）、§2.6-4（启动读盘拆两段）、§3-1（本地化）、§3-3（CI + signpost） | 仍是 §5 的「单列」，本轮未动 |
