@@ -7,6 +7,21 @@
 - 不要手动启动 DerivedData、临时目录或 worktree 里的 `Amber.app`，也不要用 ad-hoc 签名产物：同 bundle id 存在多份时，LaunchServices 命中哪份不确定，钥匙串还会反复请求授权。看界面、截图、采 AX 树也用`/Applications/Amber.app` 这一份，别为了「快一点」去开产物目录里的那个。
 - 自己跑 `xcodebuild`（尤其是`test`）一律带两样：`DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`（缺了报 requires Xcode）和`-derivedDataPath build/DerivedData`（指到`/tmp` 之类的地方，产物在被 LaunchServices 收录之前`run.sh` 扫不到）。
 
+## 语言与安全开关
+
+所有 Swift 开关集中在 `Support/SwiftFeatures.xcconfig`（语言模式与严格并发仍在 pbxproj 的
+target 级）。现在开着的除了 Swift 6 语言模式 + complete 并发 + approachable concurrency，
+还有四个 Swift 7 的 upcoming feature 与 **`SWIFT_STRICT_MEMORY_SAFETY = YES`**。
+
+碰裸指针的新代码按三档选，**不许跳档**（详版与实测依据见 `design-ref/swift-modernization.md` §3）：
+
+1. 能改成安全代码的先改，不标注；
+2. 无安全替代但同一个声明全仓用 ≥3 次 → `@safe` 外壳（现成的在 `Amber/Safety/AppKitSafeAccess.swift`）；
+3. 一次性的或本质不安全的 → 表达式级 `unsafe`，**必须**写清「不安全在哪、谁保证它安全」。
+
+不要全量套 `MIGRATE` 的 fix-it（会把一、二档一起降成第三档）。标过头有反向哨兵：
+`[#UnnecessaryUnsafe]` 在开关关着时也报，所以平时的 warning 基线就能兜住。
+
 ## 界面层
 
 界面层的骨架是 **AppKit**，SwiftUI 只作为叶子。以下六条铁律在整个改造期与改造之后都成立，
