@@ -499,8 +499,12 @@ extension SBS_TextContentLayer {
                                   frameRateRange: (min: 0, max: 0))
             animator.finishDispatch { row.gradient.frame = frame }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            self?.layoutLines.forEach { $0.ignoreProgress = false }
+        // `nonisolated(unsafe)` 的理由同本族那几张排版缓存（见 `LyricsRowMetricsCache`）：
+        // asyncAfter 到 .main 的闭包是主 actor 隔离的，而 `self` 是 `CALayer` 子类、
+        // 在 SDK 里非隔离，直接捕获就是「sending 'self'」。弱引用语义一点没变。
+        nonisolated(unsafe) weak let me = self
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+            me?.layoutLines.forEach { $0.ignoreProgress = false }
         }
     }
 
@@ -511,8 +515,12 @@ extension SBS_TextContentLayer {
     /// 免得进度先弹回旧位置再跳过去。
     func freezeProgress(for duration: TimeInterval) {
         layoutLines.forEach { $0.ignoreProgress = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            self?.layoutLines.forEach { $0.ignoreProgress = false }
+        // `nonisolated(unsafe)` 的理由同本族那几张排版缓存（见 `LyricsRowMetricsCache`）：
+        // asyncAfter 到 .main 的闭包是主 actor 隔离的，而 `self` 是 `CALayer` 子类、
+        // 在 SDK 里非隔离，直接捕获就是「sending 'self'」。弱引用语义一点没变。
+        nonisolated(unsafe) weak let me = self
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+            me?.layoutLines.forEach { $0.ignoreProgress = false }
         }
     }
 }

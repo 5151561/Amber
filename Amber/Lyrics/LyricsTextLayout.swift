@@ -74,7 +74,20 @@ enum LyricsTextLayout {
 
     // MARK: - 语言标识
 
-    private static var languageCache: [String: String] = [:]
+    // 下面几张表标 `nonisolated(unsafe)`，理由与代价都写在这里，别当橡皮擦看：
+    //
+    // 事实：它们只在主线程的排版路径上被摸。[实测 2026-09-17] 在歌词那 5 个
+    // `layoutSublayers` 覆写里插 `dispatchPrecondition(condition: .onQueue(.main))`，
+    // 装机后带歌词播放 35 秒，一次都没触发。
+    //
+    // 那为什么不用 `@MainActor` 把这件事写出来——试过了，走不通：调用方是
+    // `SBS_TextContentLayer` 那一族 `CALayer` 子类，而 SDK 里 `CALayer` 没有
+    // `@MainActor` 标注（`NSView` 有，所以视图层没这问题）。给子类标上之后，
+    // `layoutSublayers` / `init()` 这些覆写仍然跟着父类是非隔离的，体内一碰 `self`
+    // 就是「sending 'self'」——问题只是从这里挪到了那里。
+    //
+    // 所以 SDK 给 `CALayer` 补上 `@MainActor` 之前，这里只能是断言而不是证明。
+    nonisolated(unsafe) private static var languageCache: [String: String] = [:]
 
     /// 按文本自身的字符判语言（BCP-47）。拉丁 / 西里尔返回 nil——
     /// 这个属性是给 CJK 与南亚 / 东南亚文字用的，拉丁文本设不设都一样。
@@ -179,10 +192,10 @@ enum LyricsTextLayout {
         var drawnHeight: CGFloat
     }
 
-    private static var wrapCache: [String: Wrapped] = [:]
+    nonisolated(unsafe) private static var wrapCache: [String: Wrapped] = [:]
     /// 每条缓存最后一次被用到的序号，LRU 淘汰按它排。
-    private static var wrapCacheUse: [String: UInt64] = [:]
-    private static var wrapCacheClock: UInt64 = 0
+    nonisolated(unsafe) private static var wrapCacheUse: [String: UInt64] = [:]
+    nonisolated(unsafe) private static var wrapCacheClock: UInt64 = 0
     /// 上限。一行要缓存正文 + 翻译 + 发音三条，原来的 256 在**行数过 85 的歌**上
     /// 会在同一次 `recomputeLineFrames` 的循环中途被撑满——而原来的处置是
     /// `removeAll`，等于把这一轮前面刚算好的全丢掉，下一轮再从头算一遍，
