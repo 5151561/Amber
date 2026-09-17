@@ -57,7 +57,8 @@ final class NeteaseAPI: MusicProvider {
     }
     /// 凭证过期回调（专用校验接口确认失效时触发）。
     /// 与 QQAPI 同样声明成主线程回调：触发点在 URLSession 的后台续体上，
-    /// 接的那头要改 @Published、弹提示，跑到后台线程动 AppKit 会直接 SIGABRT。
+    /// 接的那头要改 `@Observable` 状态对象上的属性、弹提示，
+    /// 跑到后台线程动 AppKit 会直接 SIGABRT。
     var onCredentialExpired: (@MainActor @Sendable () -> Void)? {
         get { injected.withLock { $0.onCredentialExpired } }
         set { injected.withLock { $0.onCredentialExpired = newValue } }
@@ -119,7 +120,9 @@ final class NeteaseAPI: MusicProvider {
         var request = URLRequest(url: components.url!)
         request.setValue(Self.UA, forHTTPHeaderField: "User-Agent")
         request.setValue(Self.base + "/", forHTTPHeaderField: "Referer")
-        let (data, response) = try await session.data(for: request)
+        // 连接类失败重试两次（指数退避），业务错误（下面那条 `code != 200`）不重试。
+        // 名单与理由都在 `withConnectionRetry`。
+        let (data, response) = try await withConnectionRetry { try await session.data(for: request) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ProviderError.api("请求失败")
         }
@@ -198,7 +201,9 @@ final class NeteaseAPI: MusicProvider {
         request.setValue(header.map { "\($0.0)=\($0.1)" }.joined(separator: "; "),
                          forHTTPHeaderField: "Cookie")
 
-        let (data, response) = try await eapiSession.data(for: request)
+        // 同上：只重试连接类失败。301（登录过期）与别的业务码由 `eapi` 那一层看 `code`，
+        // 走不到这里，所以这一句包起来不会把「已过期」拖成三次。
+        let (data, response) = try await withConnectionRetry { try await eapiSession.data(for: request) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ProviderError.api("请求失败")
         }
@@ -603,7 +608,14 @@ final class NeteaseAPI: MusicProvider {
     // MARK: - 目录页取数
 
     /// 页面结构由 CatalogPages 定死（照 Apple Music），这里只按格子交数据。
+    ///
+    /// 外面这一层与 QQ 那边同形：收连接类失败、填 `CatalogSlotResult.failure`，
+    /// 让目录页分得开「断网」与「音源没这一格」（§2.6-8）。见 `CatalogFailureSink`。
     func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult {
+        await CatalogFailureSink.attach { await self.catalogSlot(slot) }
+    }
+
+    private func catalogSlot(_ slot: CatalogSlot) async -> CatalogSlotResult {
         switch slot {
         case .recentlyPlayed, .musicMemories:
             return .empty   // 本地资料库来的，页面自己填
