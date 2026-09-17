@@ -14,7 +14,7 @@ final class AppState {
     // 侧栏的显示/隐藏不再由 AppState 持有。骨架换成 AppKit 之后，收起态是
     // `NSSplitViewItem.isCollapsed` 自己的事，⌃⌘S 直接落到分栏控制器的
     // `toggleSidebar(_:)`（AppKit 的标准动作，连折叠动画和 autosave 一起给）。
-    // 再在这里放一份 @Published 只会变成两处真值，早晚对不上。
+    // 再在这里放一份可观察属性只会变成两处真值，早晚对不上。
     var selectedProvider: ProviderKind
     /// 面板（歌词 / 待播清单）显示**哪一档**。
     ///
@@ -36,16 +36,6 @@ final class AppState {
     /// 播放列表命名弹窗的待办。弹窗由 `RootViewController` 统一挂着——右键菜单一关，
     /// 菜单内容那棵子树就没了，alert 挂在菜单里弹不出来，所以这里只登记意图。
     var playlistNamePrompt: PlaylistNamePrompt?
-    /// 菜单里的「前往专辑 / 前往艺人」要从任意位置推一层详情页，而导航栈由 MainView 持有；
-    /// 这里只登记意图，MainView 收到后入栈并清空（Music 的 doGoToAlbum:/doGoToArtist:）。
-    var pendingRoute: Route?
-    /// 资料库「艺人」页的待选行（`Artist.libraryIDPrefix + 艺人名`）。
-    ///
-    /// 搜索的资料库范围点艺人时，Music 不是推一层艺人详情页，而是**直接跳回资料库的
-    /// 「艺人」目录并选中那一行**（实测截图：左列表选中「告五人」、右侧是该艺人的专辑块）。
-    /// 那一页的选中态是页面自己的 `@State`，跨页传不过去，所以在这里登记一次意图，
-    /// `LibraryArtistsPage` 收到就选中并清空。
-    var pendingLibraryArtistID: String?
     /// 启动参数 `-search <词>` 带进来的词条。搜索页建起来时取一次就清掉。
     /// 与 `-albums` / `-home` 那一批同类：搜索框在标题栏上，实机验收敲不进去。
     var launchSearchTerm: String?
@@ -63,7 +53,7 @@ final class AppState {
     /// （见 `effectiveQuality`）。它自己盯着 CoreAudio 的默认设备与声道配置。
     let audioOutput: AudioOutputMonitor
     /// 每首歌量到的响度（设置 › 播放 ›「音量平衡」）。播放器边播边量，写回这里；
-    /// 已下载的文件在落地时离线量。**不是** ObservableObject，见 `LoudnessStore` 的注释。
+    /// 已下载的文件在落地时离线量。**不发变更、界面不订它**，见 `LoudnessStore` 的注释。
     let loudness: LoudnessStore
     /// 「显示简介」面板的编辑结果（主库的 `track_info` / `track_resume` 两张表）。
     let trackInfo: TrackInfoStore
@@ -362,10 +352,8 @@ final class AppState {
         // 档位不是直接用 `qqLogin.quality`，而是过一道设置窗的夹取（无损开关 /
         // 杜比全景声），所以三个输入任一变化都要重算一次再推下去。
         //
-        // 原来是 `Publishers.Merge3(…).receive(on:)`：合三路是为了只写一次重算，
-        // `receive(on:)` 是因为 `@Published` 在值改**之前**发、当场回读会拿到旧值。
-        // 换成 `Observations` 之后事件在值落定之后才到，回读就是新值，那一跳不需要了；
-        // 合三路也不必——三条各自观察、都调同一个重算，效果一样还少一层。
+        // 三条各自观察、都调同一个重算：`Observations` 在值落定之后才发，
+        // 重算里当场回读拿到的就是新值，不需要额外排一跳，也不需要先把三路合成一路。
         let seededQuality = effectiveQuality
         qqAPI.quality = seededQuality
         neteaseAPI.quality = seededQuality
@@ -534,7 +522,7 @@ final class AppState {
     /// 而且过期这件事要在拉歌单之前就知道，否则会拿一份匿名的空结果去动资料库。
     ///
     /// **这两件事都不能挪回 `init`**：`AppState()` 一被构造就发网络请求的话，
-    /// 任何构造它的测试都会在半路收到失败 toast 引起的 `objectWillChange`。
+    /// 任何构造它的测试都会在半路被失败 toast 改一次状态。
     func runLaunchTasksOnce() async {
         guard !didLaunchSync else { return }
         didLaunchSync = true
@@ -801,12 +789,14 @@ final class AppState {
                                           route: .libraryPlaylist(id: playlist.id)))
     }
 
-    /// 往内容导航栈推一层。过渡期的登记点：`ContentNavigationController` 订阅
-    /// `pendingRoute`，收到就入栈并清空（与旧`MainView.onChange(of:)` 同一条逻辑）。
-    /// 计划里 §2 铁律 4 的终态是「导航意图走响应链冒泡」，那要等各页都换成 AppKit
-    /// 之后再删这条；现在 21 处 `NavigationLink` 还是 SwiftUI 叶子里的（见 RouteLink.swift）。
+    /// 往内容导航栈推一层。**发一条意图，不留状态**（`AGENTS.md` 界面层铁律 4）：
+    /// 沿响应链找 `ContentNavigationController`，由它入栈（见下面的 `deliver`）。
+    ///
+    /// 从前这里是 `pendingRoute = route`——一个可变字段当一次性信箱，订阅方收到再写回
+    /// nil。`.trackGrid` 那种落点能带上百个 `Track`，写进去就一直攥着
+    /// （design-ref/reactive-ui-review.md §2.1「事件当状态存」）。
     func push(_ route: Route) {
-        pendingRoute = route
+        deliver(.route(route))
     }
 
     /// 「前往专辑」：曲目只带专辑名/id，得回资料库查出整张专辑才有详情页可推。
@@ -815,16 +805,50 @@ final class AppState {
             showToast("这首歌所属的专辑不在资料库中")
             return
         }
-        pendingRoute = .album(album)
+        deliver(.route(.album(album)))
     }
 
     /// 跳到资料库「艺人」页并选中某位艺人（搜索的资料库范围点艺人卡走这条）。
     ///
     /// 资料库艺人不是音源里的艺人，只是本地歌按艺人名分的类（`Artist.libraryIDPrefix`），
     /// 没有在线艺人页可去——拿名字当 mid 去打接口只会被拒（QQ 回 104400）。
+    /// 所以 Music 不推一层艺人详情页，而是**跳回资料库的「艺人」目录并选中那一行**
+    /// （实测截图：左列表选中「告五人」、右侧是该艺人的专辑块）。
+    ///
+    /// **换根与选中都在导航控制器那一头做**：这条不是 push，它要先把内容列换成「艺人」
+    /// 根页、再把 id 交给刚换出来的那一页，两件事只有 `ContentNavigationController`
+    /// 同时够得着（从前是 `pendingLibraryArtistID` 那只信箱替它跨这一步）。
     func openLibraryArtist(named name: String) {
-        pendingLibraryArtistID = Artist.libraryIDPrefix + name
-        sidebarSelection = .artists
+        deliver(.libraryArtist(id: Artist.libraryIDPrefix + name))
+    }
+
+    /// 把一条导航意图交给响应链。
+    ///
+    /// **第一条路是 `NSApp.sendAction(_:to: nil, from:)`**：target 给 nil 时 AppKit 从
+    /// key window 的第一响应者开始往上找实现者。绝大多数调用点是用户刚点过的那张表、
+    /// 那张卡、那一行的右键菜单——第一响应者就在内容列里，链条一路穿过页面控制器走到
+    /// `ContentNavigationController.amberOpenRoute(_:)`。
+    ///
+    /// **第二条是兜底**，因为有四类调用点第一响应者**不在内容列上**，`sendAction`
+    /// 会一路走到 `NSApp` 与 AppDelegate 都没人接、返回 false：
+    ///
+    /// 1. 待播清单面板（`PlayQueueModel.doContinuePlayingSourceClicked`）——分栏的另一列，
+    ///    它那条响应链与内容列是两条分叉，碰不到导航控制器；
+    /// 2. 迷你播放器与整窗播放器（`PlayerMoreMenu` / `NowPlayingContainerViewController`）
+    ///    ——另一扇窗，key 与 main 可能都是它；
+    /// 3. 菜单栏命令（`AppDelegate.amberGoToNowPlaying`）——第一响应者可能就是窗口自己，
+    ///    而窗口的下一位是 `contentViewController`，不会往子控制器里下探；
+    /// 4. `-albumdemo` / `-recentsroom` 这类启动参数——从 `Task` / `asyncAfter` 里发，
+    ///    那会儿多半还没有视图当第一响应者。
+    ///
+    /// 兜底走「自上而下」：按 key → main → 其余窗口，从 `contentViewController`
+    /// 往下深搜第一个实现者。它不是响应链，但**要守的东西没变**——不持有引用、
+    /// 不留状态，意图随这次调用走完就没了。这正是与 `pendingRoute` 的分界。
+    private func deliver(_ destination: NavigationIntent.Destination) {
+        let intent = NavigationIntent(destination)
+        let action = #selector((any NavigationIntentReceiving).amberOpenRoute(_:))
+        if NSApp.sendAction(action, to: nil, from: intent) { return }
+        NavigationIntent.receiverInWindows()?.amberOpenRoute(intent)
     }
 
     /// 「前往艺人」：详情页按 id 拉全量资料，这里给个只带 id/名字的壳就够。
@@ -832,8 +856,8 @@ final class AppState {
     /// 若无匹配或离线，则回退跳转至资料库艺人。
     func goToArtist(of track: Track) {
         if let id = track.artistId, !id.isEmpty {
-            pendingRoute = .artist(Artist(id: id, kind: track.kind, name: track.artistName,
-                                          avatarURL: nil, description: nil))
+            deliver(.route(.artist(Artist(id: id, kind: track.kind, name: track.artistName,
+                                          avatarURL: nil, description: nil))))
             return
         }
 
@@ -893,6 +917,76 @@ final class AppState {
             inspectorMode = inspector
             isInspectorOpen = true
         }
+    }
+}
+
+// MARK: - 导航意图（响应链）
+
+/// 沿响应链传递的导航意图。发起方是 `AppState` 上那四个方法，接的那一头是
+/// `ContentNavigationController`（`AGENTS.md` 界面层铁律 4）。
+///
+/// **为什么要这个壳**：`sendAction(_:to:from:)` 的 `from:` 走的是 ObjC 的 `id`，
+/// 而 `Route` 是带载荷的 Swift 枚举。值类型靠 `__SwiftValue` 隐式装箱再原样拆回来
+/// 这件事没有文档保证，所以显式包一层 `NSObject`——装箱写在代码里，不赌运行时。
+///
+/// **为什么 `.libraryArtist` 不并进 `Route`**：`Route` 是导航栈认页面的钥匙
+/// （`ContentNavigationController.push` 拿它的相等性判「栈顶是不是它」，
+/// `ContentPageFactory.page(for:)` 拿它造页）。而「跳到资料库艺人页并选中某一行」
+/// 既不造新页也不入栈，它是**换根 + 在那一页里选一行**；塞进 `Route` 会逼工厂去合成
+/// 一页假的，还会让 `rootRoute(for:)` 那套身份判断多一个对不上的分支。两条都是
+/// 「去哪儿」，所以并在这个载体里，不并进 `Route`（`Models/Route.swift` 这一轮不动）。
+///
+/// **一次性**：它随这次调用走完就没了，没有任何一处把它存下来——这正是换掉
+/// `pendingRoute` 的目的。
+final class NavigationIntent: NSObject {
+
+    enum Destination {
+        /// 往内容栈推一层。
+        case route(Route)
+        /// 把内容列换成资料库「艺人」根页，并选中这一行（`Artist.libraryIDPrefix + 艺人名`）。
+        case libraryArtist(id: String)
+    }
+
+    let destination: Destination
+
+    init(_ destination: Destination) { self.destination = destination }
+}
+
+/// 接导航意图的那一头。
+///
+/// `@objc` 是必须的：`sendAction(_:to: nil, from:)` 靠 ObjC 运行时的 `respondsToSelector:`
+/// 沿响应链找实现者，Swift-only 的协议它看不见。
+@objc @MainActor
+protocol NavigationIntentReceiving {
+    func amberOpenRoute(_ sender: Any?)
+}
+
+extension NavigationIntent {
+
+    /// 兜底的「自上而下」找法（理由见 `AppState.deliver`）。
+    ///
+    /// 顺序是 key → main → 其余：迷你播放器那扇窗 key 的时候主窗往往还是 main，
+    /// 先问这两位能少走一圈。整个过程不留任何引用。
+    @MainActor
+    static func receiverInWindows() -> (any NavigationIntentReceiving)? {
+        var visited: [NSWindow] = []
+        for window in [NSApp.keyWindow, NSApp.mainWindow].compactMap({ $0 }) + NSApp.windows {
+            guard !visited.contains(where: { $0 === window }) else { continue }
+            visited.append(window)
+            if let hit = receiver(in: window.contentViewController) { return hit }
+        }
+        return nil
+    }
+
+    /// 深度优先，先看自己再看孩子。整棵内容树里只有一位实现者，顺序不影响结论。
+    @MainActor
+    private static func receiver(in controller: NSViewController?) -> (any NavigationIntentReceiving)? {
+        guard let controller else { return nil }
+        if let hit = controller as? any NavigationIntentReceiving { return hit }
+        for child in controller.children {
+            if let hit = receiver(in: child) { return hit }
+        }
+        return nil
     }
 }
 
