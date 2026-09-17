@@ -102,9 +102,19 @@ xcodebuild -project Amber.xcodeproj -scheme Amber test
 产物落在 `build/dist/Amber-<版本>-<commit>.dmg`（Debug 构建会多个`-debug` 后缀，免得同 commit 互相覆盖），
 里面是 `Amber.app` 加一个`Applications` 快捷方式，拖进去就装。
 
+第二个参数选签名档位，默认 `signed`（Apple Development 长期签名）；要不带证书的包就传 `adhoc`，
+文件名会多一个 `-adhoc` 后缀：
+
+```bash
+./Tools/make-dmg.sh Release adhoc
+```
+
+两档各有各的底线：要的是哪种签名就必须拿到哪种——`signed` 档拒收 ad-hoc 或换了 Team 的产物，
+`adhoc` 档反过来拒收带真证书的产物，不会因为证书没配上而静默退档。代价见下面那节。
+
 这个脚本和 `run.sh` 各管一头：它构建到独立的`build/DerivedDataDist`，不碰`/Applications/Amber.app`，
 也不启动任何东西；打完包同样会把产物从 LaunchServices 注销并删掉。
-签名底线沿用 `build-install-signed.sh` 那一套——ad-hoc 或换了 Team 的产物直接拒绝打包。
+**本机安装照旧只走 `run.sh` / `build-install-signed.sh`，那两条永远不接受 ad-hoc。**
 
 ### 对方首次打开
 
@@ -129,6 +139,9 @@ Designated Requirement。
 - **ad-hoc 签名**：DR 退化成每次编译都变的 CDHash → 用户**每升级一次就要重新登录一次**
 
 两者对 Gatekeeper 来说都要走一遍上面的首次打开流程，ad-hoc 并不会更省事，却白白牺牲登录态。
+
+所以 `make-dmg.sh` 的 `adhoc` 档是给「这台机器上没有可用证书」这种场合留的后门，不是默认路线：
+发出去之后再换回 `signed`，对方那次升级同样要重新登录一次（DR 从 CDHash 变成证书，两边对不上）。
 
 > **证书有效期**：当前签名证书到 **2027-02-25** 到期，且开发签名用的是 `--timestamp=none`（无安全时间戳），
 > 证书过期后已发出去的旧 dmg 会开始验签失败。到期前在 Xcode 里重新生成证书（免费 Apple ID 也能签）并重新发一版即可。
