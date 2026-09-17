@@ -167,7 +167,7 @@ final class ImportService {
         }
 
         if !collisions.isEmpty {
-            if await Self.askReplace(collisions) {
+            if await Self.askReplace(collisions, downloads: downloads) {
                 // 「替换」＝把既有那条从资料库里摘掉，然后照正常流程重导一遍。
                 // 不走「原地改字段」是因为替换本来就该连**文件**一起换：`removeFromLibrary`
                 // 会经 `onTracksRemoved` 让下载索引把「媒体」文件夹里的旧产物清掉
@@ -252,7 +252,8 @@ final class ImportService {
     /// 就是 Music 对这件事的答案：撞成一片时它换一句话、一次问完。两句都实测得到，
     /// 缺的只是「几条起算多」这个门槛，取 2 是最保守的选择（能逐条问就逐条问，
     /// 逐条问不下去了才降级成一句笼统的）。
-    private static func askReplace(_ collisions: [(url: URL, track: Track)]) async -> Bool {
+    private static func askReplace(_ collisions: [(url: URL, track: Track)],
+                                   downloads: DownloadStore) async -> Bool {
         // sheet 贴哪：主窗。导入是「文件 ▸ 导入…」的后续，触发时主窗一定在。
         let window = NSApp.keyWindow ?? NSApp.mainWindow
         guard collisions.count == 1, let only = collisions.first else {
@@ -261,8 +262,11 @@ final class ImportService {
         // `%1$S` 填的是**既有条目**的曲目名：问的是「资料库里那个项目」要不要被换掉，
         // 待导那份这会儿连元数据都还没读（读文件在 `ImportWorker.process` 里），
         // 想拿它的标题也拿不到。
+        // 既有那份文件在哪：问下载索引（本地性唯一的真值源）。取不到就是 nil，
+        // `branch` 自会回落到中性的那句。
         let branch = ImportReplacePrompt
-            .branch(existingModified: modificationDate(atPath: only.track.localPath),
+            .branch(existingModified:
+                        modificationDate(atPath: downloads.fileURL(for: only.track.id)?.path),
                     incomingModified: modificationDate(atPath: only.url.standardizedFileURL.path))
         return await ImportReplaceAlert.confirm(branch: branch, trackTitle: only.track.title,
                                                 in: window)
@@ -370,8 +374,7 @@ enum ImportWorker {
                           title: meta.title, artistName: meta.artist, artistId: nil,
                           albumName: meta.album, albumId: nil,
                           artworkURL: nil, duration: meta.duration,
-                          trackNumber: meta.trackNumber, discNumber: meta.discNumber,
-                          localPath: source.standardizedFileURL.path)
+                          trackNumber: meta.trackNumber, discNumber: meta.discNumber)
 
         // 内嵌封面先落地（`ImageCache` 认 file:// 地址）
         if let artwork = meta.artwork,
@@ -417,7 +420,9 @@ enum ImportWorker {
                                               metadata: tags, attempts: options.readAttempts)
             placed = destination
         }
-        track.localPath = placed.path
+        // 落点只写进 `ImportedFile.fileURL`：调用方（`importItems`）拿着它逐条调
+        // `downloads.adoptLocalFile`，那一下就是这份文件进本机账本的唯一入口。
+        // 从前这里还往 `track.localPath` 上抄一份，是第二份真相，也是纯重复。
         return ImportedFile(track: track, fileURL: placed, external: external,
                             mp3Fallback: plan.mp3Fallback)
     }

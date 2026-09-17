@@ -42,8 +42,7 @@ final class LibraryDeleteFilesTests: XCTestCase {
         let folder = external ? outside! : directory!
         let url = folder.appendingPathComponent("\(suffix).m4a")
         try Data("audio".utf8).write(to: url)
-        var track = makeTrack(suffix)
-        track.localPath = url.path
+        let track = makeTrack(suffix)
         store.adoptLocalFile(at: url, for: track, external: external)
         return (track, url)
     }

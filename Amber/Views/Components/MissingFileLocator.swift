@@ -89,14 +89,14 @@ enum MissingFileLocator {
         panel.prompt = "打开"
         panel.message = "选择“\(track.title)”的原始文件"
         // 从它原来待的那一层开始找：文件多半只是被挪到了旁边。目录已经没了也无所谓，
-        // 面板自己会退回默认位置。
-        panel.directoryURL = track.localURL?.deletingLastPathComponent()
-        let oldURL = track.localURL
+        // 面板自己会退回默认位置。那条路径向下载索引要（本地性唯一的真值源）。
+        let oldURL = appState.downloads.absoluteURL(for: track.id)
+        panel.directoryURL = oldURL?.deletingLastPathComponent()
         let handler: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let picked = panel.url else { return }
-            relocate(trackID: track.id, to: picked, appState: appState)
-            // 接着播这一首。队列里那份 `Track` 还记着老路径，但取流第一跳读的是下载索引
-            //（`relocate` 刚把它改成新位置），所以重来一次就能放出声。
+            relocate(track, to: picked, appState: appState)
+            // 接着播这一首。队列里那份 `Track` 上本来就没有路径这回事，取流第一跳读的是
+            // 下载索引（`relocate` 刚把它改成新位置），所以重来一次就能放出声。
             appState.player.retryCurrent(id: track.id)
             guard let oldURL else { return }
             askToFindOthers(anchor: picked, replacing: oldURL, in: window, appState: appState)
@@ -113,19 +113,21 @@ enum MissingFileLocator {
         }
     }
 
-    /// 一条曲目重新指路：资料库四处的副本 + 下载索引。
+    /// 一条曲目重新指路：**只写下载索引一处**。
     ///
-    /// 下载索引这一半不能省：取流第一跳问的就是它（`AppState.providerResolver`），
-    /// 只改资料库的话，刚指完路的那一首照旧播不出来——它还在按索引里那条死路径找文件。
-    private static func relocate(trackID: String, to url: URL, appState: AppState) {
-        appState.library.relocateLocalTrack(id: trackID, to: url)
-        guard let track = appState.library.track(withID: trackID) else { return }
+    /// 从前这里是两处——资料库四份副本里的 `localPath`，外加下载索引——两处都写，
+    /// 漏一处的表现是「指完路还是播不出来」。本地性收到 `local_file` 一处之后，
+    /// 剩下的只有「撤掉那枚感叹号」：面板一关表格就该恢复正常，否则用户看到的是
+    /// 「指了路还是红的」，那看着就像没生效、会被再指一遍。万一真指错了
+    /// （指到一个不存在的路径），下一次拿它取流会重新标上。
+    private static func relocate(_ track: Track, to url: URL, appState: AppState) {
         // 「外部」＝不在「媒体」文件夹里的原地引用（`DownloadStore.adoptLocalFile` 的语义）：
         // 用户可以把文件指到任何地方，指到媒体文件夹外面就是一份外部引用，
         // 以后从资料库删歌时不该跟着删它。
         let media = AppSettings.shared.values.mediaFolder.standardizedFileURL.path
         let external = !url.standardizedFileURL.path.hasPrefix(media + "/")
         appState.downloads.adoptLocalFile(at: url, for: track, external: external)
+        appState.library.clearFileMissing(track.id)
     }
 
     // MARK: - 顺手找回其余的
@@ -135,7 +137,7 @@ enum MissingFileLocator {
     /// 先扫一遍库，没有别的缺失就不问——问了之后无论回哪一条收尾文案都是废话。`[推]`
     private static func askToFindOthers(anchor: URL, replacing oldURL: URL,
                                         in window: NSWindow?, appState: AppState) {
-        let others = appState.library.missingLocalTracks()
+        let others = appState.library.missingLocalTracks(downloads: appState.downloads)
         guard !others.isEmpty else { return }
         let alert = NSAlert()
         alert.messageText = "你想要使用“\(anchor.lastPathComponent)”的位置来查找资料库中缺少的其他文件吗？"
@@ -149,18 +151,23 @@ enum MissingFileLocator {
     }
 
     /// 「正在查找丢失的文件…」那一段：贴一张进度页签，`stat` 全甩到后台，回来报账。
-    private static func findOthers(_ tracks: [Track], anchor: URL, replacing oldURL: URL,
+    private static func findOthers(_ tracks: [(track: Track, url: URL)], anchor: URL,
+                                   replacing oldURL: URL,
                                    in window: NSWindow?, appState: AppState) {
-        let plan = tracks.compactMap { track -> (id: String, from: String)? in
-            guard let path = track.localPath else { return nil }
-            return (track.id, path)
-        }
+        // 路径由 `missingLocalTracks` 一并给回来（它刚拿那条路径判过缺失），
+        // 这里不再第二次去问索引。
+        let plan = tracks.map { (id: $0.track.id, from: $0.url.path) }
+        let byID = Dictionary(tracks.map { ($0.track.id, $0.track) },
+                              uniquingKeysWith: { first, _ in first })
         let sheet = beginProgress(in: window)
         Task {
             let found = await Task.detached(priority: .userInitiated) {
                 candidates(for: plan, anchor: anchor, replacing: oldURL)
             }.value
-            for (id, url) in found { relocate(trackID: id, to: url, appState: appState) }
+            for (id, url) in found {
+                guard let track = byID[id] else { continue }
+                relocate(track, to: url, appState: appState)
+            }
             endProgress(sheet, in: window)
             report(found: found.count, total: plan.count, in: window)
         }

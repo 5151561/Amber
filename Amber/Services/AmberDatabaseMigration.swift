@@ -5,10 +5,12 @@ import Foundation
 /// 旧 `library.json` 里的一首歌。
 ///
 /// **为什么不复用 `Track`。** 迁移器解的是**磁盘上已经写死的那份 JSON**，不是现在的内存模型。
-/// 两者今天恰好一样，明天就不一样了：`Track.localPath` 计划要删（本地性改由下载索引
-/// 一处说了算），而删掉之后再拿 `Track` 来解旧存档，`localPath` 会被 `Decodable` 静默跳过
+/// 这件事已经发生了：`Track.localPath` 现在**已经删掉**（本地性只由下载索引一处说了算），
+/// 拿今天的 `Track` 去解旧存档，`localPath` 会被 `Decodable` 静默跳过
 /// ——`local_file` 的种子规则里「`localPath` 非空且 index.json 里没有」那条补充就永远补不到
 /// 任何一行，不报错、不告警，只是新库里少了几首歌的本机文件。
+/// 那条种子规则（连同它的 `FileManager.fileExists` 闸）是挡住 8 条死路径的唯一一道门，
+/// 而它要的那份路径，今天只有这个类型还存着。
 ///
 /// 所以这一份是**旧存档的形状的快照**，字段只增不改，跟着磁盘走，不跟着内存模型走。
 /// 反过来也成立：以后 `Track` 加了新字段，这里不加，迁移器就当旧存档里没有——本来也没有。
@@ -44,7 +46,7 @@ struct LegacyTrack: Codable {
     /// `album_key` 尤其不能抄：它现在是一个**落盘的列**，抄一份就等于给一个已持久化的键
     /// 造第二份真相，两边哪天漂移了专辑会静默认不出来。
     ///
-    /// **故意不传 `localPath`**：`Track` 那一格正在退场，这里不去依赖它。
+    /// `Track` 上已经没有 `localPath` 那一格了，所以这里也没什么可传的：
     /// 种子规则要的路径直接从 `LegacyTrack.localPath` 取。
     var asTrack: Track {
         Track(id: id, kind: kind, title: title, artistName: artistName, artistId: artistId,
@@ -59,10 +61,9 @@ struct LegacyTrack: Codable {
     /// 现役 `RecentContainer` 解出来的真 `Track`（台账整体照 §1 复用现有类型解码），
     /// 而它在曲目字段的优先级里排**最后**一位，本来就只当兜底。
     ///
-    /// **`localPath` 一律给 nil**：台账那份路径不参与 `local_file` 的种子规则。
-    /// 理由与 `asTrack` 对称——不让迁移器依赖一个正在退场的字段，
-    /// 换来的代价是「只在台账里出现过、且有本机文件」的歌拿不到 external 行，
-    /// 而那种歌同时也不在资料库、心水、最近播放、任何歌单里。
+    /// **`localPath` 一律给 nil**：`Track` 上已经没有这一格，台账里解出来的那份
+    /// 也就不参与 `local_file` 的种子规则。代价是「只在台账里出现过、且有本机文件」
+    /// 的歌拿不到 external 行，而那种歌同时也不在资料库、心水、最近播放、任何歌单里。
     init(_ track: Track) {
         id = track.id
         kind = track.kind
@@ -702,8 +703,8 @@ enum AmberDatabaseMigration {
         let sql = """
             INSERT INTO track (id, kind, title, artist_name, artist_id, album_name, album_id,
                                artwork_url, duration, track_number, disc_number, media_mid,
-                               lossless_available, album_key, local_path)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                               lossless_available, album_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """
         for track in plan.tracks {
             try db.run(sql, [
@@ -713,13 +714,11 @@ enum AmberDatabaseMigration {
                 // 物化的 album_key：**调仓库里那一份 `fallbackKey`**，不在这儿重拼。
                 // 它现在是一个落盘的列，抄一份就是第二份真相。
                 LibraryStore.fallbackKey(for: track.asTrack),
-                // `local_path` 是一根**临时**的桥，见 schema 里 v2 那一步的注释：
-                // `Track.localPath` 要到阶段 6 才退场，在那之前它得有地方存，
-                // 否则库一当真值源，本地导入的歌重启之后就没有路径可播了。
-                // 这里搬的是**旧存档里那一格原样**（死路径也照搬——它与
-                // `local_file` 的种子规则是两码事，那边有 `fileExists` 闸，这边没有，
-                // 因为退库路径判定 `missingLocalTracks` 要的正是「记着的那条路径」）。
-                track.localPath,
+                // **`LegacyTrack.localPath` 不往这张表里搬。** `track` 表从 v3 起
+                // 没有 `local_path` 这一列了（本地性只由`local_file` 回答），
+                // 那一格在迁移器里只剩一个用处：喂 `local_file` 的种子规则
+                // （`localFileRows`，带`fileExists` 闸）。这也正是 `LegacyTrack`
+                // 必须留着那一格、而**不能改用 `Track` 解旧存档**的全部理由。
             ])
         }
     }

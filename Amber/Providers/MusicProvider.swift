@@ -4,7 +4,7 @@ enum ProviderError: Error, LocalizedError {
     case invalidResponse
     case unavailable(String)
     case api(String)
-    /// 本地曲目的原始文件不在 `localPath` 指的位置上了。
+    /// 本地曲目的原始文件不在下载索引记着的位置上了。
     ///
     /// 单独一条而不是混在 `.unavailable` 里：它是唯一一种「不该报 toast、也不该静默跳过」
     /// 的失败——用户主动点播的那一首要弹「你想要查找它吗？」（spec §10.1，

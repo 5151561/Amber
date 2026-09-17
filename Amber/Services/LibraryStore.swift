@@ -135,7 +135,7 @@ final class LibraryStore: ObservableObject {
     /// 与 `uncheckedTrackIDs` 同样不是`@Published`：改动是用户级动作，改完手动发一声。
     private var suggestLessTrackIDs: Set<String> = []
     private var suggestLessArtistIDs: Set<String> = []
-    /// 本地文件已经不在 `localPath` 指的位置上的曲目 id（照 Music.app：条目留着，只打标记）。
+    /// 本地文件已经不在下载索引记着的位置上的曲目 id（照 Music.app：条目留着，只打标记）。
     ///
     /// **这份集合是「已经发现的」，不是「全部的」**：`[实测]` `library 规格`
     /// §10.1 的判据是**懒判定**，批次 45 已由实测坐实——失联弹窗那个函数
@@ -655,7 +655,7 @@ final class LibraryStore: ObservableObject {
 
     // MARK: - 本地文件失联（spec §10.1）
 
-    /// 这条本地曲目**已经发现**文件不在 `localPath` 指的位置上了。
+    /// 这条本地曲目**已经发现**文件不在下载索引记着的位置上了。
     ///
     /// 没有记录 ＝ **还没发现**，不等于「文件一定在」——判定是懒的（见
     /// `missingFileTrackIDs`），一首从没被播过、也没被批量查找扫到的歌，文件早没了这里也是假。
@@ -714,17 +714,22 @@ final class LibraryStore: ObservableObject {
     /// **已知边界**：这段在主线程上逐条 `stat`。本地 APFS 上几百条是毫秒级；挂着一个
     /// 无响应的网络卷时单次 `stat` 能卡到几十秒。调用它的那条链自己带着一张
     /// 「正在查找丢失的文件…」的进度页签（`MissingFileLocator`），卡在那儿至少是有说法的。
+    ///
+    /// **路径从哪儿来**：`downloads` 一处（主库 `local_file` 表的内存那一份）。
+    /// 收成参数而不是让 store 长一个字段：这是全 App 唯一需要问下载索引的读点，
+    /// 挂成可选闭包的话忘了接线就静默返回空清单——那正是这条链最不该有的失败形状。
+    /// 返回值捎上 URL，调用方（`MissingFileLocator` 批量查找那一趟）不用再问一遍。
     @discardableResult
-    func missingLocalTracks() -> [Track] {
+    func missingLocalTracks(downloads: DownloadStore) -> [(track: Track, url: URL)] {
         let fm = FileManager.default
         var missing: Set<String> = []
-        var result: [Track] = []
+        var result: [(track: Track, url: URL)] = []
         // 卷可达性缓存，键是上级目录。一张碟几十首歌都在同一个目录下，逐首向上走一遍是白花钱；
         // 更要紧的是**同一次扫描里卷的状态必须前后一致**：真在扫的过程中被拔盘，
         // 缓存能保证这一轮要么整批跳过、要么整批判，不会一半标一半不标。
         var volumeReachable: [String: Bool] = [:]
         for track in localTracks {
-            guard let url = track.localURL else { continue }
+            guard let url = downloads.absoluteURL(for: track.id) else { continue }
             let parent = url.deletingLastPathComponent().path
             let reachable = volumeReachable[parent]
                 ?? Self.isVolumeReachable(for: url, fileManager: fm)
@@ -733,12 +738,12 @@ final class LibraryStore: ObservableObject {
                 // 卷保护：维持原状——之前标过的继续标着（也继续算进「缺少的文件」那份清单，
                 // 它本来就是标记的镜像），没标过的不新标。
                 if missingFileTrackIDs.contains(track.id) {
-                    if missing.insert(track.id).inserted { result.append(track) }
+                    if missing.insert(track.id).inserted { result.append((track, url)) }
                 }
                 continue
             }
             if !fm.fileExists(atPath: url.path) {
-                if missing.insert(track.id).inserted { result.append(track) }
+                if missing.insert(track.id).inserted { result.append((track, url)) }
             }
         }
         if missing != missingFileTrackIDs {
@@ -787,7 +792,7 @@ final class LibraryStore: ObservableObject {
     /// `transform` 改完与原值相等的那一份不动（也就不发`objectWillChange`、不排落盘）：
     /// 「显示简介」面板提交时五个字段里往往只动了一个，其余四个原样写回来。
     ///
-    /// 返回值：真改了任何一处没有。`relocateLocalTrack` 拿它决定要不要手动补一声通知。
+    /// 返回值：真改了任何一处没有。
     @discardableResult
     func updateTrack(id: String, transform: (inout Track) -> Void) -> Bool {
         /// 改完的那一份。五处副本理应字字相同（这个函数每次都把五处一起改，就是为了这条），
@@ -889,53 +894,27 @@ final class LibraryStore: ObservableObject {
         return change
     }
 
-    /// 重新指路：把这条曲目的 `localPath` 改到新位置（用户在「查找」面板里选的那份文件，
-    /// 或者批量查找按同一条位移规律推出来的那份）。
-    ///
-    /// 四处数组怎么改见 `updateTrack`；这里只剩「撤 missing 标记」那段收尾。
-    func relocateLocalTrack(id: String, to url: URL) {
-        let path = url.standardizedFileURL.path
-        let changed = updateTrack(id: id) { $0.localPath = path }
+    // **这里没有 `relocateLocalTrack`。** 重新指路从前要写两处（资料库四份副本里的
+    // `localPath`，外加下载索引），`MissingFileLocator.relocate` 两个都调，
+    // 漏一个的表现是「指完路还是播不出来」。本地性收到 `local_file` 一处之后，
+    // 一次重新指路就是一次 `DownloadStore.adoptLocalFile` + 一次 `clearFileMissing`，
+    // 没有第二份要同步的真相，也就没有这个函数存在的理由了。
 
-        // 当场撤标记：面板一关表格就该恢复正常，否则用户看到的是「指了路还是红的」——
-        // 那看着就像没生效，会被再指一遍。万一真指错了（指到一个不存在的路径），
-        // 下一次拿它取流会重新标上。
-        let hadMark = missingFileTrackIDs.remove(id) != nil
-        // 路径没变、也没标记可撤，就什么都没发生，别白发通知白排一次落盘。
-        guard changed || hadMark else { return }
-        // 只有 `@Published` 那三处没动、单纯撤标记时才要手动发——否则`updateTrack`
-        // 里的赋值已经发过了（落盘也已经由它排过）。
-        if !changed { objectWillChange.send() }
-        // 细出口这一位跟 `changed` 无关：撤了标记就是失联这一位变了，
-        // 而曲目字段那几位（如果动了）已经由 `updateTrack` 自己报过。
-        if hadMark { notify(.fileMissing) }
-    }
-
-    /// 按 id 找一条本地曲目（重新指路之后要拿改完的那份去更新下载索引）。
+    /// 本机有文件的那些曲目——`missingLocalTracks` 要扫的就是这一份。
     ///
-    /// 与 `localTracks` 同样四处都找：`recents` 里那几首常常不在资料库中（见下面那条注释）。
-    func track(withID id: String) -> Track? {
-        localTracks.first { $0.id == id }
-    }
-
-    /// 资料库里所有带 `localPath` 的曲目，四处合起来、按 id 去重。
+    /// `SELECT … JOIN local_file`：「这首歌在本机有没有文件」只有那张表回答得了，
+    /// 而 `track` 表故意不做 GC，所以掉出「最近播放」窗口、也不在资料库里的那几首
+    /// 照样在。[实测 2026-09-10] 用户库里`recents` 那 101 条中有 5 条不在资料库中——
+    /// 从前得把四处数组合起来再去重才能捞到它们，现在是主键天然去重的一条查询。
     ///
-    /// 只扫 `libraryTracks` 是不够的：[实测 2026-09-10] 用户当前的库里，`libraryTracks`
-    /// 54 条中 6 条 `localPath` 已失效，而`recents` 那 101 条里**另有** 5 条不在资料库中。
-    /// 漏掉 recents，「最近播放」里那几行就永远不会变灰、批量查找也永远修不到它们。
+    /// `mv:<id>` 那些键 JOIN 不到 `track` 行（MV 与曲目共用这张表），自然被排除在外。
     private var localTracks: [Track] {
-        var seen = Set<String>()
-        var result: [Track] = []
-        func collect(_ tracks: [Track]) {
-            for track in tracks where track.localPath != nil {
-                if seen.insert(track.id).inserted { result.append(track) }
-            }
-        }
-        collect(libraryTracks)
-        collect(favoriteTracks)
-        collect(recentTracks)
-        for playlist in playlists { collect(playlist.tracks) }
-        return result
+        guard let db = database?.sqlite else { return [] }
+        let sql = """
+            \(Self.trackSelect)
+            JOIN local_file f ON f.key = track.id
+            """
+        return (try? db.query(sql, [], Self.decodeTrack)) ?? []
     }
 
     // MARK: - 减少推荐（音源口味的本地镜像）
@@ -1407,7 +1386,7 @@ final class LibraryStore: ObservableObject {
 
     private static let trackSelect = """
         SELECT id, kind, title, artist_name, artist_id, album_name, album_id, artwork_url,
-               duration, track_number, disc_number, media_mid, lossless_available, local_path
+               duration, track_number, disc_number, media_mid, lossless_available
         FROM track
         """
 
@@ -1424,7 +1403,7 @@ final class LibraryStore: ObservableObject {
               albumName: row.text(5), albumId: row.optText(6), artworkURL: row.optText(7),
               duration: row.double(8), trackNumber: row.optInt(9).map(Int.init),
               discNumber: row.optInt(10).map(Int.init), mediaMid: row.optText(11),
-              losslessAvailable: row.optBool(12), localPath: row.optText(13))
+              losslessAvailable: row.optBool(12))
     }
 
     private static let albumSelect = """
@@ -1541,16 +1520,15 @@ final class LibraryStore: ObservableObject {
     private static let trackUpsert = """
         INSERT INTO track (id, kind, title, artist_name, artist_id, album_name, album_id,
                            artwork_url, duration, track_number, disc_number, media_mid,
-                           lossless_available, album_key, local_path)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           lossless_available, album_key)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
           kind = excluded.kind, title = excluded.title, artist_name = excluded.artist_name,
           artist_id = excluded.artist_id, album_name = excluded.album_name,
           album_id = excluded.album_id, artwork_url = excluded.artwork_url,
           duration = excluded.duration, track_number = excluded.track_number,
           disc_number = excluded.disc_number, media_mid = excluded.media_mid,
-          lossless_available = excluded.lossless_available, album_key = excluded.album_key,
-          local_path = excluded.local_path
+          lossless_available = excluded.lossless_available, album_key = excluded.album_key
         """
 
     /// 曲目主表。**只 upsert，不删**——`track` 表故意不做 GC（见 schema 注释）：
@@ -1568,8 +1546,6 @@ final class LibraryStore: ObservableObject {
                 // 物化的 `album_key`：SQL 里不重算（`lower()` 只折 ASCII，算出来的
                 // 与 Swift 算的不是一个东西，专辑归位会静默错）。
                 Self.fallbackKey(for: track),
-                // 临时列，阶段 6 随 `Track.localPath` 一起拆（见 AmberDatabase 的 v2 注释）。
-                track.localPath,
             ])
         }
     }

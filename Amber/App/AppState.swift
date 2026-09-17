@@ -289,24 +289,33 @@ final class AppState: ObservableObject {
             MissingFileLocator.present(for: track, appState: self)
         }
         // 播放优先本地：下载过的直接播文件，连网络都不用碰（Music 也是先用本地副本）。
-        // 「文件 › 导入…」进来的曲目本来就只有本地这一份（`Track.localPath`），
-        // 音源那条路对它没有意义——查不到就直接报错，不去拿 `local:` 的 id 打接口。
+        // 「文件 › 导入…」进来的曲目本来就只有本地这一份，音源那条路对它没有意义——
+        // 查不到就直接报错，不去拿 `local:` 的 id 打接口。
+        //
+        // 从前这里是两条分支（先问下载索引、索引没有再信 `Track.localPath`），
+        // 现在只有一条：本地性只由 `downloads` 一处回答，它自己带`fileExists`。
         player.providerResolver = { [weak self] track in
-            if let self, case .downloaded(let url) = self.downloads.state(for: track.id) {
-                return url
+            if let url = self?.downloads.fileURL(for: track.id) { return url }
+            // 走到这儿 ＝ 这首歌在本机没有能用的文件。**索引里记着一条路径**
+            // （登记过、只是文件此刻不在），或者它本来就只有本地这一份（`local:`），
+            // 两种都是失联，打标记。
+            //
+            // §10.1 的**懒判定**就是这一下：Music 那条链的唯一具名调用方是
+            // `-[AppStartPlaybackManager startPlayingPlaylistItem:…]`（§10.1.2 实测），
+            // 判定挂在拿它去用的这一刻，不是任何一遍后台扫描。标记打在这里，
+            // 所以自动连播、预取撞上的也照样会在表格里留下那枚感叹号；
+            // 弹不弹对话框是播放器那头的事。
+            //
+            // **有意的行为变化**：在线曲目下载之后文件被删，现在**也**打标记——
+            // 从前这一下只对 `local:` 做，于是「已下载」的歌把文件删了之后表格里
+            // 一切正常、点一下才静默失败。这是修 bug，不是回归，别改回去
+            //（守它的用例：`LocalFileMissingTests.testDownloadedRemoteTrackAlsoGetsMarked`）。
+            if self?.downloads.absoluteURL(for: track.id) != nil || track.isLocal {
+                self?.library.markFileMissing(track.id)
             }
-            if track.isLocal {
-                guard let url = track.localURL,
-                      FileManager.default.fileExists(atPath: url.path) else {
-                    // §10.1 的**懒判定**就是这一下：Music 那条链的唯一具名调用方是
-                    // `-[AppStartPlaybackManager startPlayingPlaylistItem:…]`（§10.1.2
-                    // 实测），判定挂在拿它去用的这一刻，不是任何一遍后台扫描。
-                    // 标记打在这里，所以自动连播、预取撞上的
-                    // 也照样会在表格里留下那枚感叹号；弹不弹对话框是播放器那头的事。
-                    self?.library.markFileMissing(track.id)
-                    throw ProviderError.localFileMissing(trackID: track.id)
-                }
-                return url
+            // 本地导入的歌没有第二条路可走：音源不认识 `local:` 这个 id。
+            guard !track.isLocal else {
+                throw ProviderError.localFileMissing(trackID: track.id)
             }
             return try await resolveRemote(track)
         }

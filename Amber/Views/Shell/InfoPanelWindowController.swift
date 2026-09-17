@@ -262,7 +262,7 @@ final class InfoPanelWindowController: NSWindowController, NSWindowDelegate, Inf
         default:
             scrollView.frame = NSRect(x: 0, y: M.contentOriginY,
                                       width: M.windowWidth, height: M.contentHeight)
-            // 有没有本地文件是**同步**就知道的（下载索引 / localPath），
+            // 有没有本地文件是**同步**就知道的（问下载索引那一下），
             // 所以行数一开始就定死，不会先摆 8 行再跳成 11 行。
             let fields = InfoPanelTabs.fields(for: tab, hasLocalFile: facts().fileURL != nil)
             scrollView.documentView = InfoPanelFormView(fields: fields, host: self)
@@ -866,13 +866,9 @@ struct InfoPanelFacts {
     /// 云端曲目（本机没有文件）探到的字节数。0 = 探过但没拿到，nil = 还没探。
     var cloudBytes: Int?
 
-    /// 曲目落地在本机的那份文件。**以下载索引为准**，不信 `Track.localPath`——
-    /// 那一项会陈旧（搬过「媒体」文件夹、或文件被移走时）。
+    /// 曲目落地在本机的那份文件。本地性只有下载索引一处回答。
     @MainActor
-    var fileURL: URL? {
-        if case let .downloaded(url) = downloads.state(for: track.id) { return url }
-        return track.localURL
-    }
+    var fileURL: URL? { downloads.fileURL(for: track.id) }
 
     @MainActor
     func text(for field: InfoPanelReadOnlyField) -> String {

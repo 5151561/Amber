@@ -36,8 +36,12 @@ final class AmberDatabase {
     /// 旧的 JSON 一个字没动，下次启动重来。
     init(fileURL: URL) throws {
         self.fileURL = fileURL
+        // 开库之前问一次「这个文件本来就在吗」：升级链里那条非加法的升级要先拷一份底，
+        // 而 `sqlite3_open_v2` 自己会把文件建出来，开完再问就永远答「在」——
+        // 于是每建一个全新的空库都白拷一份（测试里每条用例一个临时目录，尤其明显）。
+        let preexisting = FileManager.default.fileExists(atPath: fileURL.path)
         sqlite = try SQLiteDatabase(path: fileURL)
-        try Self.migrate(sqlite)
+        try Self.migrate(sqlite, fileURL: fileURL, preexisting: preexisting)
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { [weak self] _ in
@@ -170,23 +174,36 @@ final class AmberDatabase {
     /// 一律回落默认值，于是数据出问题时一声不响。`ADD COLUMN … DEFAULT` 由 SQLite
     /// 一次性把默认值物化进每一行，读出来的永远是真实值。
     ///
-    /// 非加法的升级（改列类型、拆表）在跑之前先 `cp library.sqlite library.sqlite.bak-v<n>`。
-    private static let migrations: [(to: Int32, sql: String)] = [
-        // ── v2：`track.local_path`，一根**说好了要拆的**临时桥 ──────────────────────
+    /// 非加法的升级（改列类型、拆表、**删列**）把 `backup` 标成 true：跑之前先
+    /// `cp library.sqlite library.sqlite.bak-v<当前版本>`（落点见`backUpBeforeUpgrade`）。
+    private static let migrations: [(to: Int32, sql: String, backup: Bool)] = [
+        // ── v2：`track.local_path`，一根**说好了要拆的**临时桥（v3 已拆）────────────
         //
-        // 「文件 › 导入…」进来的曲目，路径记在 `Track.localPath` 上，取流直接用它
-        // （`AppState` 的 providerResolver）、失联判定也扫它（`missingLocalTracks`）。
-        // 那一格计划里是要删的——本地性将来只由下载索引一处说了算，主库这边归
-        // `local_file` 表——但那是**阶段 6** 的事。
+        // 那一程「文件 › 导入…」进来的曲目，路径记在 `Track.localPath` 上，取流直接用它、
+        // 失联判定也扫它。这一步留在链上不是因为还有人读这一列（v3 已经把它 DROP 了），
+        // 而是因为**升级链只能往后加不能改**：用户手上停在 v1 的库还要按原样走过 v2，
+        // 才能走到 v3 那条 DROP。
         //
         // 从阶段 3 起主库就是唯一真值源了，中间这三个阶段如果 `track` 表没有这一列，
         // 表现是：本地导入的歌这一程还能放，**重启之后全部放不出来**（路径没地方存，
-        // 载入时一律是 nil）。加法升级是这里代价最小的过渡：阶段 6 拆 `localPath` 时
-        // 把这一列一并 `DROP`，那时它一个消费者都没有。
+        // 载入时一律是 nil）。加法升级是那里代价最小的过渡。
         //
         // 单开一步 v2 而不是改 v1 的建表语句：v1 已经在用户机器上跑过一次
         // （阶段 2 的实弹演习），改它等于让那份已经存在的库永远拿不到这一列。
-        (to: 2, sql: "ALTER TABLE track ADD COLUMN local_path TEXT"),
+        (to: 2, sql: "ALTER TABLE track ADD COLUMN local_path TEXT", backup: false),
+
+        // ── v3：那根桥拆了 ─────────────────────────────────────────────────────
+        //
+        // `Track.localPath` 已经从模型里删掉，这一列一个消费者都没有了。留着不是零成本：
+        // 它是「这首歌在本机的文件在哪」的第二份真相，而实测坐实过那份副本会腐败
+        // （用户本机 8 条全部指向改名前的媒体夹、8 个文件全不存在，同期
+        // `index.json` 里 14 条是活的）。留一列没人读的陈旧路径，等的就是下一个人
+        // 顺手把它读回来。本地性现在只有 `local_file` 一处回答。
+        //
+        // **这是升级链里第一条非加法的语句**，所以 `backup: true`。
+        // `ALTER TABLE … DROP COLUMN` 要 SQLite 3.35+（本机 SDK 报 3.54，命令行 3.50），
+        // 且这一列没有索引、没有视图 / 触发器 / CHECK 引用它，满足 DROP 的全部前提。
+        (to: 3, sql: "ALTER TABLE track DROP COLUMN local_path", backup: true),
     ]
 
     /// 当前库的 `user_version`。
@@ -203,7 +220,8 @@ final class AmberDatabase {
     /// 版本号就是幂等的闸：重复开同一个库，第二次读到的 `user_version` 已经是最新，
     /// 建表那段一条都不会再跑。所以 DDL 里**故意不写 `IF NOT EXISTS`**——写了就等于
     /// 给「版本号说建过了、表却不在」这种真正的坏账加了一层静音。让它当场炸。
-    private static func migrate(_ db: SQLiteDatabase) throws {
+    private static func migrate(_ db: SQLiteDatabase, fileURL: URL,
+                                preexisting: Bool) throws {
         var version = try userVersion(db)
 
         if version == 0 {
@@ -215,11 +233,38 @@ final class AmberDatabase {
         }
 
         for step in migrations where step.to > version {
+            // 非加法的那几步先拷一份底。`preexisting` 那道闸：刚被这次 open 建出来的
+            // 空库没有任何东西可备份，拷了只是在每个临时目录里多一个 0 行的文件。
+            if step.backup, preexisting {
+                backUpBeforeUpgrade(db, fileURL: fileURL, from: version)
+            }
             try db.transaction {
                 try db.execute(step.sql)
                 try db.execute("PRAGMA user_version = \(step.to)")
             }
             version = step.to
+        }
+    }
+
+    /// 非加法升级前的一份底：`library.sqlite` → `library.sqlite.bak-v<升级前的版本>`。
+    ///
+    /// **先 checkpoint 再拷**：WAL 里还压着的那几笔不并回主库的话，拷出来的是一份陈旧的库
+    /// ——那正是「只拷 .sqlite」这个坑的形状（见 `checkpoint()`）。
+    ///
+    /// **拷不成不拦着升级**：这是开库路径，失败在这儿就等于 App 起不来。
+    /// 记一笔日志，继续。备份是给「升级写错了」留的后路，不是升级的前置条件。
+    ///
+    /// 同一个版本只留最后一份（先删再拷）：同一步升级不会跑第二次，
+    /// 真跑到第二次说明上一次没提交成功，那一份底才是要留的那一份。
+    private static func backUpBeforeUpgrade(_ db: SQLiteDatabase, fileURL: URL,
+                                            from version: Int32) {
+        let backup = fileURL.appendingPathExtension("bak-v\(version)")
+        do {
+            try db.checkpointTruncate()
+            try? FileManager.default.removeItem(at: backup)
+            try FileManager.default.copyItem(at: fileURL, to: backup)
+        } catch {
+            NSLog("[AmberDatabase] 升级前备份失败（照常升级）：%@", String(describing: error))
         }
     }
 

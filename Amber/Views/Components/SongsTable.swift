@@ -525,7 +525,14 @@ struct SongsTableColumns: Equatable {
         // Amber 的在线曲目写成音源 + 在线音频，本地导入的写文件本身的容器。
         case .kind:
             if track.isLocal {
-                let ext = (track.localPath as NSString?)?.pathExtension.uppercased() ?? ""
+                // **只读内存那份 `states`，一次库查询、一次 stat 都不做**：这段在表格
+                // 单元格的逐行绘制里跑（同一份实现还兼「自动调整列大小」的测宽，
+                // 一屏能调上百次）。`state(for:)` 是一次字典查找，`fileURL(for:)`
+                // 会 stat 文件——那一条给取流与信息面板用，不能下到这里。
+                guard case .downloaded(let url) = downloads.state(for: track.id) else {
+                    return "音频文件"
+                }
+                let ext = url.pathExtension.uppercased()
                 return ext.isEmpty ? "音频文件" : "\(ext) 音频文件"
             }
             return "\(track.kind.displayName)在线音频"

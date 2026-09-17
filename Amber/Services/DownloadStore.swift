@@ -343,13 +343,49 @@ final class DownloadStore: ObservableObject {
         states[trackID] ?? DownloadState.none
     }
 
+    /// 这首歌**此刻真在本机**的那份文件，没有就是 nil。
+    ///
+    /// `Track.localPath` 退场之后，「取流拿哪份文件」「信息面板算不算有本地文件」
+    /// 这些问题全收到这一条上：下载来的、导入拷进媒体夹的、原地引用的，同一条路。
+    /// 从前它们分两条走（先问索引、索引没有再信`Track.localPath`），
+    /// 于是同一首歌能同时是「已下载」和「指着一条死路径」。
+    ///
+    /// **带 `fileExists`**：`states` 是启动时对着盘校验过一次的快照，这一程里文件被删
+    /// （用户在访达里删、外接盘拔了）它不会自己变。取流那一刻问的是「现在能不能放」，
+    /// 所以这里当场 `stat` 一次——与从前本地导入那条路的判据逐字相同，
+    /// 只是现在**下载来的歌也走这一下**（见 `AppState.providerResolver` 的注释）。
+    ///
+    /// 逐行绘制的地方（歌曲表的「种类」「云端下载」两列）**不要用它**：那里问的是
+    /// 「登记过没有」，直接读内存的 `state(for:)`，一次 stat 都不做。
+    func fileURL(for trackID: String) -> URL? {
+        guard case .downloaded(let url) = state(for: trackID),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    /// 索引里**记着**的那条路径解成绝对 URL，**不问文件在不在**。
+    ///
+    /// 只给失联判定用（`LibraryStore.missingLocalTracks`）：那条链的整个问题就是
+    /// 「记着的这条路上还有没有文件」，判据是它自己的两段式（先看卷通不通，
+    /// 再看文件在不在），所以这里只负责把相对路径拼回媒体夹、绝对路径原样给出去。
+    func absoluteURL(for trackID: String) -> URL? {
+        index[trackID].map { fileURL(forPath: $0.path) }
+    }
+
     func isDownloaded(_ trackID: String) -> Bool {
         if case .downloaded = state(for: trackID) { return true }
         return false
     }
 
     /// 已下载曲目占用的磁盘字节数（设置/资料库信息里要报「已下载 n 首，共 x MB」时用）。
-    var totalBytes: Int { index.values.reduce(0) { $0 + $1.bytes } }
+    /// 只数**此刻真在盘上**那些：`index` 现在也留着文件不见了的条目（见 `loadIndex`），
+    /// 拿它直接求和会把删掉的文件也算进「已下载共 x MB」。
+    var totalBytes: Int {
+        index.reduce(0) { sum, pair in
+            if case .downloaded = states[pair.key] { return sum + pair.value.bytes }
+            return sum
+        }
+    }
 
     /// 索引的一份只读快照：id → 路径（相对「媒体」文件夹的，外部条目是绝对路径）。
     ///
@@ -820,6 +856,10 @@ final class DownloadStore: ObservableObject {
         var seen = Set<String>()
         let queue = tracks.filter { track in
             guard seen.insert(track.id).inserted, let entry = index[track.id] else { return false }
+            // 文件此刻不在盘上的条目也留在 `index` 里（见 `loadIndex`），但回填不能挑它们：
+            // 每首在真正动文件之前会先去音源问一趟歌词，挑中一条注定 `retag` 失败的，
+            // 白花的是一次网络往返。
+            guard case .downloaded = states[track.id] else { return false }
             return Self.needsTagBackfill(key: track.id, path: entry.path,
                                          tagged: entry.tagged, tagVersion: entry.tagVersion)
         }
@@ -1045,7 +1085,8 @@ final class DownloadStore: ObservableObject {
     /// 只报一句——半搬不搬的目录比没搬更难收拾。
     private func migrate(to newDirectory: URL) {
         guard newDirectory.standardizedFileURL != directory.standardizedFileURL else { return }
-        let count = index.count
+        // 报给用户的是「搬了几首」，所以数真在盘上那些（`index` 也留着不见了的条目）。
+        let count = states.values.filter { if case .downloaded = $0 { return true }; return false }.count
         do {
             try FileManager.default.createDirectory(at: newDirectory, withIntermediateDirectories: true)
             try moveContents(from: directory, to: newDirectory)
@@ -1056,7 +1097,12 @@ final class DownloadStore: ObservableObject {
         directory = newDirectory
         // 路径是相对的，搬完照旧成立；但 `states` 里存的是绝对 URL，要按新目录重发一遍。
         // 外部条目（原地引用的导入文件）本来就没搬，按它自己的绝对路径重发。
-        states = index.mapValues { .downloaded(self.fileURL(forPath: $0.path)) }
+        // 只给**原来就在盘上**那些重发状态：`index` 里还留着文件不见了的条目
+        // （见 `loadIndex`），一律发 `.downloaded` 会让它们凭空变成已下载。
+        states = states.reduce(into: [:]) { out, pair in
+            guard case .downloaded = pair.value, let entry = index[pair.key] else { return }
+            out[pair.key] = .downloaded(self.fileURL(forPath: entry.path))
+        }
         // 清单跟着文件一起搬过去了（`moveContents` 最后那一手），这里写的是新目录里那份。
         // 投影则要整趟重建：相对路径一个字没变，但**卷号可能变了**
         //（搬到外接盘上去的那种）。见 `rebuildMediaProjection` 里对搬家路径那段注释。
@@ -1211,9 +1257,19 @@ final class DownloadStore: ObservableObject {
         for (id, entry) in merged {
             let url = fileURL(forPath: entry.path)
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-                // 摘掉的只是这一程的内存与清单。**external 那一行留在主库里**：
-                // 它是权威，盘没插上不等于用户不要它了（见下面 persist 那一段）。
-                manifestChanged = manifestChanged || !entry.isExternal
+                // **文件此刻不在，但这条记录要留着。**
+                //
+                // 记录留着＝「这首歌的文件该在这条路上」，这正是「查找丢失的文件」那条链
+                // 的全部原料：用户指一份回来 → `MissingFileLocator` 拿旧路径与新路径比出
+                // 位移规律 → 把其余几十首一起找回来。从前这份记录挂在 `Track.localPath`
+                // 上、无条件持久；`localPath` 拆掉之后（阶段 6）唯一的落点就是这里，
+                // 这一格再摘掉的话，**关掉 App 再打开，批量找回就没有东西可修了**。
+                //
+                // 只是不进 `states`：界面照旧当它「没下载」（`state(for:)` 只看 `states`），
+                // 与从前逐字一致。要真正忘掉一条，得用户显式「移除下载」（`remove`/`forget`）。
+                //
+                // 因此这里**不置 `manifestChanged`**：清单里那条也留着。
+                alive[id] = entry
                 continue
             }
             var fresh = entry

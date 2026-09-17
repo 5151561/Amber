@@ -72,20 +72,66 @@ final class AmberDatabaseTests: XCTestCase {
     @MainActor
     func testUserVersionIsCurrent() throws {
         let database = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try database.userVersion(), 2)
+        XCTAssertEqual(try database.userVersion(), 3)
     }
 
-    /// v2 那一步：`track.local_path`。
+    /// v3 那一步：`track.local_path` **拆了**。
     ///
-    /// 它是一根**说好了要拆的**临时桥——`Track.localPath` 要到阶段 6 才退场，
-    /// 在那之前主库得存得下它，否则本地导入的歌重启之后没有路径可播。
-    /// 这条用例在那一天会红，那正是提醒「该把这一列一起 DROP 了」。
+    /// 这条用例从前是反的（断言那一列在），留在那儿就是为了在拆的那一天变红提醒。
+    /// 现在它守的是另一头：本地性只有 `local_file` 一处回答，`track` 表上不许再长出
+    /// 第二份「这首歌的文件在哪」——那份副本实测会腐败（用户本机 8 条全部指向
+    /// 改名前的媒体夹、8 个文件全不存在，同期 `index.json` 里 14 条是活的）。
     @MainActor
-    func testTrackHasTemporaryLocalPathColumn() throws {
+    func testTrackNoLongerHasLocalPathColumn() throws {
         let database = try AmberDatabase(directory: directory)
         let columns = Set(try database.sqlite.query(
             "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
-        XCTAssertTrue(columns.contains("local_path"))
+        XCTAssertFalse(columns.contains("local_path"))
+    }
+
+    /// 停在 v2 的老库（用户手上那份）升到 v3：**先留一份底，再 DROP**。
+    ///
+    /// 两件事一起钉：升级链对已经存在的库是从中途接着跑的（不是重建），
+    /// 以及非加法那一步的 `backup` 标志真的落成了一个文件。
+    @MainActor
+    func testUpgradeFromV2DropsColumnAndLeavesBackup() throws {
+        let file = directory.appendingPathComponent("library.sqlite")
+        // 手工造一份停在 v2 的库：建 v1 的表、补 v2 那一列、版本号钉在 2。
+        do {
+            let database = try AmberDatabase(directory: directory)
+            try database.sqlite.execute("PRAGMA user_version = 2")
+            try database.sqlite.run("""
+                INSERT INTO track (id, kind, title, artist_name, album_name, duration, album_key)
+                VALUES (?,?,?,?,?,?,?)
+                """, ["local:1", "qq", "曲", "某人", "某碟", 1.0, "某碟|某人"])
+            try database.sqlite.execute("ALTER TABLE track ADD COLUMN local_path TEXT")
+            database.checkpoint()
+        }
+
+        let upgraded = try AmberDatabase(fileURL: file)
+        XCTAssertEqual(try upgraded.userVersion(), 3)
+        let columns = Set(try upgraded.sqlite.query(
+            "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
+        XCTAssertFalse(columns.contains("local_path"))
+        // 行本身一条不少：DROP COLUMN 只摘一列。
+        XCTAssertEqual(try count(upgraded, "track"), 1)
+
+        let backup = directory.appendingPathComponent("library.sqlite.bak-v2")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path),
+                      "非加法升级之前要先留一份底")
+        // 底是升级前那一份：那一列还在。
+        let old = try SQLiteDatabase(path: backup)
+        let backedUpColumns = Set(try old.query(
+            "SELECT name FROM pragma_table_info('track')") { $0.text(0) })
+        XCTAssertTrue(backedUpColumns.contains("local_path"))
+    }
+
+    /// 全新的空库不留备份：那一份拷出来也是 0 行，只是在每个临时目录里多一个文件。
+    @MainActor
+    func testFreshDatabaseLeavesNoBackup() throws {
+        _ = try AmberDatabase(directory: directory)
+        let backup = directory.appendingPathComponent("library.sqlite.bak-v2")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backup.path))
     }
 
     /// 重复开同一个目录不会再建一次表。
@@ -101,7 +147,7 @@ final class AmberDatabaseTests: XCTestCase {
         }
 
         let second = try AmberDatabase(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 2)
+        XCTAssertEqual(try second.userVersion(), 3)
         let value = try second.sqlite.value(
             "SELECT value FROM rating WHERE id = ?", ["qq:1"]) { $0.int(0) }
         XCTAssertEqual(value, 5)
@@ -149,7 +195,7 @@ final class AmberDatabaseTests: XCTestCase {
 
         // 空壳条目不会挡住下一次开库。
         let second = try AmberDatabase.shared(directory: directory)
-        XCTAssertEqual(try second.userVersion(), 2)
+        XCTAssertEqual(try second.userVersion(), 3)
     }
 
     // MARK: - 外键：该级联的级联
