@@ -431,3 +431,62 @@ H 并进 F2）。主会话另做两道接缝。
 35. 焦点走进歌词，一行应念出「正文，发音，译文」三段（开着翻译时），且能在行间走。
 36. 焦点落到进度条上应念「播放进度 滑块 1:23 / 4:05」（回归确认，这条本来就对）。
 37. 打开「减弱透明度」→ 迷你播放器底衬应从 Metal 动态背景变毛玻璃，**关掉后应换回来**（两个方向都要试）。已知未覆盖：整窗播放器那块（`NowPlayingContainerViewController.swift:45`）。
+
+## 9. 第三轮整改的结果（2026-09-17）
+
+I / J / K 三批并行 + 主会话三道接缝。**这一轮最该留下的不是改动，是六个被数字推翻的前提**
+——批 K 四件事里有三件的前提不成立，结构性改动一行没做，而那是对的。
+
+### 收工核对
+
+| | 第二轮末 | 现在 |
+| --- | ---: | ---: |
+| clean build 警告 | 21（**不是 §8 记的 14**，见下） | **17** |
+| `xcodebuild test` | 1155 | **1157**（0 失败，1 跳过） |
+| 实机 | — | `02bca6c` 起得来，RSS 177 MB，CPU 0%，无崩溃，**零落库错误** |
+| `NWPathMonitor` | 1 处 | **0** |
+| `actor` | 1 | **1**（批 K 论证了不该加，见下） |
+
+**警告基线的口径要先对齐**：§8 记的「14」不是「按 `file:line:col` 去重的唯一条数」这个口径。
+批 I 与批 J 各自独立在 `84d5d99` 上量到 **21**，且批 I 指出去掉 `[#DeprecatedDeclaration]`
+与 `'as' test is always true` 两类正好是 14。现在基线连同口径一起写进
+[`Tools/check.sh`](../Tools/check.sh)（`warning_baseline`），改它要在提交信息里解释一句。
+
+### 这一轮推翻了什么
+
+**批 K（结构性那批，四件事三件前提不成立）**
+
+| 任务书 | 实际 |
+| --- | --- |
+| §2.4-1「把 SQLite 收进 actor，**先只搬只读的两条路**」 | **这两句互相排斥。** actor 隔离按**对象**算不按方法算：`SQLiteDatabase` 一进 actor，所有入口同时变 `await`，没有中间态。写入侧当场不成立，铁证两条：`LibraryStore.persistStat`（`:2222`）的绑定数组本身就是五本主 actor 字典摆在 `db.run` 参数里；`persistAllPlaylists`（`:2173`）在**一个事务里**交替 SELECT → 读内存 → DELETE → 调 `@MainActor` 的 `searchIndex.delete`，而跨 actor 就是跨挂起点、SQLite 事务是连接级的。全仓 33 个 `in db:` 助手、34 个 `persist` 调用点都是这形状 |
+| §2.6-4「整座资料库在首帧之前同步读完」 | **量级错了一个数量级以上。** 独立基准，同一份库，best of 7：203 首 = **0.675 ms**（Debug）/ 0.209 ms（Release）；50,203 首 = 73.2 / 50.3 ms。约 1.4 µs/行，严格线性，越过 120 Hz 一帧要 **6,000 首**。而且「拆两段」在这里根本不是优化——这趟读跑在 `AppDelegate()` 那一行、`app.run()` **之前**，主线程此刻没有第二件事可做，挪到后台只是空等（除非肯先画一帧空资料库，那就把 §2.6-1 刚修好的「本地优先」从另一头破了）。退一步那条（挪 `track_stat`/`recent_*`）也省不下：代价全在曲目全表解码，而 `addedAt` 正是歌曲页默认排序的依据，挪后首帧顺序是错的 |
+| §2.6-4 指错了 store | 启动路径上真正在主线程发 `stat(2)` 的是 `DownloadStore.loadIndex`（`:1291`），逐条 `attributesOfItem`。**[实测 signpost] 实机那次：`LibraryStore.load` 3 ms、`DownloadStore.loadIndex` 17 ms**——后者是前者的 5 倍，而审查单整节都在说前者 |
+| §2.6-5「两条启动任务在主 actor 上做同步磁盘遍历」 | **两条都不成立。** `renameLegacySuffixedFiles` 的 `fileExists`/`moveItem` 挡在纯字符串判断（`DownloadStore.swift:764`）后面，settled 机器上零系统调用；`measureDownloadedTracks` 循环体只有一次字典查表与一次排队，一次系统调用都没有 |
+| §5 单列「`LoudnessStore.scan` 吃满一核仍未处理」 | **陈旧。** 批 L 上一轮就修完了（`reactive-ui-review.md` §6）：串行队列 + `LoudnessScanPace.throttled` + 首间 0.25 s，实机 99–163% → 13–22%。真根因也不是节流，是 `AVAudioFile.read` 到文件尾抛 `eofErr` 让每首整首作废 |
+
+**批 I**
+
+- §8「留给下一轮」的「`TrackRowParts.swift:193` 报 `.slider` 但无 value」**说少了**：它缺的是 value **和** increment，而 label 里装的就是值。已一并补齐。
+- 「艺人页曲目行 `mouseDown` 不调 `super`」**发现成立、修法指错**：`NSView` 的默认 `mouseDown` 只把事件顺响应链上传，**自己不改第一响应者**。照做得指望事件传到 `NSTableView.mouseDown:`，让表格顺手做三件事（`makeFirstResponder`、选中整行、进拖选事件循环），而要的只有第一件。⌘I 恒灰的原因也不是「没选中」——`selectedTrackID` 一直写着，是这一页从不主动取焦点。
+
+**主会话**
+
+- §3-1 的「没有 `.lproj` 会不会让系统串退成英文」（§7 列为「等用户定夺」、§8 验收第 13 条）：**不会，而且补 `.lproj` 是空头。** 三种形态实测见 `AmberTests/App/LocalizationTests.swift` 的对照表——这一门是 `CFBundleDevelopmentRegion` 供的，不需要真有那个目录。曾经加过的 `Amber/Resources/zh-Hans.lproj/` 又删掉了。**验收第 13 条就此结掉。**
+- §3-3 的 CI 那一半：这个仓库 `git remote -v` 是空的，workflow 写了无处可跑；测试又要 Xcode-beta、要真实偏好、要真实资料库。改成 [`Tools/check.sh`](../Tools/check.sh)（构建 + 数警告 + 全量测试一条命令）。signpost 与日志归一由批 I/J/K 各自落在自己文件里，全仓 `NSLog` 归零。
+
+### 几条值得记住的实测
+
+1. **`OSSignposter` 不是「不采样就免费」**（批 K，`-O -wmo`、无人在录、best of 5 × 50 万）：区间+插值消息 **560 ns**、区间无消息 440 ns、事件+消息 271 ns，换 `OSLog.disabled` 还要 213 ns。贵的是调用本身不是插值，所以「加个 `if enabled` 的闸」白加（而且 `OSSignposter` 压根没有那个成员）。**纪律按次数定**：启动一次 3 区间 + 6 事件 ≈ 3.3 µs，而每帧/每行/每样本的路径上一条都不许埋。
+2. **错误码比 `NWPathMonitor` 准**：后者是在结果已经回来之后**另问系统一次**，答的不是「刚才那次为什么空」——服务端 500 与断网同样是空数组，而拔网线再插回去它又答「有网」。现在判据与那次请求同源（`CatalogFailureSink`）。
+3. **`zsh` 的 `log` 是内置命令**，会把 `/usr/bin/log` 挡掉（报 `too many arguments`）。验 signpost 一律写全路径。
+4. **一格底下七八条请求时，失败上报走 `@TaskLocal` 而不是改签名**：`catalogItems` 每层都用 `try?` 换「交不出来就整段省掉」，改成层层上抛要动三十来个辅助函数的签名，只为在出口回答一个是非题。任务局部量按**调用树**划界，`async let` 与 `withTaskGroup` 的子任务自动继承，正好就是「这一格」。
+
+### 留给下一轮
+
+| 项 | 归属 |
+| --- | --- |
+| **`searchFilter` 离开主 actor**——§2.4-1 里唯一还站得住的那半 | 批 K 没做的理由是**所有权**不是收益：七个调用点全在 `Views/Shell/**`。但也**还没有人量过**它——本机 203 首必然是微秒级，判据该是「库多大才值得」，照 §2.6-4 的做法先量再说 |
+| SQLite 写入路径收口的三步计划 | 写在 `Services/SQLiteDatabase.swift` 的类注释里（先拆 33 个助手成「主 actor 取值 + actor 写」，再让 `AmberDatabase` 变 actor，34 个调用点加 `await`）。附「别用 `@unchecked Sendable` + 锁绕过」的理由 |
+| `DownloadStore.loadIndex` 对**不可达卷**上的条目逐条 `stat` 到挂载超时 | 批 K 顺手发现、没动（没有可复现样本）。`LibraryStore.isVolumeReachable(for:)`（`:1033`）已是现成的两段式判据。现在有实测支撑了：本地盘 14 条就要 17 ms，是启动路径主线程上最贵的一段 |
+| 全量本地化（抽进 String Catalog） | §5 单列。本轮只做了「声明这一门」那一档，并验掉了它是空头 |
+| §3-2（零沙盒 + 一刀切关 ATS） | 自始至终没排进任何批次 |
