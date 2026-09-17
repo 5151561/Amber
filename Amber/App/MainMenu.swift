@@ -7,8 +7,9 @@ import AppKit
 /// **NSApp 的 delegate**。Amber 的这些命令大多实现在 `AppDelegate` 上（选择器统一带`am`
 /// 前缀，见下），所以「有没有窗口、焦点在哪」都不影响它们能不能被送达；
 /// 启用态、勾选态与随状态翻的标题统一由 `AppDelegate.validateMenuItem(_:)` 给。
-/// 页面级命令（目前只有「显示重复项目」）反过来利用响应链：实现放在那一页的 VC 上，
-/// 不在这一页时自动没人响应、菜单项自动变灰。
+/// 页面级命令反过来利用响应链：实现放在那一页的 VC 上，不在这一页时自动没人响应、
+/// 菜单项自动变灰——**一行 validate 都不用写**。现在有五条：「显示简介」「显示重复项目」
+/// 「查看显示选项…」「删除」「查找」。
 ///
 /// 为什么不复用 AppKit 现成的 `toggleSidebar(_:)` 这类选择器：`NSSplitViewController`
 /// 自己就响应它，于是「谁来 validate」取决于分栏控制器当时在不在响应链里
@@ -18,15 +19,24 @@ import AppKit
 ///
 /// **编辑菜单例外**：撤销/重做/剪切/拷贝/粘贴/全选必须走 AppKit 的标准选择器
 /// （`undo:` / `cut:` / …），否则文本框、搜索框里连 ⌘V 都用不了——这些命令的实现
-/// 在 `NSTextView` / `NSDocument` 那一层，响应链本来就会找到它们。
+/// 在 `NSTextView` / `NSWindow` 那一层，响应链本来就会找到它们。
+///
+/// 撤销那两条的启用态与标题也归 AppKit：`undo:` 全框架只有 `NSWindow` 实现
+/// （[实测 probe 2026-09-17]），它按**第一响应者的** `undoManager` 现算，
+/// 并把标题改成「撤销<动作名>」。Amber 这边要做的只有一件——让窗口交得出一份
+/// undo manager，见 `MainWindowController.windowWillReturnUndoManager(_:)`。
+/// 「删除」与「查找」不在这条例外里：它们在 Music 里作用于**选中的曲目 / 页内搜索框**，
+/// 与字段编辑器无关，所以做成页面级命令。
 enum MainMenu {
 
-    /// AppDelegate 实现的那一批命令。
+    /// 菜单里那批带 `am` 前缀的命令。
     ///
-    /// **例外是 `showHideDuplicates`**：它是页面级命令，实现在资料库歌曲页的 VC 上。
+    /// 大多实现在 `AppDelegate` 上；**五条例外是页面级命令**，实现在那一页的 VC 上
+    /// （`getInfo` / `showHideDuplicates` / `songsViewOptions` / `deleteSelection` / `find`）。
     /// 响应链因此顺带把「这一页在不在」也算了——不在这一页时没有谁响应这个选择器，
-    /// AppKit 自动把菜单项变灰。这正好对上 Music 里它挂在 `NativeContentController`
-    /// （内容控制器，不是 App 级对象）上的事实，spec §10.3.1/§10.3.2 `[实测]`。
+    /// AppKit 自动把菜单项变灰。这正好对上 Music 里「显示重复项目」挂在
+    /// `NativeContentController`（内容控制器，不是 App 级对象）上的事实，
+    /// spec §10.3.1/§10.3.2 `[实测]`。
     enum Action {
         static let showSettings = #selector(AppDelegate.amberShowSettings(_:))
         static let showQQLogin = #selector(AppDelegate.amberShowQQLogin(_:))
@@ -34,11 +44,21 @@ enum MainMenu {
         static let refreshAccountPlaylists = #selector(AppDelegate.amberRefreshAccountPlaylists(_:))
         static let importFiles = #selector(AppDelegate.amberImportFiles(_:))
         static let toggleSidebar = #selector(AppDelegate.amberToggleSidebar(_:))
-        static let songsViewOptions = #selector(AppDelegate.amberShowSongsViewOptions(_:))
+        /// 页面级命令：只对歌曲表有意义（那扇面板调的就是歌曲表的列与行高），
+        /// 所以实现挪去了 `LibrarySongsViewController`。从前它在 AppDelegate 上，
+        /// 于是在主页/新发现/广播上也亮着，点开是一扇调不到任何东西的面板。
+        static let songsViewOptions =
+            #selector(LibrarySongsViewController.amberShowSongsViewOptions(_:))
         static let showHideDuplicates =
             #selector(LibrarySongsViewController.amberShowHideDuplicates(_:))
         /// 同为页面级命令（实现在曲目表页与资料库歌曲页上，见「文件 ▸ 显示简介」那段）。
         static let getInfo = #selector(TrackTableViewController.amberGetInfo(_:))
+        /// 「编辑 ▸ 删除」：把选中的曲目移出资料库。表格里的 ⌫ 发的是同一个选择器
+        /// （`TrackDisplayTableView.keyDown`），于是菜单与键盘是同一条命令。
+        static let deleteSelection =
+            #selector(LibrarySongsViewController.amberDeleteSelection(_:))
+        /// 「编辑 ▸ 查找」⌘F：把焦点交给这一页标题栏上那颗搜索框。
+        static let find = #selector(LibrarySongsViewController.amberFind(_:))
         static let togglePlayPause = #selector(AppDelegate.amberTogglePlayPause(_:))
         static let nextTrack = #selector(AppDelegate.amberNextTrack(_:))
         static let previousTrack = #selector(AppDelegate.amberPreviousTrack(_:))
@@ -159,9 +179,19 @@ enum MainMenu {
         menu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         menu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         menu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        menu.addItem(withTitle: "删除", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        // 这一条原先绑的是 `NSText.delete(_:)`——那是文本框里的「删除选中的字」，
+        // 与曲目删除毫无关系，于是 Music 里这一条该干的事（删掉选中的歌）在 Amber 里
+        // 只有表格 `keyDown` 里裸接的 ⌫ 一条路，既进不了菜单也没法被 validate。
+        // 改绑页面级的 `amberDeleteSelection(_:)`：不在有选中曲目的页上就自动变灰。
+        // 没有快捷键——⌫ 由表格自己往响应链上发（AppKit 不把 ⌫ 当等价键）。
+        menu.addItem(command("删除", Action.deleteSelection))
         menu.addItem(.separator())
         menu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        menu.addItem(.separator())
+        // 「查找」⌘F：macOS 上这颗键就是「在当前这一页里找东西」。Amber 各页的搜索框
+        // 长在标题栏上，此前只能用鼠标点。同为页面级命令——没有搜索框的页（主页、
+        // 新发现、广播）链上没人接，菜单项自动变灰，**不写 validate**。
+        menu.addItem(command("查找", Action.find, key: "f", modifiers: .command))
         item.submenu = menu
         return item
     }
@@ -187,6 +217,12 @@ enum MainMenu {
         // spec 没给这一项在菜单里的排布，只知道它与查看显示选项同属一张资源表。
         menu.addItem(command("显示重复项目", Action.showHideDuplicates))
         menu.addItem(.separator())
+        // 全屏用的是 AppKit 的标准项（`toggleFullScreen:`）。**标题不用自己翻**：
+        // 这个选择器全框架只有 `NSWindow` 实现，响应链找到的就是窗口自己，
+        // 而 `-[NSWindow validateMenuItem:]` 会把标题改成系统那两句
+        // 「进入全屏幕 / 退出全屏幕」——[实测 probe 2026-09-17] 建一扇同形态的窗，
+        // 把标题先写成「进入全屏幕」再让它 validate 一次，标题当场被改写成系统串。
+        // 这里写死的这一句只是 validate 之前那一瞬的占位。
         let fullScreen = NSMenuItem(title: "进入全屏幕",
                                     action: #selector(NSWindow.toggleFullScreen(_:)),
                                     keyEquivalent: "f")

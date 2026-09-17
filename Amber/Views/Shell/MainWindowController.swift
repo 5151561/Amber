@@ -40,6 +40,23 @@ final class MainWindowController: NSWindowController {
     private var currentIdentifiers: [NSToolbarItem.Identifier] = []
     private weak var currentTopPage: ContentPageController?
 
+    /// 这扇窗的撤销登记处。
+    ///
+    /// 「编辑 ▸ 撤销 ⌘Z」挂着 `undo:`，而 `undo:` 全 AppKit 只有 **`NSWindow`** 实现
+    /// （[实测 probe 2026-09-17]：`NSResponder`/`NSWindowController`/`NSViewController`/
+    /// `NSView`/`NSApplication`/`NSTextView` 一个都不响应它）。`-[NSWindow undo:]` 找的是
+    /// **第一响应者的** `undoManager`，而 `NSResponder.undoManager` 沿链上溯，
+    /// 到窗口这一层就来问委托——也就是下面那一句 `windowWillReturnUndoManager`。
+    ///
+    /// 于是分工天然是对的：焦点在搜索框/改名框里时第一响应者是字段编辑器，
+    /// 它自己带一份 undo manager（同一份 probe 实测），⌘Z 撤的是打的字；
+    /// 焦点在列表、侧栏、面板上时才落到这一份，撤的是资料库那一步。
+    ///
+    /// **一份就够**：Amber 是单窗 App（Music 也是），资料库只有一座。
+    /// `LibraryStore` 在下面接过去（撤销注册全写在它的写入口里，调用点一行不动）；
+    /// 队列面板从自己那扇窗上取（见 `PlayQueueViewController`）。
+    private let libraryUndoManager = UndoManager()
+
     var splitViewController: MainSplitViewController? { rootViewController.splitViewController }
     private var navigation: ContentNavigationController? {
         rootViewController.splitViewController.navigationController
@@ -70,6 +87,10 @@ final class MainWindowController: NSWindowController {
         window.center()
         super.init(window: window)
         window.setFrameAutosaveName("AmberMainWindow")
+        // `NSWindowController.init(window:)` **不会**自己当上委托（[实测 probe 2026-09-17]
+        // 建完 `delegate` 仍是 nil），要拿 `windowWillReturnUndoManager` 就得自己挂。
+        window.delegate = self
+        appState.library.undoManager = libraryUndoManager
 
         let toolbar = NSToolbar(identifier: "AmberMainToolbar")
         toolbar.delegate = self
@@ -257,6 +278,18 @@ final class MainWindowController: NSWindowController {
 
     @objc private func searchInCurrentProvider(_ sender: Any?) {
         appState.sidebarSelection = .search
+    }
+}
+
+// MARK: - NSWindowDelegate
+
+extension MainWindowController: NSWindowDelegate {
+
+    /// 窗口级的撤销栈（见 `libraryUndoManager`）。菜单里那两条「撤销 / 重做」
+    /// 的启用态与标题都由 `-[NSWindow validateMenuItem:]` 按它现算，
+    /// **这边一行 validate 都不用写**。
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        libraryUndoManager
     }
 }
 

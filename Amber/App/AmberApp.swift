@@ -9,8 +9,10 @@ import SwiftUI
 /// `AppState` 在这里构造唯一一份。Amber 是单窗 App（Music 也是），所以不存在
 /// 「第二扇窗共用同一份状态」的问题——旧注释里那段 `WindowGroup` 的顾虑随场景一起没了。
 ///
-/// 菜单命令的实现全在这个类上：菜单项 target = nil 走响应链，NSApp 的 delegate
+/// App 级菜单命令的实现全在这个类上：菜单项 target = nil 走响应链，NSApp 的 delegate
 /// 是链上最后一环，所以焦点在哪都送得到（见 MainMenu 的注释）。
+/// **页面级的那几条不在这里**（「显示简介」「显示重复项目」「查看显示选项…」「删除」
+/// 「查找」）：它们实现在各自那一页的 VC 上，靠「链上有没有人接」自动置灰。
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -137,9 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowController?.splitViewController?.toggleSidebar(sender)
     }
 
-    @objc func amberShowSongsViewOptions(_ sender: Any?) {
-        AuxiliaryWindows.shared.toggleSongsViewOptions()
-    }
+    // 「显示 ▸ 查看显示选项…」不在这个类上：那扇面板调的是**歌曲表**的列与行高，
+    // 放在 AppDelegate 上等于在主页/新发现/广播上也亮着，点开是一扇调不到任何东西的
+    // 面板。实现挪去了 `LibrarySongsViewController.amberShowSongsViewOptions(_:)`，
+    // 响应链自动置灰，validate 这边也就不用补分支。
 
     @objc func amberTogglePlayPause(_ sender: Any?) {
         appState.player.togglePlayPause()
