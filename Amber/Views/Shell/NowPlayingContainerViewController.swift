@@ -538,12 +538,17 @@ final class NowPlayingContainerViewController: NSViewController {
         isInspectorOpen = open
         syncDrawerPlacement()
         chrome.setInspector(open: open, mode: inspectorMode)
-        // 内容列的半区跟着变宽/变窄，列宽要重算。
-        view.needsLayout = true
-        layoutPieces()
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let animates = animated && !reduceMotion
+
+        // 内容列的半区跟着变宽/变窄，列宽要重算。落点换了半区，整列是**横移**过去的，
+        // 不是在新位置直接出现——先记下它现在画在哪，布完局再从那儿起弹簧。
+        let fromX = animates ? contentColumnPresentationX() : nil
+        view.needsLayout = true
+        layoutPieces()
+        if let fromX { slideContentColumn(from: fromX) }
+
         if inspectorMode == .queue {
             animatePlatter(expanded: open, animated: animates)
         } else {
@@ -605,6 +610,38 @@ final class NowPlayingContainerViewController: NSViewController {
         let shows = isInspectorOpen && hasValidLayout
         drawer.view.isHidden = !shows
         platterGlass.isHidden = !(wantsPlatter && shows)
+    }
+
+    /// 内容列此刻**画在**哪（不是它的落点）。
+    ///
+    /// 读 presentation 而不是 `layer.position`：抽屉开→换档→关这种连点，第二下来的时候
+    /// 上一程还在半路，从落点起弹簧会先瞬移回去再走，正是要消掉的那一跳。
+    private func contentColumnPresentationX() -> CGFloat? {
+        guard let layer = contentHost?.layer else { return nil }
+        return layer.presentation()?.position.x ?? layer.position.x
+    }
+
+    /// 抽屉开合时整列（封面/元数据/时间行/传输行）横移到新半区的正中。
+    ///
+    /// 从前这一步就是 `layoutPieces()` 里那句 frame 赋值，落点直接换——1440 宽的窗口上
+    /// 是 360pt 的瞬移，肉眼看就是封面在中间和左边之间闪一下。
+    ///
+    /// 只动 `position.x` 就够：列宽由 `byWidth = 整窗宽 × 0.28` 定（见 `ContentGeometry`），
+    /// 抽屉开合不改整窗宽，所以 `column` 和 y 都不变，变的只有半区决定的 x。
+    /// frame 仍然一步到位落在终值上（`-dumpviews` 量到的还是落点，同整块的推拉动画），
+    /// 动的只是 presentation。
+    ///
+    /// 曲线沿用盘那条 `.spring(response: 0.34, dampingFraction: 0.86)`：列往左让位与盘
+    /// 推上来是同一次交互的两半，两边不同速会散开。
+    private func slideContentColumn(from fromX: CGFloat) {
+        guard let layer = contentHost?.layer, fromX != layer.position.x else { return }
+        let spring = Self.spring(keyPath: "position.x",
+                                 response: Self.platterResponse,
+                                 damping: Self.platterDamping)
+        spring.fromValue = fromX
+        spring.toValue = layer.position.x
+        spring.duration = spring.settlingDuration
+        layer.add(spring, forKey: "amber.nowPlayingContentSlide")
     }
 
     /// [实测] §6.5 具名动画 `trackSectionsPlatter.expanded` / `.collapsed`：位移 + 淡入。
