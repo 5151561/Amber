@@ -74,60 +74,66 @@ enum LibraryDownloadAction: Equatable {
 @Observable
 final class DownloadStore {
 
-    /// 每首歌的当前状态。`@Published` 让整张表跟着刷新；
+    /// 每首歌的当前状态。**本类唯一的可观察属性**（歌曲表订的就是它，跟着刷新云端列）；
     /// 进度是 1% 一跳（见 `report`），不是每个数据包都发一次。
+    ///
+    /// 下面所有字段都标了 `@ObservationIgnored`：`@Observable` 的默认是「所有存储属性都
+    /// 可观察」，注入依赖、回调闭包、索引与队列全在内，而订阅方（`LibrarySongsViewController`
+    /// 与 `LibraryArtistsViewController`）读的只有 `states` 一项。判据同
+    /// `Services/LibraryStore.swift` 那 10 个标注：**只有「界面会跟着它重画」的字段
+    /// 才留在可观察面上**，加新字段时默认答案是「标上」。
     private(set) var states: [String: DownloadState] = [:]
 
     /// 由 AppState 注入：解析曲目的**远端**流地址。
     /// 必须是「不查本地」的那一条，否则下载会去读自己刚写下的文件（见 AppState.init）。
-    var resolveRemoteURL: ((Track) async throws -> URL)?
+    @ObservationIgnored var resolveRemoteURL: ((Track) async throws -> URL)?
 
     /// 由 AppState 注入：取这首歌的词，写进标签里的歌词那一格（见 `lyricsText`）。
     /// 接的是 `LyricsStore`——两处歌词面板共用的那份缓存，刚看过词的那首一趟网络都不用再打。
     ///
     /// **不抛错**：取不到就是空数组。歌词是锦上添花，不能让它把一次成功的下载拖成失败。
-    var resolveLyrics: ((Track) async -> [LyricLine])?
+    @ObservationIgnored var resolveLyrics: ((Track) async -> [LyricLine])?
 
     /// 换「媒体」文件夹时的一句回音（搬完了 / 搬不动），由 AppState 转成 toast。
     /// 搬家是用户在设置窗按了「好」之后才发生的事，没有回音就只能靠去 Finder 里翻。
-    var onMediaFolderChanged: ((String) -> Void)?
+    @ObservationIgnored var onMediaFolderChanged: ((String) -> Void)?
 
     /// 一首歌落地并进索引之后叫一次，带上它在「媒体」文件夹里的绝对路径。
     /// `AppState` 接到`LoudnessStore.measureIfNeeded`：已经在本地的文件直接离线量响度，
     /// 用不着等用户把整首听完（音量平衡第一遍只量不调，见 `SettingsValues.soundCheck`）。
-    var onDownloaded: ((Track, URL) -> Void)?
+    @ObservationIgnored var onDownloaded: ((Track, URL) -> Void)?
 
     /// 同时最多下几首。多了对 CDN 不礼貌，也没有更快——单条连接本来就能跑满。
     private static let maxConcurrent = 2
 
     /// 落盘目录 = 设置 › 文件 ›「媒体」文件夹。用户改了路径就整份搬过去（见 `migrate`），
     /// 所以这里是 `var`。
-    private var directory: URL
+    @ObservationIgnored private var directory: URL
     private var indexURL: URL { directory.appendingPathComponent("index.json") }
     /// 测试注入了目录时不跟着设置跑：那份临时目录才是这次测的落点。
-    private let directoryIsPinned: Bool
-    private let settings: AppSettings
-    private let observers = TaskBag()
+    @ObservationIgnored private let directoryIsPinned: Bool
+    @ObservationIgnored private let settings: AppSettings
+    @ObservationIgnored private let observers = TaskBag()
     /// id → 索引条目。`states` 是它加上「正在下的那几首」的视图。
     ///
     /// **内存这一份是这一程的真值**，清单与主库那张表都跟着它镜像（见 `save(changed:removed:)`）。
     /// 歌曲表的「种类」列在逐行绘制里取扩展名，走的就是它——那条路一次查库都不许有。
-    private var index: [String: Entry] = [:]
+    @ObservationIgnored private var index: [String: Entry] = [:]
     /// 正在下载的曲目 id → 任务，用来做并发闸门与取消。
-    private var running: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var running: [String: Task<Void, Never>] = [:]
     /// 排队等位的曲目，先进先出。
-    private var pending: [Track] = []
+    @ObservationIgnored private var pending: [Track] = []
 
     /// 主库连接（`local_file` 表在里面）。
     ///
     /// **nil ＝ 开库这一步就失败了**：清单照常读写，只是这一程的 external 条目没处去。
     /// 与 `LibraryStore.database` 同解。
-    private let database: AmberDatabase?
+    @ObservationIgnored private let database: AmberDatabase?
 
     /// 主库那一侧载入成功了没有。**没成功就一个字都不许往回写**
     ///（见 `LibraryStore.isLoaded`）：读不出 external 行的时候，
     /// 把「清单里没有 external」当成真值写下去，等于替用户把那几条删了。
-    private var isLoaded = false
+    @ObservationIgnored private var isLoaded = false
 
     /// 索引条目。路径存**相对**「媒体」文件夹的：绝对路径带用户名，换机器/改名字就整份失效；
     /// 而且用户随时能在设置里换文件夹（见 `migrate`），存相对的搬完照旧成立。
@@ -263,8 +269,11 @@ final class DownloadStore {
         // 媒体夹这一份**显式传自己解析出来的那个**，不让它回落到 `AppSettings.shared`：
         // 注入了 settings 的 store 跟着注入的那份跑，回落会去读开发者本机真实的媒体夹。
         let support = databaseDirectory ?? directory
-        try? AmberDatabaseMigration.runIfNeeded(directory: support, mediaFolder: base,
-                                                renameLegacyOnSuccess: true)
+        // `_ =` 不是装饰：`runIfNeeded` 本身是 `@discardableResult`，但 `try?` 把它包成了
+        // 一个新的 `Optional`，那一层不在 discardable 的豁免里（基线里那条
+        // "result of 'try?' is unused"）。另外三个 store 的同一行同病，各自归各自的批。
+        _ = try? AmberDatabaseMigration.runIfNeeded(directory: support, mediaFolder: base,
+                                                    renameLegacyOnSuccess: true)
         database = try? AmberDatabase.shared(directory: support)
 
         let legacy = legacyDirectory
@@ -280,8 +289,8 @@ final class DownloadStore {
 
         // 设置窗按「好」才写回 `AppSettings`，所以这条订阅每次改路径只会响一次。
         // `dropFirst` 跳过当前值：上面已经按它开的目录。
-        // 取的是**闭包参数**里的目录，不是 `settings.values`：`@Published` 在`willSet`
-        // 发消息，订阅回调里读回去拿到的还是旧值。
+        // 取的是**闭包参数**里的目录，不是回调里再去读一次 `settings.values`：
+        // 参数是这一轮落定的那个值，绕回去读多一次会与后来的写入竞争。
         observers.observe({ [settings] in settings.values.mediaFolder }) { [weak self] folder in
             guard let self, !self.directoryIsPinned else { return }
             self.migrate(to: folder)
@@ -611,7 +620,7 @@ final class DownloadStore {
         }
     }
 
-    /// 进度只在整百分点变化时发一次。`states` 是`@Published`，
+    /// 进度只在整百分点变化时发一次。`states` 是本类唯一的可观察属性，
     /// 每个数据包发一次等于让整张歌曲表按网卡的节奏重画。
     private func report(_ progress: Double, for id: String) {
         if case .downloading(let old) = state(for: id),
@@ -859,7 +868,7 @@ final class DownloadStore {
     // MARK: - 给老文件补标签
 
     /// 正在跑的回填。同一时间只跑一份；测试要等它跑完，所以不是 `private`。
-    private(set) var backfillTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var backfillTask: Task<Void, Never>?
 
     /// 有写入器的四种容器。落地时的扩展名是按**头字节**判的（见 `fileExtension(ofHeader:)`），
     /// 所以拿索引里的路径就能知道这份文件能不能带标签，不必先把它整个复制一份再去试。
@@ -1006,14 +1015,14 @@ final class DownloadStore {
     // MARK: - MV 下载
 
     /// 由 AppState 注入：按设置 › 播放 ›「视频质量 › 下载」那一档解析 MV 的远端地址。
-    var resolveMVURL: ((MV) async throws -> URL)?
+    @ObservationIgnored var resolveMVURL: ((MV) async throws -> URL)?
 
     /// 一支 MV 下完（或下砸）的回音，由 AppState 转成 toast。
-    var onMVDownloadFinished: ((MV, Result<URL, any Error>) -> Void)?
+    @ObservationIgnored var onMVDownloadFinished: ((MV, Result<URL, any Error>) -> Void)?
 
     /// 正在下的 MV。跟曲目那套的排队/并发闸门分开：MV 是用户一支一支点的，
     /// 不像整张碟那样一次几十首，用不着队列。
-    private var mvTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var mvTasks: [String: Task<Void, Never>] = [:]
 
     /// MV 在 `states` / `index` 里的键。加前缀是为了跟曲目 id 彻底分开——
     /// 两张表共用一份索引（省掉第二套持久化与启动校验），
@@ -1551,12 +1560,69 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, Sendable {
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
+    /// 下载会话的配置。**`URLSessionConfiguration.default` 一个超时都没设**，
+    /// 那两条默认值是 60 s（请求级）和 **7 天**（资源级）——一条卡死的下载会一直挂到
+    /// 进程退出，队列里排在它后面的那几首永远轮不上（`maxConcurrent = 2`）。
+    ///
+    /// - `timeoutIntervalForRequest = 30`：两次数据到达之间的最长空窗，**不是**整程时长。
+    ///   30 s 收不到一个字节，这条线路已经不是「慢」而是「断了」。
+    /// - `timeoutIntervalForResource = 600`：整条下载的封顶。按「单曲最大文件 ÷ 最慢
+    ///   还算能用的带宽」估：Hi-Res FLAC 一首约 200 MB，600 s 对应 ~350 KB/s，
+    ///   比这还慢的线路本来也下不完一首。MV 同一条路（720p 的 mp4 比这还小）。
+    private static var configuration: URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 600
+        return configuration
+    }
+
+    /// 值得重来一次的 `URLError`：**只有连接类**。
+    ///
+    /// 判据是「这次失败跟服务器怎么想没关系」——线路抖一下、DNS 没解出来、TLS 握手
+    /// 撞上一次。业务错误一概不重试：HTTP 4xx/5xx 在 `didFinishDownloadingTo` 里就变成了
+    /// `ProviderError.api`（根本不是 `URLError`），VIP 无权限、地址过期这些重来一百次
+    /// 也是同一个答案，重试只会把失败提示推迟几秒。取消也不在表里
+    /// （`.cancelled` 没列进来），否则用户按了「取消下载」还要再等两轮退避。
+    private static let retriableCodes: Set<URLError.Code> = [
+        .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+        .networkConnectionLost, .notConnectedToInternet, .secureConnectionFailed,
+    ]
+
+    /// 重来几次。2 次 ＝ 最多三趟，退避 1 s / 2 s。
+    ///
+    /// 重来的那一趟从头下：`URLSessionDownloadTask` 的断点续传要 `resumeData`，
+    /// 而连接类失败给不出可靠的 `resumeData`。代价是进度条会退回 0
+    ///（`DownloadStore.report` 照常按新值报），换来的是一次抖动不再让整首下载作废。
+    private static let maxRetries = 2
+
     static func fetch(_ url: URL, onProgress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        var attempt = 0
+        while true {
+            do {
+                return try await fetchOnce(url, onProgress: onProgress)
+            } catch {
+                attempt += 1
+                guard attempt <= maxRetries, !Task.isCancelled, isRetriable(error) else { throw error }
+                // 指数退避。这里**故意**用会抛的 `Task.sleep`：退避期间被取消就该当场出去，
+                // `try?` 吞掉取消会让下一趟白跑一遍。
+                try await Task.sleep(for: .seconds(1 << (attempt - 1)))
+            }
+        }
+    }
+
+    private static func isRetriable(_ error: any Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        return retriableCodes.contains(error.code)
+    }
+
+    private static func fetchOnce(_ url: URL,
+                                  onProgress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        // 每一趟一个新的 `Downloader`：续体是一次性的，重试必须换一支。
         let downloader = Downloader()
         downloader.state.withLock { $0.onProgress = onProgress }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let session = URLSession(configuration: .default,
+                let session = URLSession(configuration: Self.configuration,
                                          delegate: downloader, delegateQueue: nil)
                 let task = session.downloadTask(with: url)
                 downloader.state.withLock {
