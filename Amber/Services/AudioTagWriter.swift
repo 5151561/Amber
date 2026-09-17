@@ -137,11 +137,21 @@ private func vorbisCommentBody(vendor: String, fields: [(String, String)]) -> Da
 /// vendor 是**编码器**的签名而不是标签，vorbiscomment / metaflac 改标签时都原样留着，
 /// 我们也留着：换成 "Amber" 会让文件看起来像是我们编码的。读不出来（截断）才用兜底。
 private func vorbisVendor(inCommentBody body: Data) -> String? {
-    let bytes = [UInt8](body)
-    guard bytes.count >= 4 else { return nil }
-    let length = Int(bytes[0]) | Int(bytes[1]) << 8 | Int(bytes[2]) << 16 | Int(bytes[3]) << 24
-    guard length >= 0, bytes.count >= 4 + length else { return nil }
-    return String(bytes: bytes[4..<(4 + length)], encoding: .utf8)
+    // 从前为了下标方便把整块 comment 拷成 `[UInt8]`：那一块连歌词带 base64 封面，
+    // 动辄几十上百 KB，而这里要的只有开头 4 字节长度和紧跟着的那截 vendor。
+    // `RawSpan` 借的是 `body` 自己的字节，一个字节都不拷；调用方传的是
+    // `old.dropFirst(prefix.count)` 这种切片时它也照样从 0 起算（`Data` 的下标是绝对索引，
+    // 直接换成 `body[4...]` 会读错位置，这里故意不那么写）。
+    let bytes = body.bytes
+    guard bytes.byteCount >= 4 else { return nil }
+    // 小端 32 位。偏移 0 但 `body` 自身未必对齐，所以走不对齐读；`UInt32` 进 `Int` 恒非负，
+    // 原来那条 `length >= 0` 到这里已经是恒真，跟着删掉。
+    let length = Int(UInt32(littleEndian: bytes.unsafeLoadUnaligned(fromByteOffset: 0,
+                                                                   as: UInt32.self)))
+    guard bytes.byteCount >= 4 + length else { return nil }
+    // 仍旧走 `String(bytes:encoding:)`：vendor 不是合法 UTF-8 时要的就是 nil、让调用方兜底，
+    // `String(decoding:)` 会拿替换字符糊过去，那是另一种行为。
+    return String(bytes: body.dropFirst(4).prefix(length), encoding: .utf8)
 }
 
 /// 单个 METADATA_BLOCK 的长度字段只有 3 字节，所以块正文上限 2^24−1。
@@ -272,7 +282,10 @@ enum FLACTagWriter {
             guard let header = try input.read(upToCount: 4), header.count == 4 else {
                 throw AudioTagWriteError.malformed("元数据块头截断")
             }
-            let bytes = [UInt8](header)
+            // 块头就地读：`Span` 借 `header` 自己的四个字节，不再每块拷一个小数组出来。
+            // 长度是 3 字节大端，没有 `UInt24` 能一次读出来，移位照旧；下标 0…3 由上面
+            // 那条 `count == 4` 兜住——`Span` 越界是 trap 而不是返回 nil，边界得自己先验。
+            let bytes = header.span
             sawLast = bytes[0] & 0x80 != 0
             let type = bytes[0] & 0x7F
             let length = Int(bytes[1]) << 16 | Int(bytes[2]) << 8 | Int(bytes[3])
@@ -510,7 +523,11 @@ enum OggTagWriter {
         guard header.count == 27, header.prefix(4) == Data("OggS".utf8) else {
             throw AudioTagWriteError.malformed("Ogg 页头截断或 capture pattern 不对")
         }
-        let bytes = [UInt8](header)
+        // 27 字节页头从前整块拷成 `[UInt8]` 再逐字节取。一首歌几百上千页，那就是几百上千次
+        // 堆分配，全为了读六七个字段。`Span` 直接借 `header` 自己的字节，取法一个字没变。
+        // 下面所有下标都落在这 27 字节里——上面那条 `count == 27` 就是它们的边界保证，
+        // `Span` / `RawSpan` 越界是 trap 而不是返回 nil，长度只能这样先验。
+        let bytes = header.span
         guard bytes[4] == 0 else {
             throw AudioTagWriteError.malformed("Ogg 版本不是 0")
         }
@@ -523,13 +540,16 @@ enum OggTagWriter {
         guard let body = try handle.read(upToCount: length), body.count == length else {
             throw AudioTagWriteError.malformed("Ogg 页正文截断")
         }
-        var granule: UInt64 = 0
-        for offset in (0..<8).reversed() { granule = granule << 8 | UInt64(bytes[6 + offset]) }
-        func le32(_ start: Int) -> UInt32 {
-            UInt32(bytes[start]) | UInt32(bytes[start + 1]) << 8
-                | UInt32(bytes[start + 2]) << 16 | UInt32(bytes[start + 3]) << 24
-        }
-        return Page(headerType: bytes[5], granule: granule, serial: le32(14),
+        // granule(8) 与 serial(4) 都是定长小端整数，各整块读一次再按小端解释，
+        // 与原来逐字节移位拼出来的值一个比特不差（`UInt64(littleEndian:)` 在小端机上是恒等，
+        // 大端机上是整体字节翻转，正是那个循环在做的事）。
+        // 偏移 6 / 14 都不是自然对齐，所以只能走不对齐读，`load` 那一族会在对齐上炸。
+        let raw = bytes.bytes
+        return Page(headerType: bytes[5],
+                    granule: UInt64(littleEndian: raw.unsafeLoadUnaligned(fromByteOffset: 6,
+                                                                          as: UInt64.self)),
+                    serial: UInt32(littleEndian: raw.unsafeLoadUnaligned(fromByteOffset: 14,
+                                                                         as: UInt32.self)),
                     segments: segments, body: body, raw: header + table + body)
     }
 
@@ -542,7 +562,12 @@ enum OggTagWriter {
             if packets.count == limit {
                 return index < page.segments.count
             }
-            pending.append(page.body.subdata(in: offset..<(offset + Int(lace))))
+            // `subdata(in:)` 会先造一份新的 `Data` 再拷进 `pending`，每段白拷一遍，
+            // 而一页最多 255 段。切片是 O(1) 的视图，只剩 append 那一次真拷贝
+            // （包必须自己持有字节，这一次留着）。
+            // 用 dropFirst/prefix 而不是下标区间：`page.body` 万一是切片，
+            // `Data` 的下标是绝对索引，那样会取错位置。
+            pending.append(page.body.dropFirst(offset).prefix(Int(lace)))
             offset += Int(lace)
             // 段长不足 255 就是「包在这里结束」（RFC 3533 §6 的 lacing 规则）
             if lace < 255 {
@@ -574,7 +599,8 @@ enum OggTagWriter {
                 granule: 0,  // 头页不含完整音频，granule 恒为 0
                 serial: serial, sequence: firstSequence + UInt32(out.count),
                 segments: laces[index..<end].map(\.length),
-                body: body.subdata(in: offset..<(offset + length))))
+                // 同上：切页只要一个视图，真正的拷贝在 `pageBytes` 里把它接到页尾那一次。
+                body: body.dropFirst(offset).prefix(length)))
             index = end
             offset += length
         }
