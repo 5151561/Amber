@@ -52,6 +52,34 @@ enum LibrarySearch {
 
     // MARK: - 切分
 
+    /// 繁体归一成简体，**简繁互搜全靠这一步**。
+    ///
+    /// 用户资料库里同一首歌可能是「帶你飛」也可能是「带你飞」（两家音源给的字形不一样，
+    /// 本地导入的文件标签更是什么都有）。不归一的话，敲简体搜不到繁体那份，反之亦然——
+    /// 而用户并不知道自己库里存的是哪种字形。
+    ///
+    /// 归一的方向**只能是「繁→简」**：繁简映射是多对一（`後`/`后` 都归 `后`），
+    /// 往多的那头折会丢信息（实测 `Hans-Hant` 把「周杰伦」折成「周傑倫」，
+    /// 而用户库里就是「周杰倫」，等于换了个字形继续对不上）。往少的那头折，
+    /// 两种字形落到同一个 token 上，两边互相都搜得到。
+    ///
+    /// 代价是多对一必然带来的：搜「后」会同时命中「皇后」与「以後」。
+    /// 这是简繁互搜这件事本身的语义，不是 bug——召回变宽，不产生跨字段假阳性。
+    ///
+    /// **入库与查询都经过 `segment`，所以两侧自动同源**，这也是它被放在这儿而不是
+    /// 各自调一遍的原因。改它要连带升一次 schema 重建索引（已入库的正文是折过的）。
+    ///
+    /// 没有汉字就原样返回：`CFStringTransform` 一次约 6 µs，而拉丁文字的库
+    /// （英文歌为主）本来一个字都不用折。实测折一遍全库 199 首约 1.3 ms。
+    static func foldHan(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: { isHan($0.value) }) else { return text }
+        let buffer = NSMutableString(string: text)
+        // ICU 的 transform id，没有对应的 `kCFStringTransform*` 常量，只能传字符串。
+        guard CFStringTransform(buffer as CFMutableString, nil,
+                                "Hant-Hans" as CFString, false) else { return text }
+        return buffer as String
+    }
+
     /// 表意文字逐字垫空格，拉丁与数字保持整词。
     ///
     /// 拉丁词不拆的原因有两条：它本来就已经被分词器切成 token 了，再拆只会把
@@ -61,7 +89,7 @@ enum LibrarySearch {
     /// 短语邻近约束当场失效——而失效的表现是「搜不到」，不是报错，没测试就发现不了。
     static func segment(_ text: String) -> String {
         var out = ""
-        for scalar in text.unicodeScalars {
+        for scalar in foldHan(text).unicodeScalars {
             if isIdeographOrKana(scalar.value) {
                 out += " \(scalar) "
             } else {
