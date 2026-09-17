@@ -56,6 +56,7 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 | 2 | 侧栏播放列表封面是 `NSOutlineView` 复用格子里的 `NSHostingView`，未设 `sizingOptions`，且每次换地址就拆建整棵 SwiftUI 树 | `Views/SidebarOutline.swift:794-826`（`:818` 建、`:833` 手排 frame） | 中 | 照同文件 `:719` 自己的结论（「侧栏就二十来行，纯 AppKit」）改 `NSImageView` + 现成异步取图；过渡期至少补 `sizingOptions = []` 并改成换图不换宿主 |
 | 3 | 两处把**静态** SwiftUI 内容挂进表格行（`sizingOptions` 由工厂代设了，问题只是不该在滚动容器里） | `Shell/DetailHeaderViews.swift:1076`（`LosslessBadge`，一行字 + 一颗点）、`Shell/TrackTableViewController.swift:480`（空态，页头是表格第 0 行见 `:275`） | 低 | 徽标换 `NSTextField` + 一颗圆点；空态与 `Shell/LibraryAlbumsViewController.swift:149` 统一成 overlay |
 | 4 | **三份零引用的死 SwiftUI 文件仍在编译**，其中含全仓唯一的 SwiftUI 长列表 | `Views/TopSearchLockupView.swift` 整份 214 行（`:20-33` 是 `LazyVGrid`）、`Views/Components/Components.swift:305-397`（`LibraryGridCard`/`MediaCard`）、`Views/MainView.swift` 整份（`:14` 自己写着「现在一处都没有在用了」）。逐符号查过：外部引用**只剩注释**。工程用 `fileSystemSynchronizedGroups`（`project.pbxproj:97`），落盘即入编译 | 中 | 整份删。这三份一删，`Shell/RouteLink.swift` 的 `NavigationLink` 垫片也没有活调用点了，一并删 |
+| 6 | **批 A 做完后新增**：`LosslessBadge` 变成零引用死代码 | `Views/Components/Components.swift:335`（唯一调用点 `Shell/DetailHeaderViews.swift:1076` 已换成纯 AppKit）。性质与 §2.1-4 那三份一样 | 低 | 合并后由主会话随第二道接缝一起删 |
 | 5 | 三张资料库网格页用 `NSCollectionViewFlowLayout`，没跟上其余五处的 Compositional，代价是自己接 bounds 通知重排 | `Shell/LibraryAlbumsViewController.swift:36`、`LibraryAllPlaylistsViewController.swift:40`、`LibraryRecentlyAddedViewController.swift:36`；重排在 `Shell/LibraryGridCards.swift:33,91` | 低 | 换 Compositional 的 `.fractionalWidth` 分组，`reflow` 与两条 `NotificationCenter` 观察一起删 |
 
 ### 2.2 维度二 · 响应链
@@ -112,7 +113,7 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 | 4 | **本地 `file://` 封面零降采样** | `Services/ImageCache.swift:127-139` 恒按原尺寸解码；`CreateThumbnail` / `ThumbnailMaxPixelSize` / `prepareForDisplay` 全仓零命中；`:120-122` 自认「40pt 的行、240pt 的块、400pt 的头共用同一个 NSImage」。内嵌封面常见 1500–3000px | 中 | `decode` 加 `maxPixelSize` 入参，`file://` 支路（`:60-66`）走 `CGImageSourceCreateThumbnailAtIndex`，缓存键带上档位。**网络封面不用动**——`Services/ArtworkSize.swift:20-32` 的六档已经很好 |
 | 5 | 两处 CI 烘焙跑在主线程的 `layout()` 里 | `Shell/MiniPlayerContentView.swift:1411` → `:1473` `ciContext.createCGImage`；`Catalog/ArtistPageCards.swift:361` → `:408`/`:427` 两次，其中一次含 `CIGaussianBlur(radius: 36)` 渲整页画布。两者都有尺寸缓存闸，但实时拖窗每一档新尺寸都要同步烘一次 | 中 | 搬到 detached task，算完回主线程贴 `contents`，期间旧画布继续显示 |
 | 6 | 自绘滑块圆钮有阴影无 `shadowPath`，拖动中每帧离屏 | `Shell/NowPlayingChromeViews.swift:784-787`、`Shell/MiniPlayerView.swift:1177-1180`；frame 在 `mouseDragged` 里逐事件重排 | 低 | `layoutBars` 末尾补 `shadowPath`，与 `Catalog/CatalogCardItems.swift:353` 同法 |
-| 7 | 两处主线程重绘位图 | `Views/SidebarOutline.swift:298-300`（QQ 头像）、`Shell/InfoPanelWindowController.swift:820`（`image.draw(in:)` 画封面） | 低 | 换 `CALayer.contents = cgImage` + `contentsGravity`，`CatalogArtworkView` 是现成模板 |
+| 7 | 两处主线程重绘位图 | `Views/SidebarOutline.swift:298-300`（QQ 头像）、`Shell/InfoPanelWindowController.swift:820`（`image.draw(in:)` 画封面） | 低 | 换 `CALayer.contents = cgImage` + `contentsGravity`，`CatalogArtworkView` 是现成模板。**归属订正（批 A 指出）**：这两个文件都不在批 F 的清单里——`SidebarOutline.swift` 归批 A（本轮没做，它只换了播放列表封面那一格）、`InfoPanelWindowController.swift` 全仓无主。两处一起并入**批 H**（见 §5） |
 | 8 | 倍率取 `NSScreen.main` 而非所在窗口的屏 | `Services/ArtworkSize.swift:19`、`Lyrics/LyricsRenderingScale.swift:16`。歌词那边有 `Lyrics/SyncedLyricsLineView.swift:51-62` 兜底，封面这边没有 | 低 | `ArtworkSize.url` 加 `scale:` 入参，调用点传 `view.amberWindow?.backingScaleFactor` |
 
 ### 2.4 维度四 · Observation 与 Actor 隔离
@@ -211,6 +212,7 @@ SwiftUI `View`）、状态层已经没有 Combine（`import Combine` 0）、渲�
 | **E** | 增量快照三页 + Compositional | §2.6-3；§2.1-5 | `Shell/LibraryAlbumsViewController.swift`、`Shell/LibraryAllPlaylistsViewController.swift`、`Shell/LibraryRecentlyAddedViewController.swift`、`Shell/LibraryGridCards.swift` | 未开始 |
 | **F** | 渲染与 AX 收尾 | §2.3 全部；§2.5-2、-3、-6、-7 | `Lyrics/**`、`Shell/MiniPlayerView.swift`、`Shell/MiniPlayerContentView.swift`、`Shell/NowPlayingChromeViews.swift`、`Shell/MiniPlayerBackdropMetalView.swift`、`Services/ImageCache.swift`、`Services/ArtworkSize.swift`、`Catalog/ArtistPageCards.swift` | 未开始 |
 | **G** | 观察粒度 + 网络韧性 | §2.4-2~9、-11、-12；§2.6-5、-6、-7、-9、-10 | `Player/PlayerController.swift`、`Player/AudioTap.swift`、`Services/DownloadStore.swift`、`Services/AppSettings.swift`、`Services/ImportTranscoder.swift`、`Observation/TaskBag.swift`、`Observation/EventChannel.swift`、`Providers/RequestCache.swift`、`Providers/MusicProvider.swift`、`Support/SwiftFeatures.xcconfig` | 未开始 |
+| **H** | 两处漏网的主线程重绘位图 | §2.3-7 | `Shell/InfoPanelWindowController.swift`；`Views/SidebarOutline.swift` 的 QQ 头像那一格（批 A 合并之后才能开，同一文件） | 未开始 |
 
 ### 切批前主会话定下的四条（2026-09-17）
 
