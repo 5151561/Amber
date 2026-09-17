@@ -956,6 +956,90 @@ final class DownloadStoreTests: XCTestCase {
         return settings
     }
 
+    // MARK: - 挂载驱动的投影（阶段 9）
+
+    /// 拔盘：**投影一行都不许删。**
+    ///
+    /// 这是整个阶段 9 唯一真正危险的地方。卷拔掉之后清单读不到了，
+    /// 要是照着「清单里没有就删」的字面走一遍，用户插回来会发现整个已下载列表空了——
+    /// 而那些文件一个都没丢，只是刚才没插着。挡住它的是
+    /// `rebuildMediaProjection` 开头那道 `guard let volume = volumeUUID(of: directory)`：
+    /// 卷取不到卷号就整趟跳过。这里用「把整个媒体夹挪走」模拟拔盘。
+    @MainActor
+    func testUnmountKeepsTheProjectionRows() throws {
+        // 主库放在**媒体夹之外**——生产上它在 Application Support，而媒体夹在外接盘上。
+        // 放一起的话「拔盘」会把库一起拔走，测出来的就不是拔盘而是「库也没了」。
+        let media = try makeDirectory("外接盘-媒体")
+        let support = try makeDirectory("support-unmount")
+        let outside = try makeDirectory("用户自己的音乐")
+        let external = outside.appendingPathComponent("原文件.flac")
+        try Data("fLaC-外部".utf8).write(to: external)
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"], in: media)
+        let store = DownloadStore(directory: media, databaseDirectory: support)
+        store.adoptLocalFile(at: external,
+                             for: makeTrack("local:1", title: "歌", artist: "人", album: "碟"),
+                             external: true)
+        XCTAssertEqual(try localFileRows(in: support).count, 2)
+
+        // 「拔盘」：媒体夹连同清单一起不见了，主库还在。
+        let stash = support.appendingPathComponent("拔下来的盘", isDirectory: true)
+        try FileManager.default.moveItem(at: media, to: stash)
+        store.volumeChanged(at: nil)
+
+        XCTAssertEqual(store.state(for: "qq:1"), .none, "界面上该当它没下载")
+        let rows = try localFileRows(in: support)
+        XCTAssertEqual(rows.count, 2, "两行都得在——文件一个没丢，只是盘没插着")
+        XCTAssertEqual(rows["qq:1"]?.scope, "media")
+        XCTAssertEqual(rows["local:1"]?.scope, "external", "external 全程不动")
+
+        // 「插回来」。
+        try? FileManager.default.removeItem(at: media)
+        try FileManager.default.moveItem(at: stash, to: media)
+        store.volumeChanged(at: nil)
+
+        XCTAssertEqual(store.state(for: "qq:1"),
+                       .downloaded(media.appendingPathComponent("qq_1.flac")),
+                       "插回来就该回来")
+        XCTAssertEqual(try localFileRows(in: support).count, 2)
+    }
+
+    /// 盘没插上时 `init` 会把 `/Volumes/<盘名>/…` 整条路径凭空建在启动盘上——
+    /// 目录「在」，里面空无一物。照着这个空壳重建，投影就被清光了。
+    /// 所以判据是**清单在不在**，不是目录在不在。
+    @MainActor
+    func testEmptyFolderWithNoManifestDoesNotWipeTheProjection() throws {
+        let media = try makeDirectory("外接盘-媒体2")
+        let support = try makeDirectory("support-phantom")
+        try write(file: "qq_1.flac", index: ["qq:1": "qq_1.flac"], in: media)
+        let store = DownloadStore(directory: media, databaseDirectory: support)
+        XCTAssertEqual(try localFileRows(in: support).count, 1)
+
+        // 只把清单删掉，目录还在（＝那个凭空建出来的空壳）。
+        try FileManager.default.removeItem(at: media.appendingPathComponent("index.json"))
+        store.rebuildMediaProjection()
+
+        XCTAssertEqual(try localFileRows(in: support).count, 1,
+                       "清单读不到就别动投影——目录在不代表盘插着")
+    }
+
+    /// 不是每插一个 U 盘都整趟重来：只有事件那个卷正好装着媒体夹时才动。
+    func testOnlyTheVolumeHoldingTheMediaFolderCounts() {
+        let media = URL(fileURLWithPath: "/Volumes/音乐盘/Amber/媒体")
+        XCTAssertTrue(DownloadStore.concerns(directory: media,
+                                             volumeURL: URL(fileURLWithPath: "/Volumes/音乐盘")))
+        XCTAssertFalse(DownloadStore.concerns(directory: media,
+                                              volumeURL: URL(fileURLWithPath: "/Volumes/别的盘")))
+        // 前缀要按路径段比，不能按字符串比：「音乐盘2」不是「音乐盘」底下的东西。
+        XCTAssertFalse(DownloadStore.concerns(directory: media,
+                                              volumeURL: URL(fileURLWithPath: "/Volumes/音乐")))
+        // 卷 URL 拿不到就宁可重来一趟（幂等），漏掉一次换来的是「盘插回来了界面还是空的」。
+        XCTAssertTrue(DownloadStore.concerns(directory: media, volumeURL: nil))
+        // 启动卷不认：什么都在「/」底下，认了就是每次拔插都整趟重来。
+        XCTAssertFalse(DownloadStore.concerns(directory: URL(fileURLWithPath: "/Users/me/媒体"),
+                                              volumeURL: URL(fileURLWithPath: "/")))
+    }
+
+
     private func makeDirectory(_ name: String) throws -> URL {
         let url = directory.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

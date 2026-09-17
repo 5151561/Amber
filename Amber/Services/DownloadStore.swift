@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Combine
 import Foundation
@@ -287,6 +288,48 @@ final class DownloadStore: ObservableObject {
                 self.migrate(to: folder)
             }
             .store(in: &cancellables)
+
+        // 媒体夹放在外接盘上时，拔插一次就是「这批文件整体消失 / 整体回来」。
+        // 两条通知都落到 `reloadFromManifest()`（阶段 5 就是为这一刻留的那个口）。
+        //
+        // **为什么拔盘不会把投影删掉**：`rebuildMediaProjection` 开头那道
+        // `guard let volume = Self.volumeUUID(of: directory)` —— 卷没挂上就取不到卷号，
+        // 整趟跳过，一行都不删。所以拔盘之后表里那些 media 行原样留着，
+        // 只是 `index` / `states` 空了（清单在盘上，读不到），界面当它们「没下载」。
+        // 插回来再走一遍，清单读得到了，`states` 与投影一起回来。
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let volume = note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL
+                MainActor.assumeIsolated { self?.volumeChanged(at: volume) }
+            }
+        }
+    }
+
+    // MARK: - 挂载驱动的投影
+
+    /// 一次挂载/卸载与我们有没有关系。
+    ///
+    /// **不是每插一个 U 盘就整趟重来**：只有事件那个卷正好装着媒体夹时才动。
+    /// 卷 URL 拿不到（通知没带）就宁可重来一趟——重来是幂等的，漏掉一次
+    /// 换来的是「盘插回来了，界面上还是一片没下载」。
+    func volumeChanged(at volumeURL: URL?) {
+        guard Self.concerns(directory: directory, volumeURL: volumeURL) else { return }
+        reloadFromManifest()
+    }
+
+    /// 媒体夹在不在这个卷底下。`volumeURL` 为 nil ＝ 判不了，一律当「有关」。
+    ///
+    /// 用挂载点路径前缀判，不用卷号：`didUnmountNotification` 是**卸载之后**才发的，
+    /// 那时那条路径已经没了，`volumeUUIDStringKey` 取不到任何东西。
+    nonisolated static func concerns(directory: URL, volumeURL: URL?) -> Bool {
+        guard let volumeURL else { return true }
+        let mount = volumeURL.standardizedFileURL.path
+        let media = directory.standardizedFileURL.path
+        // 「/」是启动卷，什么都在它底下，那样每次拔插都要重来一趟——但媒体夹真在启动卷上时
+        // 也不会有人来拔它，所以这里只认真正的挂载点。
+        guard mount != "/" else { return false }
+        return media == mount || media.hasPrefix(mount.hasSuffix("/") ? mount : mount + "/")
     }
 
     // MARK: - 索引里的路径
@@ -1449,7 +1492,23 @@ final class DownloadStore: ObservableObject {
     /// 相对路径一个字不变、卷号可能变。旧卷那些行**键与新清单逐个相同**，
     /// 于是被下面的 UPSERT 原地改掉卷号，不会留下孤儿行。
     func rebuildMediaProjection() {
-        guard let volume = Self.volumeUUID(of: directory) else { return }
+        // **投影只能照着清单重建，所以清单读不到就整趟跳过、一行都不删。**
+        //
+        // 这一条挡的是「盘没插上」：那时媒体夹整个够不着，清单自然读不到，而表里那些
+        // media 行一个都不能删——文件没丢，只是此刻不在手边。删了的后果是用户插回来
+        // 发现整份已下载空了，而磁盘上一个文件都没少。
+        //
+        // 判据为什么是「清单在不在」，两条都是实测踩出来的：
+        //
+        // 1. **不能拿 `volumeUUID` 取不取得到当判据。**[实测 2026-09-17] 对一个**不存在**
+        //    的路径，`volumeUUIDStringKey` 照样顺着还在的上级目录答出卷号来
+        //    （`存在=false volume=4A9C…`）。它回答的是「这条路径会落在哪个卷上」，
+        //    不是「这个卷挂着吗」。
+        // 2. **也不能只判目录在不在。** `init` 里那句 `createDirectory` 在盘没插上时会把
+        //    `/Volumes/<盘名>/…` 整条路径凭空建在启动盘上——目录「在」，里面空无一物，
+        //    照着它重建等于把投影清光。
+        guard FileManager.default.fileExists(atPath: indexURL.path),
+              let volume = Self.volumeUUID(of: directory) else { return }
         persist("重建投影") { db in
             try db.run("""
                 DELETE FROM local_file
