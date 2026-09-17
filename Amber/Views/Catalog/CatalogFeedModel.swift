@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import SwiftUI
 
 // MARK: - 目录页三页的数据模型（主页 / 新发现 / 广播）
@@ -176,23 +175,6 @@ final class CatalogFeedModel {
     /// 断网时的那句话。配套的图标（`wifi.exclamationmark`）与「重试」键页面早就铺好了，
     /// 只是从前没人发 `.error`，取不到就一律落到「当前音乐源暂无推荐内容。」。
     static let offlineMessage = "网络不可用"
-
-    /// 现在是断网，还是音源真的交不出内容？——**只剩分类浏览页还在用这一条**。
-    ///
-    /// 目录页三页自己已经改成看 `CatalogSlotResult.failure` 的错误码了（见上面）。
-    /// 留着它是因为 `CatalogRoomViewController:369` 走的是 `MusicProvider.playlists(tag:)`，
-    /// 那条的返回值是光秃秃的 `[Playlist]`，没有搭 `failure` 的地方；给它配一条同样的
-    /// 失败通道要连着改那个控制器，不在本批的文件范围内。
-    ///
-    /// 只在**已经确定一件都摆不出来**时才问，正常那条路一次都不走。
-    /// `NWPathMonitor` 自 macOS 14 起就是 `AsyncSequence`，首个元素就是当前路径
-    /// （用异步序列时不要自己 `start(queue:)`），取到就`cancel()` 收摊。
-    static func isNetworkUnavailable() async -> Bool {
-        let monitor = NWPathMonitor()
-        defer { monitor.cancel() }
-        for await path in monitor { return path.status != .satisfied }
-        return false
-    }
 
     /// 只重算**本地资料库来的那两段**（最近播放 / 音乐回忆），一条音源请求都不发。
     ///
