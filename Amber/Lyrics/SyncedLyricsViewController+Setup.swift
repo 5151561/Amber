@@ -1,4 +1,5 @@
 import AppKit
+import os
 import QuartzCore
 
 /// 文档视图。y 往下长——行的纵向堆叠（§2.6）与滚动 origin 的公式（§2.5）
@@ -454,6 +455,12 @@ extension SyncedLyricsViewController {
 
     @objc func displayLinkFired() {
         guard let visual = manager, let timeline = visual.manager else { return }
+        // 帧预算的采样点（见 `LyricsSignposts`）。整帧一条、滚动与逐字染色各一条，
+        // 嵌在里面——三条就够把「这一帧慢在哪半边」分开，再细就是采样本身在占预算了。
+        // `defer` 收尾：下面那道静态档的闸会早退，两个出口都要闭合区间。
+        let signposter = LyricsSignposts.frames
+        let frame = signposter.beginInterval("frame")
+        defer { signposter.endInterval("frame", frame) }
         // [PX] §22.3：暂停后全表清晰，恢复播放再糊回去。静态档的早退落在
         // `syncBlurToPlaybackState()` 自己开头（那一档压根不产生模糊，没有要清的、
         // 更不该回填），所以摆在下面那道闸前后都一样。
@@ -464,11 +471,14 @@ extension SyncedLyricsViewController {
         guard specs.renderingMode != .static else { return }
 
         let basis = timeline.update()
+        // 滚动那半：弹簧积分 + 焦点行推进 + 视口边缘淡出。
+        let scroll = signposter.beginInterval("scroll")
         advanceScrollSpring()
         // 先点亮到点的行，再按点亮后的结果决定焦点位要不要往下一句挪。
         visual.activateDueLines(at: basis.elapsed)
         visual.followScrollTarget(at: basis.elapsed)
         updateLineAlphasForViewportEdges()
+        signposter.endInterval("scroll", scroll)
 
         // 逐字渐变每帧推进（原版的走查）。喂进去的时间是
         // §1.2 的前两步（扣掉空间音频偏移），**不含**第三步那个提前量。
@@ -477,9 +487,11 @@ extension SyncedLyricsViewController {
         // 只把这个标志喂给`liftStartedSyllables`）：逐帧推进才是「这个字轮到了」
         // 的那一刻，那 2pt 该由 (1, 14, 7) 慢慢飘上去。假的话每个音节开唱时是
         // 2pt 瞬移，观感就是逐字弹跳。seek 由`isContinuousAdvance` 那道闸挡掉。
+        let syllables = signposter.beginInterval("syllables")
         for view in visual.selectedLineViews {
             view.lineLayer?.startProgress(at: basis.elapsed, animated: true)
         }
+        signposter.endInterval("syllables", syllables)
         // 间奏点阵的状态机也按帧推进（§3.3）。
         if let instrumental = visual.instrumentalBreakVisibleView,
            let dots = instrumental.lineLayer?.contentLayer as? InstrumentalContentLayer {
