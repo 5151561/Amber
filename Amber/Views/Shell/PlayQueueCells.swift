@@ -540,9 +540,10 @@ final class PlayQueueSettingsExtraHeader: NSView {
 
     private typealias M = MusicMetrics.PlayQueue
 
-    private let backdrop = NSVisualEffectView()
-    private let autoplayButton = NSButton()
-    private let mixingButton = NSButton()
+    // 用把 `alignmentRectInsets` 归零的那个子类：高度约束钉的才是 frame 本身
+    // （见 `PlayQueueFlushButton` 的注释）。
+    private let autoplayButton = PlayQueueFlushButton()
+    private let mixingButton = PlayQueueFlushButton()
     private let stack: NSStackView
     private var widestButtonWidth: CGFloat = 0
 
@@ -555,20 +556,20 @@ final class PlayQueueSettingsExtraHeader: NSView {
         stack = NSStackView(views: [autoplayButton, mixingButton])
         super.init(frame: frameRect)
 
-        // 面板列本身坐在窗口玻璃上（RootViewController 那层），素面底衬会透出下面滚过去的行，
-        // 所以顶部这块 pocket 自带一层 `.headerView` 材质。Music 走的是 Music 的桌面界面层的
-        // pocket 机制，底衬由那套自己给。
-        backdrop.material = .headerView
-        backdrop.blendingMode = .withinWindow
-        backdrop.state = .followsWindowActiveState
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(backdrop)
-
+        // **这块头自己不画底**。原先它带一层 `.headerView` 材质（那时表格是从它**底下**
+        // 滚过去的，非有一层不透明底不可），结果是面板里出现两块颜色不一样的背景：
+        // 上面这块方角的材质盖在整窗播放器那块 16pt 圆角玻璃盘上，盘的上两个圆角被切掉，
+        // 「继续播放」「历史记录」与它之间还有一道横向接缝。现在表格不再从它底下过
+        // （见 `PlayQueueViewController.loadView` 的「顶栏不压滚动视图」一段），
+        // 这层底就没有存在理由了——背景统一由宿主给（主窗是窗口根那层玻璃，
+        // 整窗播放器是玻璃盘），面板上下共用同一块。
         for button in [autoplayButton, mixingButton] {
             // [实测] §3.9：两颗按钮同一套配置。
             button.setButtonType(.pushOnPushOff)
             button.isBordered = true
-            button.bezelStyle = .rounded
+            // 玻璃胶囊（macOS 26 的 `NSBezelStyleGlass`）。
+            button.bezelStyle = .glass
+            button.bezelColor = nil
             button.controlSize = .large
             button.imagePosition = .imageLeading
             button.imageHugsTitle = true
@@ -601,11 +602,8 @@ final class PlayQueueSettingsExtraHeader: NSView {
         equalWidth.priority = M.settingsEqualWidthPriority
 
         NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: bottomAnchor),
-
+            autoplayButton.heightAnchor.constraint(equalToConstant: M.settingsButtonHeight),
+            mixingButton.heightAnchor.constraint(equalToConstant: M.settingsButtonHeight),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: M.settingsMargin),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -M.settingsMargin),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: M.settingsTopInset),
@@ -632,6 +630,15 @@ final class PlayQueueSettingsExtraHeader: NSView {
         return widest
     }
 
+    /// 打开那一档的胶囊颜色。
+    ///
+    /// `pushOnPushOff` 的**开**态默认拿 accent 填实心——Amber 的 accent 就是 Music 那个红
+    /// （`Assets.xcassets/AccentColor` = `#FA2E47`），两颗键同时开着就是盘顶两块大红。
+    /// 实测（一次性探针，六种写法各画一遍）：`bezelColor` 对`.glass` 是生效的，
+    /// 给一个中性色就能把 accent 换掉、玻璃质感不丢。取系统自己的控件填充色而不是写死灰度，
+    /// 明/暗外观各走各的（AGENTS「先用系统默认值」）。**关**态不给色，由玻璃自己走暗透明那一档。
+    private static let onBezelColor: NSColor = .controlColor
+
     /// 控制器在模型变化时推一次。
     func update(autoplayAvailable: Bool,
                 autoplayEnabled: Bool,
@@ -642,7 +649,7 @@ final class PlayQueueSettingsExtraHeader: NSView {
         // 于是按钮照常画出来、但是禁用的。
         autoplayButton.isEnabled = autoplayAvailable
         autoplayButton.state = (autoplayAvailable && autoplayEnabled) ? .on : .off
-        autoplayButton.contentTintColor = autoplayEnabled ? .controlAccentColor : nil
+        autoplayButton.bezelColor = autoplayButton.state == .on ? Self.onBezelColor : nil
 
         // [实测] §3.9：`mixing.hidden` 绑`!mixingAvailable`。Amber 的`mixingAvailable` 恒 true。
         mixingButton.isHidden = !mixingAvailable
@@ -655,7 +662,7 @@ final class PlayQueueSettingsExtraHeader: NSView {
             updateButtonAppearance(forWidth: frame.width)
         }
         mixingButton.state = mixingEnabled ? .on : .off
-        mixingButton.contentTintColor = mixingEnabled ? .controlAccentColor : nil
+        mixingButton.bezelColor = mixingButton.state == .on ? Self.onBezelColor : nil
     }
 
     /// [实测] §3.9 `setFrameSize:` 两件事：窄了换外观、高度变了报回去。
@@ -682,11 +689,14 @@ final class PlayQueueSettingsExtraHeader: NSView {
     /// 给测试看的：三者取最大之后的那个宽度门槛。
     var widestButtonWidthForTesting: CGFloat { widestButtonWidth }
 
+    // 点下去胶囊颜色当场跟上（按钮自己先翻 `state`，`update(...)` 要等模型回来那一跳）。
     @objc private func doAutoplayClicked() {
+        autoplayButton.bezelColor = autoplayButton.state == .on ? Self.onBezelColor : nil
         onAutoplayToggled?(autoplayButton.state == .on)
     }
 
     @objc private func doMixingClicked() {
+        mixingButton.bezelColor = mixingButton.state == .on ? Self.onBezelColor : nil
         onMixingToggled?(mixingButton.state == .on)
     }
 }
