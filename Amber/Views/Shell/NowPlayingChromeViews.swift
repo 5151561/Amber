@@ -106,10 +106,10 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     private let footerTrailingGlass = NSGlassEffectView()
     private let translationGlass = NSGlassEffectView()
 
-    private let headerLeadingContent = NSView()
-    private let headerTrailingContent = NSView()
-    private let footerLeadingContent = NSView()
-    private let footerTrailingContent = NSView()
+    private let headerLeadingContent = CapsuleContentView()
+    private let headerTrailingContent = CapsuleContentView()
+    private let footerLeadingContent = CapsuleContentView()
+    private let footerTrailingContent = CapsuleContentView()
 
     private let closeButton = NowPlayingIconButton()
     private let miniPlayerButton = NowPlayingIconButton()
@@ -117,7 +117,10 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
     /// 系统输出设备选择器直接放（铁律 1：不再经 `NSViewRepresentable`）。
     private let routePicker = NowPlayingRoutePickerView()
     private let volumeDivider = NSView()
-    private let volumeBar = NowPlayingVolumeBar()
+    /// [实测] 系统 `NSSlider`（regular）在这版 macOS 上就是「细轨 + 横胶囊滑块」：
+    /// 轨道高 6，与 [PX] 对 Music 量到的 6 一模一样；拖动时的玻璃高光是自绘层做不出来的。
+    /// 所以这里用系统件，不再自绘（AGENTS 界面层铁律 6：先用系统默认值）。
+    private let volumeBar = NSSlider()
     private let speakerButton = NowPlayingIconButton()
 
     private let lyricsButton = NowPlayingIconButton()
@@ -210,11 +213,17 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
         volumeDivider.layer?.backgroundColor = NSColor(white: 1, alpha: 0.16).cgColor
         headerTrailingContent.addSubview(volumeDivider)
 
-        volumeBar.onScrub = { [weak self] value in
-            guard let self, PlayerControlsState(player: self.player).canSetVolume else { return }
-            self.player.volume = value
-            self.preMuteVolume = nil
-        }
+        volumeBar.minValue = 0
+        volumeBar.maxValue = 1
+        volumeBar.isContinuous = true
+        volumeBar.controlSize = .regular
+        // 胶囊是压在封面模糊上的深色玻璃，这一块整体按深色渲染：滑块与轨道才是白的。
+        // `trackFillColor` 取 `.labelColor` 与迷你播放器窗那条同源（[实测]）。
+        volumeBar.appearance = NSAppearance(named: .darkAqua)
+        volumeBar.trackFillColor = .labelColor
+        volumeBar.target = self
+        volumeBar.action = #selector(volumeSliderChanged)
+        volumeBar.setAccessibilityLabel("音量")
         headerTrailingContent.addSubview(volumeBar)
 
         configure(speakerButton, symbol: VolumeGlyph.symbol(for: 1),
@@ -329,9 +338,10 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
                                      y: (capsule - M.volumeDividerHeight) / 2,
                                      width: M.volumeDividerWidth, height: M.volumeDividerHeight)
         let trackX = M.airPlaySlotWidth + M.volumeDividerWidth + M.dividerToVolumeTrack
-        let trackHit = M.scrubberBarHeight + 6
-        volumeBar.frame = NSRect(x: trackX, y: (capsule - trackHit) / 2,
-                                 width: M.volumeTrackWidth, height: trackHit)
+        // 高度取系统件自己的自然高（[实测] regular 16），只钉 [PX] 量到的轨道宽 114。
+        let sliderHeight = volumeBar.fittingSize.height
+        volumeBar.frame = NSRect(x: trackX, y: (capsule - sliderHeight) / 2,
+                                 width: M.volumeTrackWidth, height: sliderHeight)
         speakerButton.frame = NSRect(x: trackX + M.volumeTrackWidth + M.volumeTrackToSpeaker,
                                      y: 0, width: M.speakerSlotWidth, height: capsule)
 
@@ -395,8 +405,16 @@ final class NowPlayingChromeView: NSView, NSMenuItemValidation {
         button.setAccessibilityLabel(help)
     }
 
+    @objc private func volumeSliderChanged() {
+        guard PlayerControlsState(player: player).canSetVolume else { return }
+        player.volume = volumeBar.doubleValue
+        preMuteVolume = nil
+    }
+
     private func updateVolume() {
-        volumeBar.value = player.volume
+        // 拖动中这条回来的就是自己刚写出去的值，写回去也不动；不等才赋值，免得跟手时打架。
+        if volumeBar.doubleValue != player.volume { volumeBar.doubleValue = player.volume }
+        volumeBar.isEnabled = PlayerControlsState(player: player).canSetVolume
         speakerButton.symbolName = VolumeGlyph.symbol(for: player.volume)
         let state = PlayerControlsState(player: player)
         speakerButton.isEnabled = state.canMute
@@ -702,11 +720,24 @@ private final class NowPlayingIconButton: NSButton {
     }
 }
 
+/// 四块玻璃胶囊的内容宿主。胶囊是控件区，不是拖窗把手——瞄滑块差几点落到胶囊底色上，
+/// 窗就被划走。[实测 2026-09-17 真指针拖拽] 挡住它要**两条同时成立**：
+/// 继承 `NSControl`，**且**自己把 `mouseDown` 吃掉。少任何一条都还会被拖走：
+/// 光覆写 `mouseDownCanMoveWindow = false` 不管用（`-dumpviews` 的 drag 列看得到它确实
+/// 答了 false，窗照样走）；光换成 `NSControl` 不吃 `mouseDown` 也不管用。
+private final class CapsuleContentView: NSControl {
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseDragged(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
+}
+
 // MARK: - 反应条里的表情
 
 /// 按住某个表情持续发射粒子，松手停。不能用 `NSButton`：它的动作在松手时才发，
 /// 这里要的是按下/松开两端。
-private final class NowPlayingEmojiButton: NSView {
+/// 继承 `NSControl` 的理由同 `NowPlayingVolumeBar`：`NSView` 的话按住往旁边一挪，
+/// 拖动被窗口截走、`mouseUp` 永远不来，`pressed` 卡在 true、粒子停不下。
+private final class NowPlayingEmojiButton: NSControl {
 
     var onPressChanged: ((Bool) -> Void)?
 
@@ -750,112 +781,6 @@ private final class NowPlayingEmojiButton: NSView {
     override func accessibilityPerformPress() -> Bool {
         onPressChanged?(true)
         onPressChanged?(false)
-        return true
-    }
-}
-
-// MARK: - 音量条
-
-/// [PX] 右上胶囊里那条音量轨道：114×6，滑块是 24×13 的**横胶囊**（不是圆点），常驻显示。
-/// 形制与旧 SwiftUI 版 `AmberTrackBar(alwaysShowsKnob: true, knobSize: 24×13)` 一致。
-private final class NowPlayingVolumeBar: NSView {
-
-    private typealias M = MusicMetrics.NowPlaying
-
-    var onScrub: ((Double) -> Void)?
-    var value: Double = 1 {
-        didSet {
-            guard dragValue == nil, value != oldValue else { return }
-            layoutBars()
-        }
-    }
-
-    private var dragValue: Double?
-    private let track = CALayer()
-    private let played = CALayer()
-    private let knob = CALayer()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        // [Web] 轨道 systemTertiary-onDark、已播 systemPrimary-onDark
-        track.backgroundColor = NSColor(white: 1, alpha: MusicGrays.tertiary).cgColor
-        played.backgroundColor = NSColor(white: 1, alpha: MusicGrays.primary).cgColor
-        knob.backgroundColor = NSColor.white.cgColor
-        knob.shadowColor = NSColor.black.cgColor
-        knob.shadowOpacity = 0.25
-        knob.shadowRadius = 2
-        knob.shadowOffset = CGSize(width: 0, height: -1)
-        [track, played, knob].forEach { layer?.addSublayer($0) }
-
-        // [HIG] 自绘的轨道在 AX 树里什么都不是，角色要自己报（Music 那处是 AXSlider）。
-        setAccessibilityElement(true)
-        setAccessibilityRole(.slider)
-        setAccessibilityLabel("音量")
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var isFlipped: Bool { false }
-
-    override func layout() {
-        super.layout()
-        layoutBars()
-    }
-
-    private func layoutBars() {
-        let current = min(max(dragValue ?? value, 0), 1)
-        let height = M.scrubberBarHeight
-        let y = (bounds.height - height) / 2
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        track.frame = NSRect(x: 0, y: y, width: bounds.width, height: height)
-        track.cornerRadius = height / 2
-        played.frame = NSRect(x: 0, y: y, width: bounds.width * current, height: height)
-        played.cornerRadius = height / 2
-        let knobWidth = M.volumeKnobWidth
-        let knobHeight = M.volumeKnobHeight
-        let knobX = min(max(bounds.width * current - knobWidth / 2, 0), bounds.width - knobWidth)
-        knob.frame = NSRect(x: knobX, y: (bounds.height - knobHeight) / 2,
-                            width: knobWidth, height: knobHeight)
-        knob.cornerRadius = knobHeight / 2
-        // 滑块带阴影，frame 在 `mouseDragged` 里逐事件重排：不给 `shadowPath`，
-        // 合成器每一帧都要照层的 alpha 现算一次离屏（同 `CatalogPlayButton.layout`）。
-        // 这只是横胶囊不是圆点，圆角取高的一半，与上面那句同一个形状。
-        // 走 `NSBezierPath.cgPath` 而不是 `CGPath(roundedRect:…:transform:)`：后者的
-        // `transform` 是裸指针形参，整条声明被判为不安全；这条是纯安全 API，
-        // 按三档的第一档「能改成安全代码的先改，不标注」。
-        knob.shadowPath = NSBezierPath(roundedRect: knob.bounds,
-                                       xRadius: knobHeight / 2,
-                                       yRadius: knobHeight / 2).cgPath
-        CATransaction.commit()
-        setAccessibilityValue("\(Int((current * 100).rounded()))%")
-    }
-
-    // 音量是 continuous：拖动过程中就一路回调。
-    override func mouseDown(with event: NSEvent) { scrub(event) }
-    override func mouseDragged(with event: NSEvent) { scrub(event) }
-    override func mouseUp(with event: NSEvent) {
-        scrub(event)
-        dragValue = nil
-    }
-
-    private func scrub(_ event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let target = min(max(point.x / max(bounds.width, 1), 0), 1)
-        dragValue = target
-        layoutBars()
-        onScrub?(target)
-    }
-
-    override func accessibilityPerformIncrement() -> Bool {
-        onScrub?(min(value + 0.05, 1))
-        return true
-    }
-
-    override func accessibilityPerformDecrement() -> Bool {
-        onScrub?(max(value - 0.05, 0))
         return true
     }
 }

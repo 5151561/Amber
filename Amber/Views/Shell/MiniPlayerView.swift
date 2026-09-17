@@ -1039,7 +1039,8 @@ private final class MiniArtworkView: NSView {
 
 /// 迷你播放器的进度条：两层 `CALayer`（轨道白 25% / 已播白 85%），
 /// 命中区是中央区块全宽 × 18（[AX] 对 Music 的 AXSlider）。
-private final class MiniProgressView: NSView {
+/// 自绘轨道继承 `NSControl` 的理由见 `NowPlayingVolumeBar`（不然拖它会把窗口拖走）。
+private final class MiniProgressView: NSControl {
 
     private typealias M = MusicMetrics.MiniPlayer
 
@@ -1170,7 +1171,8 @@ private final class MiniProgressView: NSView {
 
 /// 音量气泡里那条细轨。Music 的音量条是自绘细条（不是 `NSSlider`），
 /// 形制照旧版 `AmberTrackBar`：5pt 轨道 + 常驻白色圆钮，命中高度 11。
-private final class MiniVolumeBar: NSView {
+/// 自绘轨道继承 `NSControl` 的理由见 `NowPlayingVolumeBar`（不然拖它会把窗口拖走）。
+private final class MiniVolumeBar: NSControl {
 
     static let barHeight: CGFloat = 5
     static let hitHeight: CGFloat = barHeight + 6

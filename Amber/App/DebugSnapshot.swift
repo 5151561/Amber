@@ -317,6 +317,9 @@ enum DebugSnapshot {
         if view.isHidden { extra += " hidden" }
         // 淡入淡出（迷你窗的 rollover 就是改 alpha）光看 hidden 看不出来，顺手记一笔。
         if view.alphaValue < 0.999 { extra += " alpha=\(view.alphaValue.fixed(2))" }
+        // 谁会把拖动交给窗口：非 opaque 的自绘 NSView 默认就是 true。
+        // 「拖滑块 / 拖卡片时窗跟着走」只有这一列看得见，截图和 AX 都照不出来。
+        if view.mouseDownCanMoveWindow { extra += " drag" }
         if let field = view as? NSTextField { extra += " text=\"\(field.stringValue.prefix(40))\" font=\(field.font.map { "\($0.pointSize)" } ?? "-")" }
         if let button = view as? NSButton, !button.title.isEmpty { extra += " title=\"\(button.title)\"" }
         if let scroll = view as? NSScrollView {
