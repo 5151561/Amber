@@ -1005,7 +1005,7 @@ final class LibraryStore {
             guard let url = downloads.absoluteURL(for: track.id) else { continue }
             let parent = url.deletingLastPathComponent().path
             let reachable = volumeReachable[parent]
-                ?? Self.isVolumeReachable(for: url, fileManager: fm)
+                ?? DownloadStore.isVolumeReachable(for: url, fileManager: fm)
             volumeReachable[parent] = reachable
             guard reachable else {
                 // 卷保护：维持原状——之前标过的继续标着（也继续算进「缺少的文件」那份清单，
@@ -1024,32 +1024,6 @@ final class LibraryStore {
             notify(.fileMissing)
         }
         return result
-    }
-
-    /// 这条路径所在的卷通不通——`missingLocalTracks` 的卷保护判据。
-    ///
-    /// 做法是从文件往上走，找**第一个还存在的祖先**：
-    ///
-    /// - 走到的是 `/Volumes` 本身 → 这条路径要的那个卷没挂载（macOS 上外接盘与网络卷
-    ///   都挂在这儿，卷一走 `/Volumes/<名字>` 整个消失，只剩`/Volumes` 这个空壳）。
-    ///   路没通，跳过。
-    /// - 走到的是别的目录 → 卷在。中间少掉的那几层是文件被删时跟着空掉的专辑/艺人目录，
-    ///   属于删除的伴生现象，不是「路没通」。
-    ///
-    /// 不用 `mountedVolumeURLs` 做最长前缀匹配：拔盘之后`/Volumes/MyDisk` 已经不在那份
-    /// 清单里，最长匹配会一路退回根卷 `/`，于是判成「卷在」——正好把要挡的那种情况放过去。
-    /// 而 `/Volumes` 这个空壳恰恰是「卷本该在这儿、现在不在」的现场证据。
-    nonisolated static func isVolumeReachable(for url: URL,
-                                              fileManager fm: FileManager) -> Bool {
-        var directory = url.standardizedFileURL.deletingLastPathComponent()
-        while !fm.fileExists(atPath: directory.path) {
-            let parent = directory.deletingLastPathComponent()
-            // 到根了还没找到存在的祖先。真实文件系统上不会发生（`/` 总在），
-            // 兜底判成「不可达」——宁可漏报一条，也不要凭一条走不通的路去标一片。
-            guard parent.path != directory.path else { return false }
-            directory = parent
-        }
-        return directory.path != "/Volumes"
     }
 
     /// 按 id 改一条曲目的字段。**五处数组 + 每份本地播放列表**都要改：

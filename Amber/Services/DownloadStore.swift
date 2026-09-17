@@ -353,6 +353,37 @@ final class DownloadStore {
     /// 外部（原地引用）条目：绝对路径。搬「媒体」文件夹不搬它，删歌也不删它。
     nonisolated static func isExternal(_ path: String) -> Bool { path.hasPrefix("/") }
 
+    /// 这条路径所在的卷通不通——`loadIndex` 与 `LibraryStore.missingLocalTracks` 共用的卷保护判据。
+    ///
+    /// 做法是从文件往上走，找**第一个还存在的祖先**：
+    ///
+    /// - 走到的是 `/Volumes` 本身 → 这条路径要的那个卷没挂载（macOS 上外接盘与网络卷
+    ///   都挂在这儿，卷一走 `/Volumes/<名字>` 整个消失，只剩`/Volumes` 这个空壳）。
+    ///   路没通，跳过。
+    /// - 走到的是别的目录 → 卷在。中间少掉的那几层是文件被删时跟着空掉的专辑/艺人目录，
+    ///   属于删除的伴生现象，不是「路没通」。
+    ///
+    /// 不用 `mountedVolumeURLs` 做最长前缀匹配：拔盘之后`/Volumes/MyDisk` 已经不在那份
+    /// 清单里，最长匹配会一路退回根卷 `/`，于是判成「卷在」——正好把要挡的那种情况放过去。
+    /// 而 `/Volumes` 这个空壳恰恰是「卷本该在这儿、现在不在」的现场证据。
+
+    /// **为什么住在 DownloadStore 而不是 LibraryStore**：要判的那条路径是这里给的
+    ///（`fileURL(forPath:)` / `absoluteURL(for:)`），而 `LibraryStore` 那头本来就
+    /// 已经在调 `downloads.absoluteURL(for:)` 取 url——依赖方向早就是这一头，
+    /// 判据跟着路径走才不会反过来多一条边。
+    nonisolated static func isVolumeReachable(for url: URL,
+                                              fileManager fm: FileManager) -> Bool {
+        var directory = url.standardizedFileURL.deletingLastPathComponent()
+        while !fm.fileExists(atPath: directory.path) {
+            let parent = directory.deletingLastPathComponent()
+            // 到根了还没找到存在的祖先。真实文件系统上不会发生（`/` 总在），
+            // 兜底判成「不可达」——宁可漏报一条，也不要凭一条走不通的路去标一片。
+            guard parent.path != directory.path else { return false }
+            directory = parent
+        }
+        return directory.path != "/Volumes"
+    }
+
     // MARK: - 本地导入
 
     /// 「文件 › 导入…」落地的本机文件登记进下载索引。
@@ -1301,9 +1332,15 @@ final class DownloadStore {
     /// 本地 SSD 上可以忽略；但它的上界不是「库有多大」而是**「下载落在什么卷上」**——
     /// 条目指向一个拔掉了的外接盘或没挂上的网络卷时，单次 `stat` 就能挂到挂载超时。
     ///
-    /// 这一轮**没有**改它（挪去后台要改 `init` 的同步契约，与 `LibraryStore.load` 那条
-    /// 同一堵墙，见那边），只埋了区间 `DownloadStore.loadIndex` + 条目数。
-    /// 下一轮要拆启动读盘，**先看这条区间，不是先看资料库那条**。
+    /// `[实测 signpost]` 实机那次（本机 14 条，本地 SSD）：`LibraryStore.load` **3 ms**、
+    /// 这一趟 **17 ms**——是前者的 5 倍，而审查单整节都在说前者。
+    ///
+    /// **已做的一半**：第 2 步前面加了卷保护（见循环里那段），把「整个卷不在」那一类
+    /// 从「一条一次 `stat`」降成「按父目录问一次」。
+    /// **没做的一半**：这一趟仍然同步、仍然跟着 `init` 跑在
+    /// `applicationDidFinishLaunching` 之前。挪去后台要改 `init` 的同步契约，
+    /// 与 `LibraryStore.load` 那条同一堵墙（见那边）。要拆启动读盘，
+    /// **先看这条区间，不是先看资料库那条**。
     private func loadIndex() {
         let signposter = AmberDiagnostics.launch
         let interval = signposter.beginInterval("DownloadStore.loadIndex")
@@ -1334,12 +1371,38 @@ final class DownloadStore {
 
         var alive: [String: Entry] = [:]
         var restored: [String: DownloadState] = [:]
+        let fm = FileManager.default
+        // **卷保护**：`attributesOfItem` 是这一趟唯一的系统调用，也是它的上界所在——
+        // 条目指向一个拔掉了的外接盘或没挂上的网络卷时，一条一次、条条都要等。
+        // 先按**父目录**问一次「这条路通不通」，不通的整片跳过，一条都不 `stat`。
+        //
+        // 行为一个字没变：卷不通时从前走的是下面那条 `attributesOfItem` 失败的支路
+        // （记录留着、不进 `states`、不改清单），这里走的是同样的三件事。
+        // 变的只是系统调用的条数——同一个盘上 50 首歌，从 50 次变成「走到 /Volumes」
+        // 那几次，而且按目录缓存，同一个目录只问一次。
+        //
+        // **治不到的那一种要说清**：卷「挂着但不应答」（服务器没了的 SMB 共享）时，
+        // 判据自己的第一次 `fileExists` 就会挂在那儿。那种要靠超时或异步，不是这道闸
+        // 能救的——这里治的是「卷整个不在」那一类（`/Volumes/<名字>` 随卷一起消失，
+        // `stat` 立刻回 ENOENT），也正是拔盘、换机、网络卷没连上时的常态。
+        var volumeReachable: [String: Bool] = [:]
         // 清单要不要重写。三种情况：有条目没了、有条目的内容变了、
         // 以及老清单里那些该搬进主库的 external 条目。
         var manifestChanged = stored.values.contains(where: \.isExternal) && isLoaded
         for (id, entry) in merged {
             let url = fileURL(forPath: entry.path)
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            let parent = url.deletingLastPathComponent().path
+            let reachable = volumeReachable[parent]
+                ?? Self.isVolumeReachable(for: url, fileManager: fm)
+            volumeReachable[parent] = reachable
+            guard reachable else {
+                // 路不通 ＝「现在问不到」，不是「确实没了」。两者在这一趟的处理相同
+                //（见下面那支的长注释：记录要留着，否则「查找丢失的文件」批量找回
+                // 就没有原料了），但理由不同，所以分开写而不是合并。
+                alive[id] = entry
+                continue
+            }
+            guard let attributes = try? fm.attributesOfItem(atPath: url.path) else {
                 // **文件此刻不在，但这条记录要留着。**
                 //
                 // 记录留着＝「这首歌的文件该在这条路上」，这正是「查找丢失的文件」那条链

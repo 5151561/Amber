@@ -190,6 +190,28 @@ final class LocalFileMissingTests: XCTestCase {
         XCTAssertTrue(store.isFileMissing(track.id))
     }
 
+    /// 重开一次 App：卷不通的那条记录必须**还在索引里**，但仍旧不算「已下载」。
+    ///
+    /// 钉的是 `DownloadStore.loadIndex` 里那道卷闸。那一趟逐条 `stat` 对账，卷不在时
+    /// 每条都失败——记录留着靠的是那支失败分支的约定（记录 ＝「这首歌的文件该在这条路上」，
+    /// 是「查找丢失的文件」批量找回的全部原料，`Track.localPath` 拆掉之后唯一的落点）。
+    /// 2026-09-17 在它前面加了按父目录缓存的卷闸，把「整卷不在」那一类从「一条一次
+    /// `stat`」降成「按目录问一次」——**行为必须一个字不变**，这条就是钉那个「不变」。
+    func testUnreachableVolumeEntrySurvivesReload() throws {
+        let onVolume = URL(fileURLWithPath:
+            "/Volumes/AmberTestVolumeThatIsNotMounted/媒体/歌.m4a")
+        let track = makeLocalTrack("h")
+        let downloads = makeDownloads()
+        adopt(track, at: onVolume, in: downloads)
+
+        // 同一份目录/主库上重开一只：它的 init 会跑一遍 loadIndex。
+        let reopened = makeDownloads()
+        XCTAssertEqual(reopened.absoluteURL(for: track.id)?.path, onVolume.path,
+                       "卷不通不等于文件没了——记录摘掉的话，重开之后批量找回就没原料了")
+        XCTAssertFalse(reopened.isDownloaded(track.id),
+                       "界面照旧当它没下载（与文件确实不在时逐字一致）")
+    }
+
     /// 上级目录被同名**文件**顶了位。卷仍旧通着（`/Volumes` 空壳才是不通的证据），
     /// 文件确实不在那条路径上，所以照常算缺失。
     func testParentReplacedByFileStillCounts() throws {
