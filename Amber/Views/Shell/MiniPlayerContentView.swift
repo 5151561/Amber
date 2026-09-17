@@ -1270,15 +1270,14 @@ final class MiniPlayerContentView: NSView {
         track = newTrack
 
         if let newTrack {
-            let tint = NSColor(Color.tint(for: newTrack.kind))
-            cover.setArtwork(url: newTrack.artworkURL, tint: tint, points: ArtworkSize.header)
+            cover.setArtwork(url: newTrack.artworkURL, points: ArtworkSize.header)
             let subtitle = newTrack.albumName.isEmpty
                 ? newTrack.artistName
                 : "\(newTrack.artistName) — \(newTrack.albumName)"
             titleField.stringValue = newTrack.title
             subtitleField.stringValue = subtitle
         } else {
-            cover.setArtwork(url: nil, tint: .amberSidebarAccent, points: ArtworkSize.header)
+            cover.setArtwork(url: nil, points: ArtworkSize.header)
             titleField.stringValue = "未在播放"
             subtitleField.stringValue = ""
         }
@@ -1585,6 +1584,7 @@ private final class MPCoverView: NSView {
         layer?.masksToBounds = true
         placeholder.startPoint = CGPoint(x: 0, y: 1)
         placeholder.endPoint = CGPoint(x: 1, y: 0)
+        ArtworkPlaceholder.fill(placeholder, for: self)
         layer?.addSublayer(placeholder)
         artwork.contentsGravity = .resizeAspectFill
         artwork.masksToBounds = true
@@ -1593,7 +1593,7 @@ private final class MPCoverView: NSView {
 
         placeholderGlyph.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 28, weight: .regular))
-        placeholderGlyph.contentTintColor = NSColor(white: 1, alpha: 0.75)
+        placeholderGlyph.contentTintColor = .amberArtworkPlaceholderGlyph
         addSubview(placeholderGlyph)
 
         // 封面是窗口背景那一层：不吃鼠标，拖它就是拖窗（`isMovableByWindowBackground`）。
@@ -1619,9 +1619,13 @@ private final class MPCoverView: NSView {
                                         width: glyph, height: glyph)
     }
 
-    func setArtwork(url: String?, tint: NSColor, points: CGFloat) {
-        placeholder.colors = [tint.withAlphaComponent(0.85).cgColor,
-                              NSColor(Color.amberPurple).withAlphaComponent(0.55).cgColor]
+    /// 灰底是动态色，`cgColor` 解析一次就定死了，浅深切换要重铺。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        ArtworkPlaceholder.fill(placeholder, for: self)
+    }
+
+    func setArtwork(url: String?, points: CGFloat) {
         let request = ArtworkSize.url(url, points: points)
         // 「没有封面」这一路每次都走到底，别拿 `nil == nil` 当「没变」——那样上一首的
         // 封面会留在层上（同 `MiniArtworkView.setArtwork`）。
@@ -1759,14 +1763,13 @@ private final class MPMiniBarView: NSView {
 
     func update(track: Track?) {
         guard let track else {
-            artwork.setArtwork(url: nil, tint: .amberSidebarAccent, points: ArtworkSize.header)
+            artwork.setArtwork(url: nil, points: ArtworkSize.header)
             titleField.stringValue = "未在播放"
             subtitleField.stringValue = ""
             needsLayout = true
             return
         }
-        artwork.setArtwork(url: track.artworkURL, tint: NSColor(Color.tint(for: track.kind)),
-                           points: ArtworkSize.inlineAvatar)
+        artwork.setArtwork(url: track.artworkURL, points: ArtworkSize.inlineAvatar)
         titleField.stringValue = track.title
         subtitleField.stringValue = track.albumName.isEmpty
             ? track.artistName

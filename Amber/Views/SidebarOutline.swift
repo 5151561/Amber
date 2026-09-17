@@ -877,8 +877,8 @@ final class SidebarPlaylistCellView: SidebarItemCellView {
 /// 是 `Catalog/CatalogArtworkView` 的最小版——只留侧栏用得到的两层（占位渐变、封面），
 /// 悬浮暗罩与可读性渐变不要。像素照旧版 `ArtworkView` 逐条搬，一个数都没改：
 /// - 贴图 `resizeAspectFill` ＝ 旧版的 `scaledToFill` +`.clipped()`；
-/// - 占位是 `amberKey 0.85 → amberPurple 0.55` 的 topLeading→bottomTrailing 渐变，
-///   上面一枚白 0.75 的 `music.note`，字号照旧版的`.title2`（实测 17，与
+/// - 占位是中性灰的 topLeading→bottomTrailing 渐变（`ArtworkPlaceholder`），
+///   上面一枚 `secondaryLabelColor` 的 `music.note`，字号照旧版的`.title2`（实测 17，与
 ///   `CatalogArtworkView` 的`loadingGlyphSize` 默认值同源）；
 /// - 圆角 `playlistArtworkRadius`，`cornerCurve = .continuous` ＝ 旧版
 ///   `RoundedRectangle(style: .continuous)` 那只 squircle。
@@ -906,10 +906,9 @@ final class SidebarArtworkView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
 
-        placeholder.colors = [NSColor(Color.amberKey).withAlphaComponent(0.85).cgColor,
-                              NSColor(Color.amberPurple).withAlphaComponent(0.55).cgColor]
         placeholder.startPoint = CGPoint(x: 0, y: 1)   // topLeading
         placeholder.endPoint = CGPoint(x: 1, y: 0)     // bottomTrailing
+        ArtworkPlaceholder.fill(placeholder, for: self)
         layer?.addSublayer(placeholder)
 
         artwork.contentsGravity = .resizeAspectFill
@@ -919,7 +918,7 @@ final class SidebarArtworkView: NSView {
 
         glyph.imageScaling = .scaleNone
         glyph.imageAlignment = .alignCenter
-        glyph.contentTintColor = NSColor(white: 1, alpha: 0.75)
+        glyph.contentTintColor = .amberArtworkPlaceholderGlyph
         glyph.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: Self.glyphSize, weight: .regular))
         addSubview(glyph)
@@ -934,6 +933,12 @@ final class SidebarArtworkView: NSView {
 
     /// 这一格只是装饰，点击整行要接得住（与 `CatalogArtworkView` 同一条）。
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// 灰底是动态色，`cgColor` 解析一次就定死了，浅深切换要重铺。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        ArtworkPlaceholder.fill(placeholder, for: self)
+    }
 
     override func layout() {
         super.layout()

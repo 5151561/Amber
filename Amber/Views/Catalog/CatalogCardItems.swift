@@ -108,6 +108,8 @@ final class CatalogArtworkView: NSView {
     private var requestedURL: String?
     /// 请求序号，只增不减：晚到的图靠它认主，见 `setArtwork`。
     private var requestToken: UInt64 = 0
+    /// 这次铺的是条目自带的品牌渐变（非 nil）还是默认灰底（nil），见 `applyPlaceholderFill`。
+    private var brandFill: [Color]?
 
     /// 图底可读性渐变的高度（0 = 不要这层）。SwiftUI 的 `LegibilityScrim`：透明 → 黑 0.55。
     var legibilityHeight: CGFloat = 0 { didSet { needsLayout = true } }
@@ -129,6 +131,7 @@ final class CatalogArtworkView: NSView {
 
         placeholder.startPoint = CGPoint(x: 0, y: 1)   // topLeading
         placeholder.endPoint = CGPoint(x: 1, y: 0)     // bottomTrailing
+        ArtworkPlaceholder.fill(placeholder, for: self)
         layer?.addSublayer(placeholder)
 
         artwork.contentsGravity = .resizeAspectFill
@@ -137,7 +140,7 @@ final class CatalogArtworkView: NSView {
         layer?.addSublayer(artwork)
 
         glyph.imageScaling = .scaleNone
-        glyph.contentTintColor = NSColor(white: 1, alpha: 0.75)
+        glyph.contentTintColor = .amberArtworkPlaceholderGlyph
         glyph.isHidden = true
         addSubview(glyph)
 
@@ -155,6 +158,24 @@ final class CatalogArtworkView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 占位底色是动态色，`cgColor` 只在铺上去那一刻解析一次，浅深切换时要重来一遍。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyPlaceholderFill()
+    }
+
+    private func applyPlaceholderFill() {
+        guard let brandFill, !brandFill.isEmpty else {
+            ArtworkPlaceholder.fill(placeholder, for: self)
+            return
+        }
+        // 条目自带的渐变也可能是动态色（心水歌曲那张就是 `labelColor` 派生的），
+        // 同样按本视图的外观解析，别落到 `NSAppearance.current` 上。
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            placeholder.colors = brandFill.map { NSColor($0).cgColor }
+        }
+    }
 
     /// 装饰层不接点击，但要放行内部的按钮（悬浮播放键）。
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -188,14 +209,16 @@ final class CatalogArtworkView: NSView {
         let brandColors = url == nil ? fallbackColors : nil
         let glyphSize: CGFloat?
         if let brandColors, !brandColors.isEmpty {
-            placeholder.colors = brandColors.map { NSColor($0).cgColor }
+            // 条目自带的品牌渐变是深色块，音符照旧压白。
+            glyph.contentTintColor = NSColor(white: 1, alpha: 0.75)
             glyphSize = brandGlyphSize
         } else {
-            // 旧版 `ArtworkView` 的占位：品牌红 0.85 → 紫 0.55
-            placeholder.colors = [NSColor(Color.amberKey).withAlphaComponent(0.85).cgColor,
-                                  NSColor(Color.amberPurple).withAlphaComponent(0.55).cgColor]
+            glyph.contentTintColor = .amberArtworkPlaceholderGlyph
             glyphSize = loadingGlyphSize
         }
+        // 记下这次铺的是哪一种，浅深切换时照原样重铺（见 `applyPlaceholderFill`）。
+        brandFill = brandColors
+        applyPlaceholderFill()
         if let glyphSize {
             glyph.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(pointSize: glyphSize, weight: .regular))

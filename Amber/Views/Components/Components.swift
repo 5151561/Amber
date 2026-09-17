@@ -10,8 +10,6 @@ extension Color {
     static let neteaseRed = Color(red: 0.80, green: 0.10, blue: 0.10)
     /// QQ 音乐绿
     static let qqGreen = Color(red: 0.19, green: 0.76, blue: 0.49)
-    /// 封面占位渐变副色（品牌红 amberKey 在 MusicColors.swift）
-    static let amberPurple = Color(red: 0.55, green: 0.20, blue: 0.85)
 
     /// Apple Music 侧栏图标红（对激活状态 Music.app 实测：深色 #FF6376，浅色用 Music 红）
     ///
@@ -21,13 +19,6 @@ extension Color {
 
     /// 侧栏选中胶囊的底色。见 `NSColor.amberSidebarSelection`。
     static let amberSidebarSelection = Color(nsColor: .amberSidebarSelection)
-
-    static func tint(for kind: ProviderKind) -> Color {
-        switch kind {
-        case .netease: return .neteaseRed
-        case .qq: return .qqGreen
-        }
-    }
 }
 
 /// 侧栏骨架是 AppKit（NSOutlineView）画的，图标色与选中底色都要拿 NSColor。
@@ -186,7 +177,6 @@ struct MusicEmptyStateContent: View {
 
 struct ArtworkView: View {
     let url: String?
-    var tint: Color = .amberKey
     /// 想要的封面边长（point）。按 `ArtworkSize` 的阶梯改写请求地址；
     /// 传 nil 就用 provider 给的原始地址。
     var points: CGFloat?
@@ -212,12 +202,13 @@ struct ArtworkView: View {
                         .scaledToFill()
                 } else {
                     ZStack {
+                        // 没有封面时的灰底，与 AppKit 那几块同一份色（`ArtworkPlaceholder`）。
                         LinearGradient(
-                            colors: [tint.opacity(0.85), Color.amberPurple.opacity(0.55)],
+                            colors: [.amberArtworkPlaceholderTop, .amberArtworkPlaceholderBottom],
                             startPoint: .topLeading, endPoint: .bottomTrailing)
                         Image(systemName: "music.note")
                             .font(.title2)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

@@ -146,3 +146,55 @@ extension NSColor {
     /// 桥回去还是同一个 provider，四档 appearance 照走，不用把值再抄一遍。
     static let amberKey = NSColor(Color.amberKey)
 }
+
+// MARK: - 没有封面时的灰底
+
+/// 「这首歌/这张碟没有封面」时铺的那块底。
+///
+/// 从前铺的是品牌红 0.85 → 紫 0.55 的渐变，一屏里十几张没封面的条目就是十几块
+/// 红紫，比真封面还抢眼。design-ref/DESIGN_BRIEF.md §6.4 给的两条路是「封面平均色
+/// 或**中性灰**」——没有封面时自然只剩中性灰这一条。
+///
+/// 值走系统灰阶（systemGray5/6 那一档）：浅 #EAEAEC → #DCDCDF，深 #3A3A3C → #2C2C2E，
+/// 仍是左上 → 右下的两端，形不变、只换色。上面那枚音符交给 `secondaryLabelColor`，
+/// 浅深两档由系统自己折。
+extension NSColor {
+    /// 灰底渐变的起点（左上）。
+    static let amberArtworkPlaceholderTop = NSColor(name: "amberArtworkPlaceholderTop") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 58 / 255, green: 58 / 255, blue: 60 / 255, alpha: 1)
+            : NSColor(srgbRed: 234 / 255, green: 234 / 255, blue: 236 / 255, alpha: 1)
+    }
+
+    /// 灰底渐变的终点（右下）。
+    static let amberArtworkPlaceholderBottom = NSColor(name: "amberArtworkPlaceholderBottom") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 44 / 255, green: 44 / 255, blue: 46 / 255, alpha: 1)
+            : NSColor(srgbRed: 220 / 255, green: 220 / 255, blue: 223 / 255, alpha: 1)
+    }
+
+    /// 灰底上那枚音符。铁律 6：这个色系统自己就有，别另起一支。
+    static let amberArtworkPlaceholderGlyph = NSColor.secondaryLabelColor
+}
+
+extension Color {
+    /// 见 `NSColor.amberArtworkPlaceholderTop`
+    static let amberArtworkPlaceholderTop = Color(nsColor: .amberArtworkPlaceholderTop)
+    /// 见 `NSColor.amberArtworkPlaceholderBottom`
+    static let amberArtworkPlaceholderBottom = Color(nsColor: .amberArtworkPlaceholderBottom)
+}
+
+/// 灰底铺给 `CAGradientLayer` 的那一步。
+///
+/// 层收的是 `CGColor`：动态色在交出去那一刻就被解析成固定值了，浅深切换时不会自己变
+/// （`LibraryFavoritesCardView.applyPlaceholder` 的头注写的正是这件事）。所以每个用它的
+/// 视图都要在 `viewDidChangeEffectiveAppearance` 里再调一遍这个方法。
+enum ArtworkPlaceholder {
+    /// 左上 → 右下。`startPoint`/`endPoint` 由各视图自己摆（它们本来就摆好了）。
+    static func fill(_ layer: CAGradientLayer, for view: NSView) {
+        view.effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer.colors = [NSColor.amberArtworkPlaceholderTop.cgColor,
+                            NSColor.amberArtworkPlaceholderBottom.cgColor]
+        }
+    }
+}

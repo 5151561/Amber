@@ -324,8 +324,7 @@ struct SongsTableCellContent: View {
     /// `artworkAspectRatio` 在`initWithPlaylist:` 里被设成 1.0，所以是正方形）。
     private func trackArtworkCell(_ track: Track) -> some View {
         let size = rowHeight - M.trackArtworkInset * 2
-        return ArtworkView(url: track.artworkURL, tint: Color.tint(for: track.kind),
-                           points: ArtworkSize.row)
+        return ArtworkView(url: track.artworkURL, points: ArtworkSize.row)
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: 3))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
