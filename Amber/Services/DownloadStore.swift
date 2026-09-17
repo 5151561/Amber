@@ -1288,7 +1288,31 @@ final class DownloadStore {
     /// 3. 清单有变就重写，投影整趟重建。
     ///
     /// 阶段 9 的挂载 / 卸载通知直接调 `reloadFromManifest()`，走的就是这一条。
+    ///
+    /// ## 这才是启动路径上真正在主线程发系统调用的那一趟（2026-09-17 的订正）
+    ///
+    /// 审查单 §2.6-4 把「首帧之前的同步磁盘活」记在了 `LibraryStore.loadFromDatabase`
+    /// 头上。那一趟`[实测]` 0.675 ms（本机 203 首，Debug；数与方法见那边的注释），
+    /// 而且是纯 SQLite 页读——库文件 663 KB，早在页缓存里。
+    ///
+    /// **这一趟才是发 `stat(2)` 的**：第 2 步逐条 `attributesOfItem`，一条下载一次系统调用，
+    /// 而且它跟着 `DownloadStore.init` 跑在 `AppState.init` 里，同样在
+    /// `applicationDidFinishLaunching` 之前。本机今天 14 条（`local_file` 表），
+    /// 本地 SSD 上可以忽略；但它的上界不是「库有多大」而是**「下载落在什么卷上」**——
+    /// 条目指向一个拔掉了的外接盘或没挂上的网络卷时，单次 `stat` 就能挂到挂载超时。
+    ///
+    /// 这一轮**没有**改它（挪去后台要改 `init` 的同步契约，与 `LibraryStore.load` 那条
+    /// 同一堵墙，见那边），只埋了区间 `DownloadStore.loadIndex` + 条目数。
+    /// 下一轮要拆启动读盘，**先看这条区间，不是先看资料库那条**。
     private func loadIndex() {
+        let signposter = AmberDiagnostics.launch
+        let interval = signposter.beginInterval("DownloadStore.loadIndex")
+        // `defer` 收口的理由与 `LibraryStore.load` 同：这中间有好几处提前返回不了、
+        // 但会抛进 `try?` 的路径，区间不能靠「走到最后一行」来闭合。
+        defer {
+            signposter.endInterval("DownloadStore.loadIndex", interval,
+                                   "entries=\(self.index.count) alive=\(self.states.count)")
+        }
         // 读不出 external 行（库开不了、SQL 出错）就只按清单跑这一程，而且一个字都不往回写：
         // 那时「清单里没有 external」不是事实，是我们没看见。
         var merged: [String: Entry] = [:]

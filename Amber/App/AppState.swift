@@ -4,6 +4,7 @@ import AVFoundation
 import Foundation
 import Observation
 import SwiftUI
+import os
 
 /// 全局应用状态：provider 注册表、播放器、资料库、导航与提示。
 @MainActor
@@ -525,22 +526,40 @@ final class AppState {
     ///
     /// **这两件事都不能挪回 `init`**：`AppState()` 一被构造就发网络请求的话，
     /// 任何构造它的测试都会在半路被失败 toast 改一次状态。
+    /// **埋点在这里**（区间 `AppState.runLaunchTasks`）：这个函数是启动路径上唯一一段
+    /// 「主窗已经上屏、但还在干活」的时间，里面混着两条网络往返、一趟账号歌单同步
+    /// 与三条本地活。中间那几条 `emitEvent` 把它切开——卡住时先看是哪一段，
+    /// 而不是把「启动慢」整条记在资料库头上（`LibraryStore.load` 那条注释里有它的实测数）。
     func runLaunchTasksOnce() async {
         guard !didLaunchSync else { return }
         didLaunchSync = true
+        let signposter = AmberDiagnostics.launch
+        let interval = signposter.beginInterval("AppState.runLaunchTasks")
+        defer { signposter.endInterval("AppState.runLaunchTasks", interval) }
         // 两家各校一次。串着跑：两条都只在真有凭证时才发请求，
         // 没登录的那家立刻返回，并发起来省不下什么。
         await qqAPI.validateCredential()
         await neteaseAPI.validateCredential()
+        signposter.emitEvent("AppState.launch.credentials")
         // 校完凭证再拉账号资料：过期的那份在上一行已经被打回未登录，
         // 侧栏底部就不会先亮出一个其实已经登不上的名字。
         qqLogin.refreshProfile()
         await syncAccountPlaylists()
+        signposter.emitEvent("AppState.launch.playlists",
+                             "playlists=\(self.library.playlists.count)")
         // 老文件名带着一截 id 短后缀（`03 简单爱-1nRaad.flac`），改成新规则的名字。
         // 要赶在下面几条拿绝对 URL 之前、也在播放开始之前：正在播的文件被改名会断流。
+        //
+        // **§2.6-5 说它「逐条 `fileExists` + `moveItem` 全同步」，这一句不成立**：
+        // 那两个系统调用挡在 `strippingIDSuffix(from:id:)` 后面，而后者是纯字符串判断
+        // （`nonisolated static`，见 `DownloadStore` 那边），一次性改名做完之后
+        // 对每一条都答 nil。settled 的机器上这一趟是 N 次字符串比较、**零系统调用**。
+        // 所以没有把它挪去后台：挪了买不到东西，却会在「正在播的文件被改名」这条
+        // 它自己警告过的路上多开一个可交错的窗口。
         downloads.renameLegacySuffixedFiles()
         checkForMissingDownloads()
         measureDownloadedTracks()
+        signposter.emitEvent("AppState.launch.localFiles")
         // 「下载完补写标签」这条路接上之前下好的那些文件全是裸流（音源 CDN 给的就是），
         // 在这里补一遍——总不能让用户为了几行元数据把整个资料库重下一遍。
         // 放在启动任务里而不是 `init`：`init` 只构造、不动磁盘也不发请求（见 init 末尾）。
