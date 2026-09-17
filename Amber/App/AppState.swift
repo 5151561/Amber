@@ -372,9 +372,13 @@ final class AppState {
         // 订整份 `values` 时改一次歌词字号也会把「有效音质重算」叫醒。
         observers.observe({ AppSettings.shared.qualityPrefs }) { [weak self] _ in self?.pushEffectiveQuality() }
 
-        // 账号里的歌单进资料库、登录态校验：都由 MainView 在上屏时触发
+        // 账号里的歌单进资料库、登录态校验：都由 `AppDelegate.applicationDidFinishLaunching`
+        // 末尾那一句 `Task { await appState.runLaunchTasksOnce() }` 触发
         //（init 里不发网络请求也不动资料库——AppState 只是被构造出来时不该有副作用），
         // 之后登录态一变再同步一次歌单。
+        //
+        // 原来这里写的是「由 MainView 在上屏时触发」——`Views/MainView.swift` 在
+        // 骨架换 AppKit 之后已经整份删掉了（接缝 ee65d2c），那句话指的东西不存在了。
         // `Observations` 对 Equatable 自带相邻去重，但这里要的是「只看 cookie 变没变」
         // ——换了头像昵称不该重拉歌单——所以仍要显式的 removeDuplicates(by:)。
         observers.add(Task { [weak self, weak qqLogin] in
@@ -398,8 +402,12 @@ final class AppState {
         }
 
         // 子 store 的变化**不再**转发到 AppState：转发会让每次播放进度、每次资料库改动
-        // 都把所有 `@EnvironmentObject var appState` 的视图重画一遍。
-        // 各子 store 自己作为 environmentObject 注入（见 AmberApp），需要谁就观察谁。
+        // 都把整棵界面重画一遍。谁读哪个 store 就自己观察哪个——AppKit 那一侧经
+        // `TaskBag.observe` / `library.changes(affecting:)`，剩下的 SwiftUI 叶子由
+        // `Shell/PageHosting.swift` 与 `Shell/AuxiliaryWindows.swift` 注满环境对象。
+        //
+        // 原来这里写的是「各子 store 自己作为 environmentObject 注入（见 AmberApp）」——
+        // 注入点早就不在 `AmberApp` 了（那里现在只有 AppDelegate），照着它去找会扑空。
 
         // 在设置里关掉当前正在浏览的源时，换到还开着的第一个源。
         // 用 `observeNow` 不是 `observe`：原来这条没有 `dropFirst`，订阅当场就会校正一次
