@@ -1,21 +1,20 @@
 import AppKit
 import SwiftUI
 
-/// 窗口根。三件事：铺那层玻璃、把分栏/迷你播放器/整窗播放器/toast/艺人简介面板叠起来、
+/// 窗口根。两件事：把分栏/迷你播放器/整窗播放器/toast/艺人简介面板叠起来、
 /// 收 Esc 与改名弹窗。
 ///
-/// **玻璃是窗口根给的**：`NSVisualEffectView(material: .contentBackground)` 铺满整窗，
-/// 侧栏、面板、内容都靠它，自己什么都不画（见 SidebarOutline.swift 里的实测注释：
-/// 侧栏自己糊 `.sidebar` / `.behindWindow` 材质会渲染成恒定浅灰 #4E4D4B，
-/// 而侧栏该是 #2A2B2C）。
+/// **底色不在这一层**（2026-09-17 改）。从前这里是一张铺满整窗的
+/// `NSVisualEffectView(material: .contentBackground)`，侧栏、面板、内容共用它；
+/// 代价是侧栏／面板那两列的 `NSGlassEffectView` 底下永远垫着一片**不透明的纯色**，
+/// 玻璃采到的就是它，两列因此看着完全不透明。现在底色收进内容列
+/// （`ContentNavigationController` 自己铺一层），内容列铺满整窗、那两列覆盖在它上面，
+/// 玻璃糊的才是真正从底下穿过去的内容。
 ///
-/// 视图树里能看到**两个** `[0,0,1440,900] material=18 blend=1` 的 `NSVisualEffectView`，
-/// 那不是我们建重了，也不是嵌套——是 `NSThemeFrame` 下的两个**同级**子视图：
-/// 上面那个是本控制器的 view，下面那个是 **AppKit 自己铺的窗口背景层**。
-/// [实测 2026-09-05，独立探针] 同样的窗口形态（`fullSizeContentView` + 透明标题栏 +
-/// unified 工具栏），把 `contentViewController` 换成一个 view 是**普通 `NSView`** 的控制器，
-/// `NSThemeFrame` 下照样有那一层 `NSVisualEffectView material=18 blend=1`。
-/// 系统给的那层别动；我们这层留着是因为它同时给子视图提供 vibrancy 落点。
+/// `NSThemeFrame` 下仍有一层 AppKit 自铺的 `NSVisualEffectView material=18 blend=1`
+/// （[实测 2026-09-05，独立探针] 把 `contentViewController` 换成普通 `NSView` 也在），
+/// 那是系统的窗口背景，别动——也正因为它在，光把这一层删掉是不够的
+/// （[实测 2026-09-17] 只删这层，侧栏仍取样到 (44,43,43) 的纯色）。
 @MainActor
 final class RootViewController: NSViewController, AboutPanelPresenting {
 
@@ -38,12 +37,8 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        let effect = NSVisualEffectView()
-        effect.material = .contentBackground
-        effect.blendingMode = .withinWindow
-        // `.followsWindowActiveState` 会让窗口失焦时整层材质变淡，Music 不是这样。
-        effect.state = .active
-        view = effect
+        // 不画背景，理由见类型注释：底色在内容列那一层。
+        view = NSView()
     }
 
     override func viewDidLoad() {
@@ -116,13 +111,18 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
         miniPlayer = host
 
         let content = splitViewController.navigationController.view
+        // **按内容列的可用区定位，不是按它的 frame。** 内容列现在铺满整窗（侧栏与面板
+        // 覆盖在它上面），拿 `content.centerXAnchor` 会把胶囊钉死在整窗中线上——开合面板
+        // 时它纹丝不动，收窄也没了。`safeAreaLayoutGuide` 随两列开合伸缩，Auto Layout
+        // 自己把胶囊推到新的可用区中心去。
+        let usable = content.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            host.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            host.centerXAnchor.constraint(equalTo: usable.centerXAnchor),
             host.bottomAnchor.constraint(equalTo: content.bottomAnchor,
                                          constant: -MusicMetrics.MiniPlayer.bottomMargin),
-            // 窄窗口时封顶，别顶到内容列外面去。
+            // 窄窗口时封顶，别顶到可用区外面去。
             host.widthAnchor.constraint(
-                lessThanOrEqualTo: content.widthAnchor,
+                lessThanOrEqualTo: usable.widthAnchor,
                 constant: -MusicMetrics.MiniPlayer.horizontalMargin * 2),
         ])
     }

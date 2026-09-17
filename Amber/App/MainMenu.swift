@@ -202,10 +202,8 @@ enum MainMenu {
         let item = NSMenuItem()
         // macOS 的 View 菜单在中文下就叫「显示」。
         let menu = NSMenu(title: "显示")
-        // 标题栏那颗系统侧栏开关照 Music 摘掉了（工具栏里没有这一件），
-        // 侧栏的收起入口就只剩这条 + ⌃⌘S（macOS 的标准动作）。
-        menu.addItem(command("隐藏边栏", Action.toggleSidebar, key: "s",
-                             modifiers: [.control, .command]))
+        // 侧栏不可收起（见 `MainSplitViewController`：`canCollapse = false`），
+        // 所以这里没有「隐藏边栏」那一条——留着也只会是一条点不动的灰项。
         // Music 的 doShowHideViewOptions:（歌曲页筛选菜单里也有同一条）。
         menu.addItem(command("查看显示选项…", Action.songsViewOptions))
         // 「显示重复项目」（spec §10.3，res 30500 idx 16/17/18 与查看显示选项同表）。

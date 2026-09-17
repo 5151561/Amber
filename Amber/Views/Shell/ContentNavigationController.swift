@@ -28,8 +28,14 @@ final class ContentNavigationController: NSViewController, NavigationIntentRecei
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        // 自己什么都不画：窗口根那层 `NSVisualEffectView` 就是背景。
-        view = NSView()
+        // 内容列那块底色由本控制器自己铺。从前它在窗口根上铺满整窗，于是也垫在
+        // 侧栏／面板底下，把系统给那两列的玻璃压成了同一片纯色。
+        let effect = ContentColumnView()
+        effect.material = .contentBackground
+        effect.blendingMode = .withinWindow
+        // `.followsWindowActiveState` 会让窗口失焦时整层材质变淡，Music 不是这样。
+        effect.state = .active
+        view = effect
     }
 
     override func viewDidLoad() {
@@ -46,6 +52,30 @@ final class ContentNavigationController: NSViewController, NavigationIntentRecei
 
         // 「前往专辑 / 前往艺人」那条不再在这里订阅——它现在沿响应链下来，
         // 见下面的 `amberOpenRoute(_:)`。
+    }
+
+    /// 把一页钉进容器。**只在第一次挂上去时装一次**，之后页面一直在场
+    /// （`install` 只切 `isHidden`），约束跟着页面走。
+    ///
+    /// 纵向两头一律钉在 `view` 上——内容本来就该滚到工具栏底下、滚到迷你播放器底下。
+    /// 水平两头分两档：
+    ///
+    /// - **避让档（默认）**：钉在 `view.safeAreaLayoutGuide` 上。侧栏／面板一开合，
+    ///   safe area 变，Auto Layout 自己把页面重排到新的可用区里——这条路不需要任何通知，
+    ///   AppKit 根本没有 `safeAreaInsetsDidChange`（那是 UIKit 的），靠 `viewDidLayout`
+    ///   也接不住：本控制器的 view 铺满整窗，开合面板时它的 frame 一个数都不变。
+    /// - **铺满档**（目录页）：钉在 `view` 上，物理画布铺满整窗，排版自己按
+    ///   `safeAreaInsets` 算——换来的是横滚的卡片能从两列玻璃底下穿过去。
+    private func pin(_ page: ContentPageController) {
+        let horizontal: (NSLayoutXAxisAnchor, NSLayoutXAxisAnchor) = page.extendsUnderOverlays
+            ? (view.leadingAnchor, view.trailingAnchor)
+            : (view.safeAreaLayoutGuide.leadingAnchor, view.safeAreaLayoutGuide.trailingAnchor)
+        NSLayoutConstraint.activate([
+            page.view.leadingAnchor.constraint(equalTo: horizontal.0),
+            page.view.trailingAnchor.constraint(equalTo: horizontal.1),
+            page.view.topAnchor.constraint(equalTo: view.topAnchor),
+            page.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
     }
 
     // MARK: - 导航意图（响应链）
@@ -242,14 +272,13 @@ final class ContentNavigationController: NSViewController, NavigationIntentRecei
         if page.parent !== self { addChild(page) }
         // 页面视图一律走 autoresizing 而不是约束：容器里同时挂着好几页（当前这页可见、
         // 其余的 `isHidden`），用约束的话每装一页都要拆装一遍。
-        page.view.translatesAutoresizingMaskIntoConstraints = true
-        page.view.frame = view.bounds
-        page.view.autoresizingMask = [.width, .height]
+        page.view.translatesAutoresizingMaskIntoConstraints = false
         if page.view.amberSuperview === view {
             // 已经在场的（缓存根、被压在下面的页）只提到最前，不摘、不重挂。
             view.addSubview(page.view, positioned: .above, relativeTo: nil)
         } else {
             view.addSubview(page.view)
+            pin(page)
             // 自己挂就得自己布局一次——`transition(from:to:)` 原先是顺手做掉的。
             // 少这一句，页面**内部**的约束还没解算（滚动容器、collection view 都还是
             // 0×0），而目录页装好后几毫秒就会灌进第一份快照：`NSCollectionViewComposi-
@@ -331,4 +360,45 @@ final class ContentNavigationController: NSViewController, NavigationIntentRecei
 @MainActor
 protocol LibraryArtistSelecting: AnyObject {
     func selectLibraryArtist(id: String)
+}
+
+
+/// 内容列那张底。它**铺满整窗**，于是分栏的两条分隔线都落在它上面——
+/// 而 `NSVisualEffectView` 默认 `mouseDownCanMoveWindow == true`（`-dumpviews` 的 drag 列
+/// 看得到），窗口又开着 `isMovableByWindowBackground`。面板宽度是定死的 258、divider
+/// 拖不动，于是拖面板左沿就变成了**拖整扇窗**。
+///
+/// 只在分隔线那几个点上让开（返回 nil，事件穿给 `NSSplitView` 自己的 divider），
+/// 其余地方照旧可以拖窗——不整体关掉 `mouseDownCanMoveWindow`，那会把「拖内容空白处
+/// 移动窗口」一起赔进去。
+private final class ContentColumnView: NSVisualEffectView {
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if isOnSplitDivider(point) { return nil }
+        return super.hitTest(point)
+    }
+
+    private func isOnSplitDivider(_ pointInSuperview: NSPoint) -> Bool {
+        guard let split = enclosingSplitView, split.isVertical else { return false }
+        let point = split.convert(pointInSuperview, from: superview)
+        // 分隔线的可抓范围比画出来的那条粗（`dividerStyle = .thin` 只有 1pt），
+        // 给到 AppKit 惯常的抓取带宽度，免得差一个像素又落回拖窗那条路。
+        let grab = max(split.dividerThickness, 6)
+        // **不能只看「每一列的 maxX」**：内容列自己就铺满整窗（maxX == 整窗宽），
+        // 面板那条分隔线其实是**面板列的 minX**（实测 1212）。所以两侧内边界都要算，
+        // 只把 splitView 自己的左右外沿排除掉。
+        let bounds = split.bounds
+        let edges = split.arrangedSubviews.flatMap { [$0.frame.minX, $0.frame.maxX] }
+            .filter { $0 > bounds.minX + grab && $0 < bounds.maxX - grab }
+        return edges.contains { abs(point.x - $0) <= grab }
+    }
+
+    private var enclosingSplitView: NSSplitView? {
+        var next = superview
+        while let current = next {
+            if let split = current as? NSSplitView { return split }
+            next = current.superview
+        }
+        return nil
+    }
 }
