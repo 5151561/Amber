@@ -2278,11 +2278,24 @@ enum MusicMetrics {
         /// [实测] playqueue spec §3.9：`kMargin = 10`（栈左右内缩）、`kSpacing = 8`（按钮间距）
         static let settingsMargin: CGFloat = 10
         static let settingsSpacing: CGFloat = 8
-        /// [实测] playqueue spec §3.9：栈顶距头顶 8（`topMarginConstraint`），栈底贴头底
+        /// [实测] playqueue spec §3.9：栈顶距头顶 8（`topMarginConstraint`），栈底贴头底。
+        ///
+        /// 2026-09-17 走过一趟 0（「顶到面板上沿」）又走回来：胶囊真贴着玻璃盘上沿时
+        /// 与盘的 16pt 圆角挤在一起，不好看。要的是**把胶囊本身加高**（`settingsButtonHeight`
+        /// 从固有的 22.5 钉到 38），而不是把它整条往上平移——加高之后这 8pt 留着正好。
         static let settingsTopInset: CGFloat = 8
         /// [实测] playqueue spec §3.9：两颗按钮等宽约束的优先级。Music 是
         /// `NSLayoutPriority(500) - 10` **现算**出来的（不是立即数），值 = 490。
         static let settingsEqualWidthPriority: NSLayoutConstraint.Priority = .init(490)
+        /// 两颗键的高。[PX] 量自 `design-ref/ui-spec/pages/queue-panel.png`：Music 把这两颗
+        /// （∞ / 交叉渐入渐出）摆在**工具栏**里，玻璃胶囊 y 从 62 到 100 = **38**
+        /// （同一张图里工具栏带高 52，与 `NSToolbar` 的标准高对得上，所以这张图 1px ≈ 1pt）。
+        /// Amber 把它们摆进面板顶栏，控件本身还是那两颗，取同一个高。
+        ///
+        /// 不写这条时按钮吃 `controlSize = .large` 的固有高，实机 dump 只有 **22.5**——
+        /// 在 630 宽的盘里又扁又长。约束钉的是 alignment rect 而`NSButton` 纵向 inset 是负的
+        /// （见 `PlayQueueFlushButton`），所以这两颗也用那个把 inset 归零的子类，38 才是 38。
+        static let settingsButtonHeight: CGFloat = 38
 
         // MARK: 滚动（§3.11）
 

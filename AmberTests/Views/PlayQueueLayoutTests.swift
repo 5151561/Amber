@@ -40,6 +40,8 @@ final class PlayQueueLayoutTests: XCTestCase {
         XCTAssertEqual(M.settingsTopInset, 8)
         // `.defaultHigh - 10`，Music 是现算出来的，值 490。
         XCTAssertEqual(M.settingsEqualWidthPriority.rawValue, 490)
+        // [PX] Music 工具栏里那两颗玻璃胶囊的高，见常量注释。
+        XCTAssertEqual(M.settingsButtonHeight, 38)
         XCTAssertEqual(M.scrollBackInterval, 5)
         XCTAssertEqual(M.snapThresholdLimit, 200)
         XCTAssertEqual(M.gridLineWidthThreshold, 600)

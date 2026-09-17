@@ -137,7 +137,8 @@ final class PlayQueueViewController: NSViewController {
     private let updateGate = PlayQueueUpdateGate()
     /// [实测] §3.11 网格线：只在「应有状态」与当前不一致时才写。
     private var lastGridStyleMask: NSTableView.GridLineStyle?
-    private var lastPocketHeight: CGFloat = -1
+    /// 底部余量只在真变了的时候写一次（`contentInsets` 的 setter 会连锁重排）。
+    private var lastScrollReserve: CGFloat = -1
 
     /// [实测] §3.1 的 `displayStyle` 字段（默认 0）。写入侧只有一处：
     /// `MPContentView` 的状态落地尾段按形态写**三档**——全窗口`{6,7,8}` → 3、
@@ -166,18 +167,22 @@ final class PlayQueueViewController: NSViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// [实测] §3.2 `loadView`：一条 scroller ＋ 一个顶部 pocket 头。
+    /// [实测] §3.2 `loadView`：一条 scroller ＋ 一个顶部设置头。
     ///
-    /// **pocket 是替代实现**：Music 走 Music 的桌面界面层私有的
+    /// **顶栏不压滚动视图**（2026-09-17 改）。Music 走的是它桌面界面层私有的
     /// `scroller.registerPocketContainer(settings, onEdge: 0)`——把一个视图登记成滚动视图
-    /// 顶边的「口袋」，由那套机制去调安全区、让内容从它底下滚过去。没有公开等价物。
-    /// 这里用「`settings` 浮在滚动视图之上 ＋`automaticallyAdjustsContentInsets = false`
-    /// ＋ `contentInsets.top = 安全区顶 + settings 高」实现同一件事：
-    /// - 选它而不是 `additionalSafeAreaInsets`，是因为后者会连带影响表格自身的
-    ///   `safeAreaRect`，而 §3.5 的空状态行高正是拿 scroller 的可视高算的，两边会互相咬；
-    /// - 选它而不是「把 settings 塞进表格第 0 行」，是因为那样它会跟着滚走，
-    ///   而 Music 的 pocket 是钉住不动的。
-    /// `settings` 的高由它自己的内容决定，变了从`heightChangedBlock` 回来（§3.9）。
+    /// 顶边的「口袋」，内容从它**底下**滚过去，底衬由那套 pocket 机制自己给。
+    /// 没有公开等价物，Amber 原先用「settings 浮在滚动视图之上 ＋`contentInsets.top`
+    /// 留出等高的空档 ＋ settings 自带一层 `.headerView` 材质」顶上。
+    /// 代价是那层材质就是面板里的**第二块背景**：方角、与宿主给的底色不同料，
+    /// 压在整窗播放器那块 16pt 圆角玻璃盘上会把上两个圆角切掉，与「继续播放」
+    /// 之间还留一道接缝。
+    ///
+    /// 现在改成 `settings` 与 scroller **上下相邻、互不重叠**：滚动视图从顶栏底边起，
+    /// 顶栏自己不画底，整块面板的背景只有宿主那一层（主窗是窗口根玻璃，整窗播放器是
+    /// 玻璃盘），顶栏与两条分区头共用它。`contentInsets.top` 随之归零，
+    /// 底部那份 `scrollReserve` 照旧（`updateScrollerInsets`）。
+    /// `settings` 的高仍由它自己的内容决定，约束会把 scroller 顶边一起推下去。
     override func loadView() {
         // [实测] §3.2 第 5 条：根视图（Music 叫 `headerContainer`）的子视图 =
         // [scrollerSafeArea, settings]，顺序即层次，settings 在上面。
@@ -236,10 +241,11 @@ final class PlayQueueViewController: NSViewController {
         root.addSubview(settings)
 
         NSLayoutConstraint.activate([
-            // scrollerSafeArea 四边贴根，scroller 四边贴 scrollerSafeArea
+            // scrollerSafeArea 左右下贴根、**顶边贴顶栏底边**（不再从顶栏底下穿过去），
+            // scroller 四边贴 scrollerSafeArea
             scrollerSafeArea.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollerSafeArea.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scrollerSafeArea.topAnchor.constraint(equalTo: root.topAnchor),
+            scrollerSafeArea.topAnchor.constraint(equalTo: settings.bottomAnchor),
             scrollerSafeArea.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             scroller.leadingAnchor.constraint(equalTo: scrollerSafeArea.leadingAnchor),
             scroller.trailingAnchor.constraint(equalTo: scrollerSafeArea.trailingAnchor),
@@ -260,7 +266,7 @@ final class PlayQueueViewController: NSViewController {
         dataSource = makeDataSource()
         theTable.dataSource = dataSource
 
-        settings.heightChangedBlock = { [weak self] _ in self?.updatePocketInsets() }
+        settings.heightChangedBlock = { [weak self] _ in self?.updateScrollerInsets() }
         settings.onAutoplayToggled = { [weak self] on in self?.model.autoplayEnabled = on }
         settings.onMixingToggled = { [weak self] on in self?.model.mixingEnabled = on }
 
@@ -316,7 +322,7 @@ final class PlayQueueViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        updatePocketInsets()
+        updateScrollerInsets()
         updateEmptyRowHeightIfNeeded()
         // [实测] §3.11：`viewDidLayout` 里若`needsToScrollToIdealRow` 且视图有高度，
         // 以 `animated: false` 走一次。
@@ -326,19 +332,18 @@ final class PlayQueueViewController: NSViewController {
         }
     }
 
-    // MARK: - pocket（§3.2 的替代实现）
+    // MARK: - 滚动视图内缩（§3.2）
 
-    private func updatePocketInsets() {
+    /// 顶边不再留空档——顶栏与滚动视图上下相邻（见 `loadView`），顶栏占的高由约束
+    /// 直接推下 scroller 的顶边，`contentInsets.top` 归 0。
+    /// 剩下的只有底部那份给悬浮胶囊让路的余量。
+    private func updateScrollerInsets() {
         guard isViewLoaded else { return }
-        let settingsHeight = settings.frame.height > 0 ? settings.frame.height
-                                                      : settings.fittingSize.height
-        let top = view.safeAreaInsets.top + settingsHeight
-        guard abs(top - lastPocketHeight) > 0.5 else { return }
-        lastPocketHeight = top
-        scroller.contentInsets = NSEdgeInsets(top: top, left: 0,
-                                              bottom: MusicMetrics.MiniPlayer.scrollReserve,
-                                              right: 0)
-        scroller.scrollerInsets = NSEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+        let bottom = MusicMetrics.MiniPlayer.scrollReserve
+        guard abs(bottom - lastScrollReserve) > 0.5 else { return }
+        lastScrollReserve = bottom
+        scroller.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottom, right: 0)
+        scroller.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
     }
 
     // MARK: - 数据源与快照
@@ -541,9 +546,9 @@ final class PlayQueueViewController: NSViewController {
 
     /// 空状态行高：`max(可视高 − 表格上下内缩 − 58, 55)`。
     ///
-    /// Music 读的是 `scroller.safeAreaRect.height`；这里的 pocket 是拿`contentInsets`
-    /// 做的（见 `loadView` 的注释），所以对应的量是**扣掉内缩之后的可视高**，
-    /// 即 clip view 的 bounds 高。
+    /// Music 读的是 `scroller.safeAreaRect.height`；这里顶栏不压滚动视图（见 `loadView`），
+    /// 所以对应的量就是**扣掉内缩之后的可视高**，即 clip view 的 bounds 高
+    /// ——顶栏占掉的那一截已经不在 scroller 里了。
     var emptyRowHeight: CGFloat {
         let visible = scroller.contentView.bounds.height
         let insets = M.insetStyleVerticalInset * 2
@@ -683,8 +688,8 @@ final class PlayQueueViewController: NSViewController {
     }
 
     /// Music 用的是 AMP 表格的 `scrollRowToTop(_:animated:)`（没有公开等价物）。
-    /// 这里直接算 clip view 的 bounds 原点：pocket 是用 `contentInsets` 做的，
-    /// 所以「顶」= `rect.minY − contentInsets.top`。
+    /// 这里直接算 clip view 的 bounds 原点：「顶」= `rect.minY − contentInsets.top`
+    /// （顶栏不压滚动视图之后 `contentInsets.top` 恒 0，这条式子照旧成立）。
     func scrollToIdealRow(animated: Bool) {
         guard let row = idealRow(), row >= 0, row < theTable.numberOfRows else { return }
         let rect = theTable.rect(ofRow: row)
