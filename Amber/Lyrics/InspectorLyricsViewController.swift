@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// 检查器容器里**歌词那一档**的控制器（Music 的 `MusicInspectorContainer.lyrics` +32，
@@ -120,7 +119,6 @@ final class InspectorLyricsViewController: NSViewController {
     /// （`lyricsFooterButton` → `FooterLayoutGlassGroup`，见`LyricsTranslationButton.Placement`）。
     private var translationHost: NSHostingView<AnyView>?
 
-    private var cancellables = Set<AnyCancellable>()
     private let observers = TaskBag()
 
     // MARK: - 生命周期
@@ -594,14 +592,26 @@ final class InspectorLyricsViewController: NSViewController {
         // 翻译 / 发音两条副行的显隐。从前是两个 `@AppStorage`；AppKit 这边直接听
         // `UserDefaults` 的变更通知再读那两个键（`LyricsTranslationOptions`），
         // 写入点仍是那颗翻译键上的 `@AppStorage`。
+        //
+        // 原来那一跳 `.receive(on: .main)` 的**理由仍然成立**——这条通知不保证在主线程发；
+        // 只是不必自己写了：循环体在 `@MainActor` 的 `Task` 里跑，到达时已经在主线程。
+        // 这一条与本文件其余订阅同构（都进 `observers`），随控制器一起收摊。
+        // 频次是「一次偏好写入一条」，晚一跳 await 无感。
+        //
+        // [编译器实测] 类型化通知这条路走不通：`UserDefaults.DidChangeMessage` macOS 26
+        // 就有，但它是 `AsyncMessage` 而非 `MainActorMessage`，回调签名是
+        // `@Sendable (Message) async -> Void`，碰不到主 actor 隔离的自己
+        //（「main actor-isolated property can not be mutated from a Sendable closure」）——
+        // 换过去等于把刚删掉的那一跳再手写回来。
         readTranslationOptions()
-        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, self.readTranslationOptions() else { return }
+        observers.add(Task { @MainActor [weak self] in
+            for await _ in NotificationCenter.default.notifications(
+                named: UserDefaults.didChangeNotification) {
+                guard let self else { return }
+                guard self.readTranslationOptions() else { continue }
                 self.syncController()
             }
-            .store(in: &cancellables)
+        })
     }
 
     /// 读回两个开关，返回「变了没有」。

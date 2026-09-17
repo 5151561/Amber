@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - 资料库艺人页（AppKit）—— 阶段 5
@@ -116,6 +115,8 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     /// 块按真宽排 360 的封面」，封面被行下沿裁掉一截。曲目多的专辑行高由曲目列定，
     /// 盖得住这个差；曲目少的（本地单曲居多）行高正好由封面定，于是只有它们露馅。
     private var detailLayoutWidth: CGFloat = 0
+    /// 详情表 frame 变更的观察者令牌（见 `buildSplitView()` 里挂的那条）。
+    private var detailFrameObserver: (any NSObjectProtocol)?
 
     /// 音轨行的选中（Music：单击行＝选中，红底跟选中走，与播放态同一套红）。
     /// 音轨不是 `NSTableView` 的行（表格一行 = 一张专辑块），所以自己记 id。
@@ -135,8 +136,13 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit {
+    /// 观察者令牌不是 `Sendable`，非隔离的 `deinit` 取不到它。标 `isolated`：
+    /// 主线程上释放时照旧同步跑完，注销时机不变（同 `CatalogPageViewController`）。
+    isolated deinit {
         avatarTask?.cancel()
+        if let detailFrameObserver {
+            NotificationCenter.default.removeObserver(detailFrameObserver)
+        }
     }
 
     // MARK: - 工具栏
@@ -321,11 +327,17 @@ final class LibraryArtistsViewController: ContentPageController, NSSplitViewDele
 
         // 表格被滚动容器铺开／窗口拉宽都会改它的 frame，而这时页面不一定走布局回调。
         // 宽度是行高的入参（见 `detailLayoutWidth`），所以直接盯着它变。
+        //
+        // 块式观察者而不是 `for await`：拉窗框是**每帧**发一条，而 `syncDetailWidth()`
+        // 当场要 `noteHeightOfRows` 并把在场的专辑块按新宽度重排。多绕一跳 await
+        // 就成了「列已经宽了、行高与封面慢一帧」，拖动边框时看得见抖。
+        // 闭包是 `@Sendable`；`queue: .main` 把投递线程钉死在主线程，
+        // 所以用 `assumeIsolated` 接回主 actor 隔离的自己。
         detailTableView.postsFrameChangedNotifications = true
-        NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification,
-                                             object: detailTableView)
-            .sink { [weak self] _ in self?.syncDetailWidth() }
-            .store(in: &cancellables)
+        detailFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: detailTableView, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.syncDetailWidth() } }
 
         NSLayoutConstraint.activate([
             emptyDetailLabel.centerXAnchor.constraint(equalTo: rightContainer.centerXAnchor),
