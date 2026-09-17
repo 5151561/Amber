@@ -21,8 +21,10 @@ struct SongsCellData: Equatable {
     var alwaysShowsCover = false
     /// 单元格自己的宽度，由 `SongsRichCellView.layout()` 量了回灌（0 ＝ 还没量到，走老路）。
     ///
-    /// 富单元格的 `NSHostingView` 是`sizingOptions = []`，Apple 文档原话是「帧比内容小时
-    /// **内容居中**」（AGENTS 铁律 2）。插图块里文字那一支的左内缩是硬性的 `textLeading`
+    /// `NSHostingView` 的帧比内容小时，Apple 文档原话是内容会「**在帧里居中**」
+    /// （`sizingOptions` 的说明段；这条与 `sizingOptions` 取什么值无关，是宿主本来的行为，
+    /// 富单元格那边取 `[]` 是铁律 2 的另一半——不对外报尺寸）。
+    /// 插图块里文字那一支的左内缩是硬性的 `textLeading`
     /// （7 + 封面 + 8），把列拖到下限（7 + 封面）时这块内容的最小宽度就比列宽还大，
     /// 于是整块被居中——**封面的左边被切掉**。要躲开居中，内容就得永远不超过单元格宽度，
     /// 所以这里把宽度从 AppKit 递给 SwiftUI，让它照着排、超出的从右边裁。
@@ -72,6 +74,12 @@ final class SongsRichCellView: NSTableCellView {
             .environment(appState.player)
             .environment(appState.library)
             .environment(appState.downloads))
+        // 铁律 2：宿主装在**定尺寸**的槽里（下面四条边约束），自己不再对外报尺寸。
+        // 与 `AppState.hostingView` 同一句，只是这里的环境注入按格子收窄了，不走那个工厂。
+        // 少了这一句的代价不是版式（根视图的排布与摆位跟它无关），而是宿主会照
+        // `.standardBounds` 把 SwiftUI 量出来的 min/intrinsic/max 反推成约束与固有尺寸：
+        // 一屏几十格乘七列各自多测一轮，拖列宽时还会与四条边约束互顶。
+        host.sizingOptions = []
         host.translatesAutoresizingMaskIntoConstraints = false
         // 一格只准画自己那块矩形。NSTableCellView 默认不裁剪，SwiftUI 那边算出来的内容
         // 比当前列宽宽时就直接画到右边那一列上去了——插图格最明显：列拖窄之后
@@ -114,13 +122,16 @@ final class SongsRichCellView: NSTableCellView {
     /// 把单元格宽度回灌给 SwiftUI。拖列宽时 AppKit 会重新布局单元格，这条才跟得上。
     ///
     /// 两处防抖：
-    /// 1. **先比对再赋值**。`state.data` 是`@Published`，无条件写会在每次布局都发一次变更，
-    ///    SwiftUI 重排完又可能回头请求一次布局，两边来回打架。宽度没变就直接返回，
-    ///    于是「布局 → 发布 → 重排 → 再布局」这条环第二圈就断了（第二圈宽度必然相同：
-    ///    `sizingOptions = []` 的宿主视图尺寸由约束定，SwiftUI 内容量出来多宽都不回推）。
-    /// 2. **只有插图列写**。别的富单元格没人读 `cellWidth`，写了只是白发一轮`objectWillChange`；
+    /// 1. **先比对再赋值**。`state.data` 是`@Observable` 的属性，无条件写会在每次布局都
+    ///    通知一次订阅者，SwiftUI 重排完又可能回头请求一次布局，两边来回打架。
+    ///    宽度没变就直接返回，于是「布局 → 通知 → 重排 → 再布局」这条环第二圈就断了
+    ///    （第二圈宽度必然相同：宿主是`sizingOptions = []`，尺寸由上面那四条边约束定，
+    ///    SwiftUI 内容量出来多宽都不回推——这个前提现在真的写在`init` 里了）。
+    ///    历史：这里原先写的是 Combine 的`@Published`，剥离之后换成`@Observable`，
+    ///    「界面自己的显示态不上广播」这条取向一个字没变。
+    /// 2. **只有插图列写**。别的富单元格没人读 `cellWidth`，写了只是白通知一轮订阅者；
     ///    一屏几十格乘七列，拖一次列宽就是几百次空重排。写成通用的当然也能跑，
-    ///    但 AGENTS 铁律 3 的取向就是「能不经过 `@Published` 就别经过」，这里照着收窄。
+    ///    但 AGENTS 铁律 3 的取向就是「能不经过共享可观察状态就别经过」，这里照着收窄。
     override func layout() {
         super.layout()
         guard key == .artwork else { return }
@@ -178,7 +189,7 @@ final class SongsRichCellView: NSTableCellView {
 /// `controlAccentColor` 换不掉），所以整格自己画。
 ///
 /// 状态由控制器在 `configure` 里推下来，点击经闭包回给`LibraryStore`，
-/// 中间不经过 `@Published`（铁律 3）。整格都是命中区（`mouseDown` 落在 cell 上），
+/// 中间不经过共享的可观察状态（铁律 3）。整格都是命中区（`mouseDown` 落在 cell 上），
 /// 不是只有那枚小方块能点。
 final class SongsCheckboxCellView: NSTableCellView {
 
@@ -524,8 +535,8 @@ struct SongsTableCellContent: View {
     /// - 文字左沿恒为 `artworkTextLeading`，封面画不画都不动。
     ///
     /// 排版的宽度基准是单元格宽度 `data.cellWidth`（AppKit 在`layout()` 里量了递进来），
-    /// 不是「内容想要多宽就多宽」——内容一旦比单元格宽，`sizingOptions = []` 的宿主视图
-    /// 会把整块**居中**，封面左边就被切掉了（AGENTS 铁律 2）。所以这里让内容永远等于
+    /// 不是「内容想要多宽就多宽」——内容一旦比单元格宽，`NSHostingView` 会把整块
+    /// **居中**（文档原话，与`sizingOptions` 无关），封面左边就被切掉了。所以这里让内容永远等于
     /// 单元格宽度，多出来的从**右边**裁。`cellWidth` 还是 0（第一次布局前）时走老路。
     private func artworkBlock(_ track: Track, height: CGFloat) -> some View {
         let album = library.album(for: track)

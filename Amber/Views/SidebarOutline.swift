@@ -17,7 +17,8 @@ import SwiftUI
 ///    SwiftUI 底下，行内容要靠 `SidebarView.entries` 每次 body 重算再走`updateNSView`。
 ///
 /// 现在是第四版：宿主壳去掉，直接是分栏的一列（design-ref/appkit-rewrite-plan.md 阶段 1）。
-/// 行内容由这里用 Combine 订阅各 store 自己算，**像素一个不改**。
+/// 行内容由这里订阅各 store 自己算（`TaskBag` + `Observations`；历史：原先是 Combine，
+/// 剥离之后换成 `@Observable`），**像素一个不改**。
 @MainActor
 final class SidebarViewController: NSViewController {
     private typealias M = MusicMetrics.Sidebar
@@ -148,9 +149,10 @@ final class SidebarViewController: NSViewController {
             self.reloadEntries()
         }
         // 外部改选中（工具栏「在当前音乐源中搜索」、上面那条退回主页……）→ 高亮跟着走。
-        // **必须用推下来的值**：`@Published` 在 willSet 发布，这时回读
+        // **用推下来的值**。历史：Combine 的 `@Published` 在 willSet 发布，那一刻回读
         // `appState.sidebarSelection` 拿到的还是上一项，高亮就会永远慢一拍
-        // （点主页再点新发现，亮的是主页）。
+        // （点主页再点新发现，亮的是主页）；换成 `Observations` 之后值已经落定，
+        // 回读也对了，但推下来的那份仍是最短路径，照旧用它。
         observers.observe({ [appState] in appState.sidebarSelection }) { [weak self] selection in
             self?.reloadEntries(selection: selection)
         }
@@ -719,7 +721,8 @@ final class SidebarRowView: NSTableRowView {
 /// **纯 AppKit**（NSImageView + NSTextField），不套 `NSHostingView`：侧栏就二十来行、
 /// 结构固定，一行一个 SwiftUI 宿主只是白背一份宿主开销，而这一行要的东西
 ///（一个居中的符号 + 一行按尾部截断的文字）AppKit 原生就有。
-/// 唯一的例外是播放列表行的封面——那一格复用 `ArtworkView` 更省事（见 SidebarPlaylistCellView）。
+/// 播放列表行的封面从前是唯一的例外（一棵 `ArtworkView`），现在也照这条办了
+/// （见 `SidebarArtworkView`）——整份侧栏零 `NSHostingView`。
 class SidebarItemCellView: NSTableCellView {
     fileprivate typealias M = MusicMetrics.Sidebar
 
@@ -791,18 +794,19 @@ class SidebarItemCellView: NSTableCellView {
 
 /// 播放列表行：图标槽换成列表封面。
 ///
-/// 这一格是全侧栏唯一用 `NSHostingView` 的地方——封面要的是「按尺寸挑地址 + 异步取图 +
-/// 占位渐变」，`ArtworkView` 已经把这些做完了，重写一遍 AppKit 版没有收益
-///（先例：`SongsRichCellView` 也是只有真带控件的格子才上宿主）。
+/// 历史：这一格从前是全侧栏唯一的 `NSHostingView`（里面一棵`ArtworkView`），而且
+/// **每换一个地址就 `removeFromSuperview` + 新建一棵 SwiftUI 树**——19pt 的一个方块背一份
+/// 宿主、复用一次重建一次，正是铁律 2 要躲的那件事。现在换成`SidebarArtworkView`：
+/// 换图不换视图，像素照 `ArtworkView` 逐条搬。
 final class SidebarPlaylistCellView: SidebarItemCellView {
     private let artworkSlot = NSView()
-    private var host: NSHostingView<AnyView>?
-    private var appliedURL: String??
+    private let artworkView = SidebarArtworkView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         // 这一类行没有 SF Symbol，父类那个图标视图整个让位给封面槽。
         symbolView.isHidden = true
+        artworkSlot.addSubview(artworkView)
         addSubview(artworkSlot)
     }
 
@@ -812,17 +816,7 @@ final class SidebarPlaylistCellView: SidebarItemCellView {
     func configure(playlist: LibraryPlaylist) {
         label.stringValue = playlist.name
         setAccessibilityLabel(playlist.name)
-        guard appliedURL != .some(playlist.artworkURL) else { return }
-        appliedURL = .some(playlist.artworkURL)
-        host?.removeFromSuperview()
-        let view = NSHostingView(rootView: AnyView(
-            ArtworkView(url: playlist.artworkURL, tint: .amberKey,
-                        points: M.playlistArtworkSize)
-                .frame(width: M.playlistArtworkSize, height: M.playlistArtworkSize)
-                .clipShape(RoundedRectangle(cornerRadius: M.playlistArtworkRadius,
-                                            style: .continuous))))
-        artworkSlot.addSubview(view)
-        host = view
+        artworkView.setArtwork(url: playlist.artworkURL)
     }
 
     override func layout() {
@@ -830,9 +824,123 @@ final class SidebarPlaylistCellView: SidebarItemCellView {
         layoutSlots(iconView: artworkSlot)
         // 封面在图标槽里居中（[PX] 旧版实测封面 19pt 方块、中心与符号槽同心）。
         let size = M.playlistArtworkSize
-        host?.frame = NSRect(x: (artworkSlot.bounds.width - size) / 2,
-                             y: (artworkSlot.bounds.height - size) / 2,
-                             width: size, height: size)
+        artworkView.frame = NSRect(x: (artworkSlot.bounds.width - size) / 2,
+                                   y: (artworkSlot.bounds.height - size) / 2,
+                                   width: size, height: size)
+    }
+}
+
+/// 侧栏播放列表行那一格 19pt 的封面：`CALayer` 贴图 + 没图时的渐变占位。
+///
+/// 是 `Catalog/CatalogArtworkView` 的最小版——只留侧栏用得到的两层（占位渐变、封面），
+/// 悬浮暗罩与可读性渐变不要。像素照旧版 `ArtworkView` 逐条搬，一个数都没改：
+/// - 贴图 `resizeAspectFill` ＝ 旧版的 `scaledToFill` +`.clipped()`；
+/// - 占位是 `amberKey 0.85 → amberPurple 0.55` 的 topLeading→bottomTrailing 渐变，
+///   上面一枚白 0.75 的 `music.note`，字号照旧版的`.title2`（实测 17，与
+///   `CatalogArtworkView` 的`loadingGlyphSize` 默认值同源）；
+/// - 圆角 `playlistArtworkRadius`，`cornerCurve = .continuous` ＝ 旧版
+///   `RoundedRectangle(style: .continuous)` 那只 squircle。
+///
+/// 取图走 `ImageCache`，与`Catalog/CatalogCardItems.swift` 的封面块同一套：
+/// **先查内存缓存同步贴**（不然每次上屏必白一帧），没命中才起 `Task`；
+/// 晚到的图用 `requestToken` 认主（地址里有 nil，光比地址分不出「这次的 nil」
+/// 和「上一次的 nil」）。行是复用的，这两条缺一不可。
+final class SidebarArtworkView: NSView {
+    private typealias M = MusicMetrics.Sidebar
+
+    private let placeholder = CAGradientLayer()
+    private let artwork = CALayer()
+    private let glyph = NSImageView()
+
+    private var loadTask: Task<Void, Never>?
+    private var requestedURL: String?
+    /// 请求序号，只增不减。
+    private var requestToken: UInt64 = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = M.playlistArtworkRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+
+        placeholder.colors = [NSColor(Color.amberKey).withAlphaComponent(0.85).cgColor,
+                              NSColor(Color.amberPurple).withAlphaComponent(0.55).cgColor]
+        placeholder.startPoint = CGPoint(x: 0, y: 1)   // topLeading
+        placeholder.endPoint = CGPoint(x: 1, y: 0)     // bottomTrailing
+        layer?.addSublayer(placeholder)
+
+        artwork.contentsGravity = .resizeAspectFill
+        artwork.masksToBounds = true
+        artwork.isHidden = true
+        layer?.addSublayer(artwork)
+
+        glyph.imageScaling = .scaleNone
+        glyph.imageAlignment = .alignCenter
+        glyph.contentTintColor = NSColor(white: 1, alpha: 0.75)
+        glyph.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: Self.glyphSize, weight: .regular))
+        addSubview(glyph)
+    }
+
+    /// 占位上那枚音符的字号。旧版 `ArtworkView` 给的是`.title2`，
+    /// 铁律 6：这个数系统自己就有，直接问它，实测值（17）只当验收标尺。
+    private static let glyphSize = NSFont.preferredFont(forTextStyle: .title2).pointSize
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 这一格只是装饰，点击整行要接得住（与 `CatalogArtworkView` 同一条）。
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        CatalogCardKit.setFrame(placeholder, bounds)
+        CatalogCardKit.setFrame(artwork, bounds)
+        glyph.frame = bounds
+    }
+
+    func setArtwork(url: String?) {
+        // 与旧版 `ArtworkView(points:)` 同一句：按尺寸挑地址，缓存键跟着一起变。
+        let request = ArtworkSize.url(url, points: M.playlistArtworkSize)
+        // 「没有封面」这一路必须每次都走到底：行是复用的，`nil == nil` 认作「没变」
+        // 就直接 return 的话，上一份歌单的封面会原样留在层上。
+        guard request != requestedURL || request == nil else { return }
+        requestedURL = request
+        requestToken &+= 1
+        let token = requestToken
+        loadTask?.cancel()
+        loadTask = nil
+        guard let request else { showArtwork(nil); return }
+        if let cached = ImageCache.shared.memoryCachedImage(for: request) {
+            showArtwork(cached)
+            return
+        }
+        showArtwork(nil)
+        loadTask = Task { [weak self] in
+            let image = await ImageCache.shared.image(for: request)
+            guard let self, !Task.isCancelled, self.requestToken == token, let image else { return }
+            self.showArtwork(image)
+        }
+    }
+
+    /// nil ＝ 回到占位。贴图不走隐式动画：行是复用的，淡入会变成「上一张淡出成这一张」。
+    private func showArtwork(_ image: NSImage?) {
+        // 贴给层的是 CGImage：`contents` 收下`NSImage` 时 AppKit 会在提交那一刻按本层的
+        // 尺寸／倍率重画一遍（理由见 `ImageCache.decode` 的头注）。
+        let contents: Any?
+        if let cgImage = image?.amberCGImage {
+            contents = cgImage
+        } else {
+            contents = image
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        artwork.contents = contents
+        artwork.isHidden = image == nil
+        placeholder.isHidden = image != nil
+        CATransaction.commit()
+        glyph.isHidden = image != nil
     }
 }
 
