@@ -62,6 +62,11 @@ extension SyncedLyricsViewController {
 
         let document = FlippedDocumentView()
         document.wantsLayer = true
+        // 每个行视图自己报 `.staticText` 且选中态随播放推进（§2.5-3）——
+        // 装它们的这一层得说明自己是**一串有序的条目**，否则 VoiceOver 只看到
+        // 一堆平铺的静态文本，「下一项/上一项」没有可依附的容器语义。
+        document.setAccessibilityRole(.list)
+        document.setAccessibilityLabel("歌词")
         // **这一位不在文档视图上开。** 滤镜挂在每个行视图自己的层树里
         // （`SyncedLyricsLineView.configure` 那一处才是必需的）；文档视图跟整份文稿
         // 一样高（几千 pt），在它上面开等于把整棵树按进程内渲染，滚动时全额重合成。
@@ -422,6 +427,22 @@ extension SyncedLyricsViewController {
     func startDisplayLink() {
         guard displayLink == nil else { displayLink?.isPaused = false; return }
         let link = view.displayLink(target: self, selector: #selector(displayLinkFired))
+        // 滚动弹簧与逐字染色是**这条链每帧推出来的**（见下面 `displayLinkFired`），
+        // 不是 CA 动画。逐行的那些 CA 动画每条都申请了 120Hz
+        // （`LayerPropertyAnimator.addAnimation`），推它们的这条链却停在默认节拍，
+        // 两头对不齐——所以复用同一个工厂，申请同一档。
+        //
+        // [实测 probe] **`CADisplayLink` 与 `CAAnimation` 的校验不是一套**，别照抄：
+        // `CAAnimation` 收到 preferred 落在区间外的三元组会当场抛
+        // `NSInvalidArgumentException: invalid range (minimum: 0.00 maximum: 0.00
+        // preferred: 120.00)`，栈顶是 `-[CAAnimation preferredFrameRateRange]`
+        // ——正是 `LayerPropertyAnimator.swift` 里记着的那条；而 `CADisplayLink`
+        // （macOS 上的实体是 `_NSDisplayLink`）**一个都不校验**，`0/0/120` 原样收下、
+        // 原样读得回来、加进 runloop 也不报。也就是说这里写非法区间不会崩，
+        // 只会静悄悄地要不到高刷——更该走工厂：`frameRateRange(min: 0, max: 0)`
+        // 给的是合法的 120/120/120，60Hz 屏上由系统自己往下夹
+        // （Apple 的 ProMotion 指南把 min = max = preferred 明写成推荐用法）。
+        link.preferredFrameRateRange = LayerPropertyAnimator.frameRateRange(min: 0, max: 0)
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -437,6 +458,9 @@ extension SyncedLyricsViewController {
         // `syncBlurToPlaybackState()` 自己开头（那一档压根不产生模糊，没有要清的、
         // 更不该回填），所以摆在下面那道闸前后都一样。
         visual.syncBlurToPlaybackState()
+        // 每帧收一次「这一行的淡变跑完了，可以退回进程外渲染」。静态档压根不起链
+        // （`updateDisplayLink` 那道闸），那一档由停链时的那次兜底覆盖。
+        visual.syncCoreImageFilterUsage()
         guard specs.renderingMode != .static else { return }
 
         let basis = timeline.update()
