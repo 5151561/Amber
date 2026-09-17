@@ -12,6 +12,22 @@ import os
 /// 落在主库的 `loudness` 表里（从前是 `loudness.json` 整份重写 + 500 ms 防抖）：
 /// 量完一首写一条单行 UPSERT。离线扫描一首接一首地出结果，正是「每次改一条、
 /// 却要把整份重写一遍」最吃亏的那种负载。
+///
+/// ## 「离线扫描吃满一核」这条**已经修过了**（2026-09-17 核对）
+///
+/// modernization-review §5 的「单列」里还挂着「`LoudnessStore.scan` 吃满一核，
+/// 仍未处理」——那一条是陈旧的。它由 reactive-ui-review 那一轮的**批 L** 修完了，
+/// 落在这个文件与 `Player/LoudnessMeter.swift` 上，三样东西现在都在场：
+///
+/// - **并发度 1**：`offlineQueue` 是一条串行队列，全 App 只有一份 store（见它的注释）；
+/// - **首内节流**：`LoudnessScanPace.throttled` 算 20 ms 睡 30 ms，占一个核的四成；
+/// - **首间让步**：`trackGap` 0.25 s。
+///
+/// 而真根因也不是节流——是 `AVAudioFile.read` 读到文件尾抛 `eofErr` 让**每一首都整首
+/// 作废**（见 `scan` 的注释）。批 L 实机复量：CPU 99–163% → 13–22%，RSS 从 174→280 MB
+/// 的爬升变成平稳 174 MB。所以这一轮**没有再动节流**：再压只会让「300 首要六分钟」
+/// 变成更久，而那正是 `scan` 里明写过的取舍。这一轮只补了批 L 自己留下的那条尾巴
+/// ——刚下完的歌不该排在启动补量队列后面，见 `ScanPriority`。
 @MainActor
 final class LoudnessStore {
 
@@ -97,16 +113,40 @@ final class LoudnessStore {
 
     // MARK: - 离线扫描（已下载的文件）
 
+    /// 排在队里的两档。
+    ///
+    /// 这一队是**先进先出**的，而启动时 `AppState.measureDownloadedTracks()` 会一次性
+    /// 把整个资料库里已下载的曲目全丢进来。刚下完的那一首要是也走 `.backlog`，
+    /// 就得排在那几百首后面——按现在的节流（首内 40% 占空比 + 首间 0.25 s，见 `scan`）
+    /// 一个 300 首的库要六分钟才轮得到它，而用户刚点的那一下就是奔着「这首」去的。
+    enum ScanPriority {
+        /// 启动补量那一批：按加入顺序排在队尾。
+        case backlog
+        /// 用户刚触发的这一首：插队到队首，下一个就是它。
+        ///
+        /// 插队**不打断正在量的那一首**——扫描是一条串行流水线，掐掉半首等于把已经
+        /// 算过的那几分钟音频白扔了，而它最多再占 0.9 s（同上，实测数在 `scan` 那边）。
+        case next
+    }
+
     /// 已经落地的文件直接离线量一遍，不用等用户把整首听完。
     /// 已有条目、已经在队里、或者正在量的跳过。
     ///
     /// 这里只排队，不起活：真正干活的是唯一那条消费者（`startScanningIfNeeded`）。
-    func measureIfNeeded(track: Track, fileURL url: URL) {
+    ///
+    /// `priority` 带默认值，所以启动补量那条路（以及测试里的调用点）一个字不用改——
+    /// 只有 `AppState.onDownloaded` 那一行传 `.next`。
+    func measureIfNeeded(track: Track, fileURL url: URL, priority: ScanPriority = .backlog) {
         guard entries[track.id] == nil,
               !pendingIDs.contains(track.id),
               current?.id != track.id else { return }
         pendingIDs.insert(track.id)
-        pending.append((id: track.id, url: url))
+        switch priority {
+        case .backlog: pending.append((id: track.id, url: url))
+        // 连着下好几首时，后下完的排在先下完的**前面**：两首都是刚点的，
+        // 谁的封面还在屏幕上谁先量，比严格按点击顺序更贴用户此刻在看什么。
+        case .next: pending.insert((id: track.id, url: url), at: 0)
+        }
         startScanningIfNeeded()
     }
 

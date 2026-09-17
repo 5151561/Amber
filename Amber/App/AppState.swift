@@ -263,8 +263,12 @@ final class AppState {
         }
         // 刚落地的文件立刻离线量一遍响度：这样「音量平衡」对下载过的歌第一次播就生效，
         // 不用先完整听一遍（在线播的那条路仍然是第一遍只量不调）。
+        //
+        // **`.next` 插队**：下面 `measureDownloadedTracks()` 启动时会把整个资料库里
+        // 已下载的曲目一次性丢进同一条串行队列，刚下完这首要是排在队尾，按现在的节流
+        // 得等好几分钟——而用户刚点的那一下就是奔着「这首」去的。
         downloads.onDownloaded = { [weak self] track, url in
-            self?.loudness.measureIfNeeded(track: track, fileURL: url)
+            self?.loudness.measureIfNeeded(track: track, fileURL: url, priority: .next)
         }
         // 歌从资料库删掉，本地那份下载也一起没（Music 同）。挂在 store 上而不是逐个删除
         // 入口里调：入口有单曲 / 整张碟 / 表格好几处，漏一处就留下一个没人认领的音频文件。
