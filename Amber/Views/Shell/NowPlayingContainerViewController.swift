@@ -438,7 +438,7 @@ final class NowPlayingContainerViewController: NSViewController {
             (view as? NowPlayingContainerView)?.isInert = false
             view.alphaValue = 1
         }
-        guard let superview = view.superview else { return }
+        guard let superview = view.amberSuperview else { return }
 
         let bounds = superview.bounds
         let targetY = bounds.minY + (presented ? 0 : -bounds.height)
@@ -574,11 +574,11 @@ final class NowPlayingContainerViewController: NSViewController {
         }
         let wantsPlatter = inspectorMode == .queue
         if wantsPlatter {
-            if platterGlass.superview == nil {
+            if platterGlass.amberSuperview == nil {
                 // 压在四角胶囊底下、内容列之上。
                 view.addSubview(platterGlass, positioned: .below, relativeTo: chrome)
             }
-            if drawer.view.superview !== platterContent {
+            if drawer.view.amberSuperview !== platterContent {
                 drawer.view.removeFromSuperview()
                 // 先把玻璃的尺寸解算完再插抽屉。
                 //
@@ -593,7 +593,7 @@ final class NowPlayingContainerViewController: NSViewController {
                 platterContent.addSubview(drawer.view)
             }
         } else {
-            if drawer.view.superview !== view {
+            if drawer.view.amberSuperview !== view {
                 drawer.view.removeFromSuperview()
                 view.addSubview(drawer.view, positioned: .below, relativeTo: chrome)
             }
@@ -755,7 +755,10 @@ final class NowPlayingContainerViewController: NSViewController {
         artwork = image
         // [实测] §11.8.4：封面一落地就喂给背景（换图触发 0.5 秒交叉淡化，在视图内部）。
         var rect = NSRect(origin: .zero, size: image?.size ?? .zero)
-        let cgImage = image?.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        // 这一处给了建议尺寸，走不了 `amberCGImage` 那个外壳：`forProposedRect` 导进来是
+        // `UnsafeMutablePointer<NSRect>?`。契约很短——指向上一行那个局部 `var`，
+        // AppKit 只在这次调用里读写它，调用一返回就没人再拿着这个地址。
+        let cgImage = unsafe image?.cgImage(forProposedRect: &rect, context: nil, hints: nil)
         backdrop.cgImage = cgImage
         // 有封面时 Metal 那层自己铺满，空态底让位；没有（或还在取）就露出它。
         backdropIdle.isHidden = cgImage != nil

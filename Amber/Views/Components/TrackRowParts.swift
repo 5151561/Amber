@@ -302,7 +302,7 @@ final class TrackRowLevelsView: NSView {
         super.viewDidMoveToWindow()
         applyColors()
         // 视图被摘下来（复用）时动画会被系统丢掉，装回去要重新起摆。
-        if window != nil { syncSwing() }
+        if amberWindow != nil { syncSwing() }
     }
 
     private func applyColors() {
@@ -416,7 +416,7 @@ final class TrackRowArtworkButton: NSButton {
     ///   - isCurrent/isPlaying: 当前曲且未悬浮时压暗罩、摆电平
     func setState(hovering: Bool, isCurrent: Bool, isPlaying: Bool) {
         let showsGlyph = hovering
-        let showsLevels = !hovering && isCurrent && levels.superview != nil
+        let showsLevels = !hovering && isCurrent && levels.amberSuperview != nil
         artwork.setHovering(showsGlyph || showsLevels, animated: false)
         glyph.image = TrackRowKit.symbol(isPlaying ? "pause.fill" : "play.fill",
                                          size: glyphSize, weight: glyphWeight)

@@ -364,7 +364,7 @@ final class CatalogRoomViewController: ContentPageController {
     private func apply(items: [CatalogItem]) {
         // 硬闸：**已经在窗口里、宽度却还是 0** 时不许灌快照。组合布局在 0 宽容器里
         // 求解会无限生成 item，实测几秒吃掉几十 GB（与 `CatalogPageViewController` 同一条）。
-        if view.window != nil, collectionView.bounds.width <= 0 {
+        if view.amberWindow != nil, collectionView.bounds.width <= 0 {
             pendingItems = items
             return
         }
@@ -545,21 +545,21 @@ final class CatalogRoomViewController: ContentPageController {
     // MARK: - 悬浮
 
     private func refreshHover() {
-        guard let window = view.window, window.isKeyWindow else { setHoveredCard(nil); return }
+        guard let window = view.amberWindow, window.isKeyWindow else { setHoveredCard(nil); return }
         updateCardHover(at: collectionView.convert(window.mouseLocationOutsideOfEventStream, from: nil))
     }
 
     /// `point` 是 collection view（文稿）坐标。与目录页同一条：由页面在一处 hitTest
     /// 找到鼠标下面那张卡再分发，卡片自己持有悬浮态（铁律 3）。
     private func updateCardHover(at point: NSPoint) {
-        guard let superview = collectionView.superview else { return }
+        guard let superview = collectionView.amberSuperview else { return }
         let inScroll = scrollView.convert(point, from: collectionView)
         guard scrollView.bounds.contains(inScroll) else { setHoveredCard(nil); return }
         var hit = collectionView.hitTest(collectionView.convert(point, to: superview))
         var target: (any CatalogHoverTarget)?
         while let candidate = hit, candidate !== collectionView {
             if let card = candidate as? any CatalogHoverTarget { target = card; break }
-            hit = candidate.superview
+            hit = candidate.amberSuperview
         }
         setHoveredCard(target)
     }

@@ -312,7 +312,7 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
     }
 
     private func install(image: NSImage) {
-        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        guard let cg = image.amberCGImage else { return }
         sharpImage = cg
         needsLayout = true
     }
@@ -699,7 +699,7 @@ final class ArtistReleaseCardView: CatalogCardContentView {
             let tracks = appState.library.tracks(in: album)
             guard cardAction != .done else {
                 // 点 ✓ ＝移除整张碟的下载，先问一句（`DownloadRemovalAlert`）
-                DownloadRemovalAlert.confirm(count: tracks.count, in: window) { [weak self] in
+                DownloadRemovalAlert.confirm(count: tracks.count, in: amberWindow) { [weak self] in
                     appState.downloads.removeDownload(tracks)
                     self?.refreshLibraryState()
                 }

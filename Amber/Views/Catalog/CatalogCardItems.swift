@@ -251,7 +251,7 @@ final class CatalogArtworkView: NSView {
         // 尺寸／倍率重画一遍，同一张图挂在几个尺寸的层上就得各画一次（本地封面正是这种
         // 共用一份实例的情形），画的过程互相串起来就是那种「横带拼接」的花图。
         let contents: Any? = image.map {
-            $0.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? $0
+            $0.amberCGImage ?? $0
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -347,7 +347,10 @@ final class CatalogPlayButton: NSButton {
 
     override func layout() {
         super.layout()
-        layer?.shadowPath = CGPath(ellipseIn: bounds, transform: nil)
+        // `CGPath` 的这组初始化器 `transform` 是 `UnsafePointer<CGAffineTransform>?`，
+        // 整条声明因此被判为不安全；传 nil 时压根没有指针可悬垂。全仓只两处（另一处在
+        // `CatalogPageViewController` 的胶囊），够不上做外壳的判据，就地标。
+        layer?.shadowPath = unsafe CGPath(ellipseIn: bounds, transform: nil)
     }
 
     /// `alphaValue = 0` 的视图仍然参与 `hitTest`（只有 `isHidden` 才不参与），
@@ -378,7 +381,7 @@ final class CatalogPlayButton: NSButton {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, let superview else { return nil }
+        guard !isHidden, let superview = amberSuperview else { return nil }
         return bounds.contains(convert(point, from: superview)) ? self : nil
     }
 }

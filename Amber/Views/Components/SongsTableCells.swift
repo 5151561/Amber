@@ -137,7 +137,7 @@ final class SongsRichCellView: NSTableCellView {
     /// 只有真的有控件的那一小块收鼠标，其余让给表格——不然点在歌名上选不中行。
     /// SwiftUI 的宿主视图是一整块，命中范围只能在这儿按列切。
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let superview else { return nil }
+        guard let superview = amberSuperview else { return nil }
         guard interactiveRect.contains(convert(point, from: superview)) else { return nil }
         return super.hitTest(point)
     }

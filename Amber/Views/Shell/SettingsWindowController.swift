@@ -122,7 +122,7 @@ private final class SettingsTabViewController: NSTabViewController {
     override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         super.tabView(tabView, didSelect: tabViewItem)
         if let label = tabViewItem?.label {
-            view.window?.title = label
+            view.amberWindow?.title = label
         }
     }
 
@@ -130,7 +130,7 @@ private final class SettingsTabViewController: NSTabViewController {
         super.viewWillAppear()
         // 首次上屏时 didSelect 已经在没有 window 的时候发生过了，补一次标题
         if let label = tabView.selectedTabViewItem?.label {
-            view.window?.title = label
+            view.amberWindow?.title = label
         }
     }
 }

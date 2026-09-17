@@ -197,7 +197,7 @@ final class SearchLandingViewController: ContentPageController {
         // 布局 pass，而 AppKit 的布局 pass 跳过隐藏子树，那次重算就被吞了——回到落地页
         // 时 collection view 还拿着「只有浏览类别一段」的缓存几何摆两段内容，卡片纵向错位。
         // 挡下的这一份等 `pageDidAppear()` 补灌。
-        if (view.window != nil && collectionView.bounds.width <= 0)
+        if (view.amberWindow != nil && collectionView.bounds.width <= 0)
             || view.isHiddenOrHasHiddenAncestor {
             pendingApply = true
             return

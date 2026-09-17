@@ -983,7 +983,7 @@ final class MiniPlayerContentView: NSView {
         let center = NotificationCenter.default
         focusObservers.forEach(center.removeObserver)
         focusObservers = []
-        guard let window else {
+        guard let window = amberWindow else {
             // 窗口关掉（`isReleasedWhenClosed = false`，本视图还活着）之后，队列面板那条
             // 5 秒回滚不该继续跑。迷你窗没有 `contentViewController`，容器与子控制器
             // 收不到 `viewDidDisappear`，所以从这里补一刀（同`layout()` 里收抽屉那处）。
@@ -1427,7 +1427,7 @@ private final class MPArtworkBlurView: NSView {
 
     /// 把封面底片烘成「自上而下 0 → 满」的变半径模糊图，贴进 `layer.contents`。
     private func renderIfNeeded() {
-        let scale = window?.backingScaleFactor ?? 2
+        let scale = amberWindow?.backingScaleFactor ?? 2
         let px = CGSize(width: (bounds.width * scale).rounded(),
                         height: (bounds.height * scale).rounded())
         // [实测] `setFrameSize:` 里高 ≤ 0 直接跳过。
@@ -1567,7 +1567,7 @@ private final class MPCoverView: NSView {
             guard let self, !Task.isCancelled, self.requestedURL == request,
                   let image else { return }
             // 贴 CGImage 而不是 NSImage，理由同 `CatalogArtworkView.showArtwork`。
-            let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            let cgImage = image.amberCGImage
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             self.artwork.contents = cgImage ?? image

@@ -169,7 +169,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             view.animator().alphaValue = alpha
         } completionHandler: {
-            finish?()
+            unsafe finish?()
         }
     }
 
@@ -187,7 +187,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
             appState.showingNowPlaying = false
             return
         }
-        nextResponder?.tryToPerform(#selector(cancelOperation(_:)), with: sender)
+        amberNextResponder?.tryToPerform(#selector(cancelOperation(_:)), with: sender)
     }
 
     // MARK: - 命名（改名 / 新建）
@@ -197,7 +197,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
     /// 新建这一路的列表是在这里才建出来的：从前是先建再弹这个框，于是「取消」按下去
     /// 库里已经多了一份空列表（[实机打回 2026-09-08]），见 `AppState.promptNewPlaylist`。
     private func presentPlaylistNameAlert(_ prompt: PlaylistNamePrompt) {
-        guard !nameAlertShown, let window = view.window else { return }
+        guard !nameAlertShown, let window = view.amberWindow else { return }
         nameAlertShown = true
         let library = appState.library
         let alert = NSAlert()
@@ -299,7 +299,7 @@ private final class ToastView: NSVisualEffectView {
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             animator().alphaValue = alpha
         } completionHandler: {
-            finish?()
+            unsafe finish?()
         }
     }
 }

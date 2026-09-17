@@ -174,7 +174,7 @@ final class MiniPlayerBackdropMetalView: MTKView {
         super.viewDidMoveToWindow()
         if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
         occlusionObserver = nil
-        if let window {
+        if let window = amberWindow {
             // 窗被别的窗完全盖住、或缩到程序坞里，系统会发这条——那就没必要再画了 [推]。
             occlusionObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didChangeOcclusionStateNotification,
@@ -290,13 +290,13 @@ final class MiniPlayerBackdropMetalView: MTKView {
     /// 停了之后还要**再画一帧**，否则上一首的背景会留在屏幕上（MTKView 停下来只是不再
     /// 驱动帧循环，drawable 里的内容还在）——所以转成暂停时补一次 `draw()` 直画。
     private func updatePausedState() {
-        let visible = window?.isVisible == true
-            && window?.occlusionState.contains(.visible) == true
+        let visible = amberWindow?.isVisible == true
+            && amberWindow?.occlusionState.contains(.visible) == true
             && !isHiddenOrHasHiddenAncestor
         let shouldRun = isActive && isRenderable && visible
             && (sourceTexture != nil || destinationTexture != nil)
         isPaused = !shouldRun
-        if !shouldRun, window != nil { draw() }
+        if !shouldRun, amberWindow != nil { draw() }
     }
 
     // MARK: - 封面进背景（[实测] `setCGImage:`，spec §八）
@@ -505,14 +505,19 @@ final class MiniPlayerBackdropMetalView: MTKView {
         encoder.setFragmentTexture(destination, index: 1)
         encoder.setFragmentSamplerState(sampler, index: 0)
         // [实测] uniform 走 index 1（原版 `setFragmentBytes:length:0x170 atIndex:1`）。
+        //
+        // 下面这几处 `unsafe` 是同一条契约，写这一次：`setFragmentBytes` 收的是裸指针，
+        // Metal **在调用里就把这段字节拷进命令缓冲**（文档：适合 4 KB 以内的小块常量），
+        // 调用一返回它就不再看这个地址。所以「谁保证内存有效」的答案是
+        // `withUnsafeBytes` 的闭包体 / `var layer` 的作用域——两者都**包住**了整个调用。
         withUnsafeBytes(of: &uniforms) { raw in
             if let base = raw.baseAddress {
-                encoder.setFragmentBytes(base, length: raw.count, index: 1)
+                unsafe encoder.setFragmentBytes(base, length: raw.count, index: 1)
             }
         }
         for index in 0..<3 {
             var layer = UInt32(index)
-            encoder.setFragmentBytes(&layer, length: MemoryLayout<UInt32>.stride, index: 0)
+            unsafe encoder.setFragmentBytes(&layer, length: MemoryLayout<UInt32>.stride, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
         encoder.endEncoding()
@@ -526,9 +531,10 @@ final class MiniPlayerBackdropMetalView: MTKView {
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(source, index: 0)
         encoder.setFragmentSamplerState(sampler, index: 0)
+        // 契约同 `encodeOffscreen`：字节在调用里就被拷走，指针出不了这个闭包。
         withUnsafeBytes(of: &uniforms) { raw in
             if let base = raw.baseAddress {
-                encoder.setFragmentBytes(base, length: raw.count, index: 1)
+                unsafe encoder.setFragmentBytes(base, length: raw.count, index: 1)
             }
         }
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -633,14 +639,19 @@ enum MiniPlayerBackdropLuminance {
             | CGBitmapInfo.byteOrder32Big.rawValue
         // data: nil 让 CoreGraphics 自己管这块位图的生命周期——比借一个 Swift 数组的
         // 指针出去安全（那种写法里指针一出闭包就无效了）。
-        guard let context = CGContext(data: nil, width: targetWidth, height: targetHeight,
-                                      bitsPerComponent: 8, bytesPerRow: bytesPerRow,
-                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info),
-              let base = context.data
+        //
+        // 下面四处 `unsafe` 是这一段的本质：取平均亮度就是要按字节读位图，没有安全替代。
+        // 契约：`base` 是 `context` 自己那块后备内存，`context` 在这个函数里一直被强引用着
+        // （出了函数就没人再碰这个指针了）；长度按 CoreGraphics 自己报的 `bytesPerRow`
+        // 乘行数算，不是我们推的，所以 `raw` 一定落在这块内存之内。
+        guard let context = unsafe CGContext(data: nil, width: targetWidth, height: targetHeight,
+                                             bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                                             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info),
+              let base = unsafe context.data
         else { return 0 }
         context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        let raw = UnsafeRawBufferPointer(start: base, count: context.bytesPerRow * targetHeight)
-        return average(premultipliedRGBA: [UInt8](raw))
+        let raw = unsafe UnsafeRawBufferPointer(start: base, count: context.bytesPerRow * targetHeight)
+        return average(premultipliedRGBA: unsafe [UInt8](raw))
     }
 
     /// 纯函数那一半：RGBA8（预乘、A 在 byte3）→ [0, 1]。

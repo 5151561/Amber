@@ -674,7 +674,7 @@ class CatalogPageViewController: ContentPageController {
         // 实测几秒吃掉几十 GB（连只有标题段的加载态快照都会，所以这里不看段数）。
         // 不在窗口里则无所谓：那种快照不触发求解，上屏前必然先布局一次。
         // 挡下的这一份等 `viewDidLayout` 拿到宽度再灌。
-        if view.window != nil, collectionView.bounds.width <= 0 {
+        if view.amberWindow != nil, collectionView.bounds.width <= 0 {
             pendingSections = sections
             return
         }
@@ -1297,7 +1297,7 @@ class CatalogPageViewController: ContentPageController {
     }
 
     private func refreshHover() {
-        guard let window = view.window, window.isKeyWindow else { clearHover(); return }
+        guard let window = view.amberWindow, window.isKeyWindow else { clearHover(); return }
         let inCollection = collectionView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
         updateHover(at: inCollection)
     }
@@ -1342,12 +1342,12 @@ class CatalogPageViewController: ContentPageController {
     /// 与翻页箭头同一处判、同一份鼠标位置；滚轮滚动时 `refreshHover` 也走这里，
     /// 悬浮态跟着鼠标下面那张卡换（理由见 `CatalogHoverTarget`）。
     private func updateCardHover(at point: NSPoint) {
-        guard let superview = collectionView.superview else { return }
+        guard let superview = collectionView.amberSuperview else { return }
         var hit = collectionView.hitTest(collectionView.convert(point, to: superview))
         var target: (any CatalogHoverTarget)?
         while let view = hit, view !== collectionView {
             if let card = view as? any CatalogHoverTarget { target = card; break }
-            hit = view.superview
+            hit = view.amberSuperview
         }
         setHoveredCard(target)
     }
@@ -1541,7 +1541,7 @@ private final class CatalogShelfCollectionView: NSCollectionView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let pointInSelf = convert(point, from: superview)
+        let pointInSelf = convert(point, from: amberSuperview)
         if let leftArrow, !leftArrow.isHidden, leftArrow.alphaValue > 0.05,
            leftArrow.frame.contains(pointInSelf) {
             return leftArrow
@@ -1940,8 +1940,10 @@ private final class CatalogShelfArrowButton: NSView {
     override func layout() {
         super.layout()
         let radius = min(bounds.width, bounds.height) / 2
-        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: radius,
-                                   cornerHeight: radius, transform: nil)
+        // `transform` 是 `UnsafePointer<CGAffineTransform>?`，传 nil 也照样把整条声明
+        // 算成不安全（同 `CatalogCardItems` 那颗圆形阴影）。nil 不指向任何东西，就地标。
+        layer?.shadowPath = unsafe CGPath(roundedRect: bounds, cornerWidth: radius,
+                                          cornerHeight: radius, transform: nil)
         border.layer?.cornerRadius = radius
         // 材质层用 maskImage 剪成胶囊（`NSVisualEffectView` 的正经做法，不是给它的 layer 打圆角）。
         material.maskImage = Self.capsuleMask(radius: radius)

@@ -79,7 +79,10 @@ final class SidebarViewController: NSViewController {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar"))
         column.resizingMask = .autoresizingMask
         outline.addTableColumn(column)
-        outline.outlineTableColumn = column
+        // `outlineTableColumn` 是 ObjC 的 assign 属性，导进 Swift 是 `unowned(unsafe)`。
+        // 全仓只此一处，按判据不做外壳：列由上一行的 `addTableColumn` 交给 outline 持有，
+        // 指针跟着 outline 一起活。
+        unsafe outline.outlineTableColumn = column
 
         scrollView.documentView = outline
         scrollView.hasVerticalScroller = true
@@ -569,7 +572,7 @@ final class SidebarOutlineController: NSObject, NSOutlineViewDataSource, NSOutli
             // 这里照旧返回 true：拖放这一下**已经被接住了**，问句是接住之后的事；
             // 返回值等的是「落点收不收」，不能拿它去等一张 sheet 的答复。
             PlaylistDuplicateAlert.addTracks(tracks, to: playlist, library: appState.library,
-                                             in: outlineView?.window) { [appState] added in
+                                             in: outlineView?.amberWindow) { [appState] added in
                 guard added > 0 else { return }
                 appState.showToast("已加入「\(playlist.name)」")
             }
@@ -626,7 +629,7 @@ final class SidebarOutlineView: NSOutlineView {
     deinit { NotificationCenter.default.removeObserver(self) }
 
     @objc private func windowKeyStateChanged(_ note: Notification) {
-        guard let window, (note.object as? NSWindow) === window else { return }
+        guard let window = amberWindow, (note.object as? NSWindow) === window else { return }
         enumerateAvailableRowViews { rowView, _ in rowView.needsDisplay = true }
     }
 
@@ -687,7 +690,7 @@ final class SidebarRowView: NSTableRowView {
     /// 内容表格时也会变 false，胶囊会跟着变淡，而 Music 的侧栏选中条只随窗口进出前台变化。
     override func drawSelection(in dirtyRect: NSRect) {
         guard isSelected, !isGroupContent else { return }
-        let active = window?.isKeyWindow ?? false
+        let active = amberWindow?.isKeyWindow ?? false
         let fill: NSColor = active ? .amberSidebarSelection : .amberSidebarSelectionInactive
         let path = NSBezierPath(roundedRect: capsuleRect,
                                 xRadius: M.rowCornerRadius, yRadius: M.rowCornerRadius)
@@ -740,7 +743,7 @@ class SidebarItemCellView: NSTableCellView {
         label.usesSingleLineMode = true
         label.cell?.truncatesLastVisibleLine = true
         addSubview(label)
-        textField = label
+        amberTextField = label
     }
 
     @available(*, unavailable)
@@ -846,7 +849,7 @@ final class SidebarGroupCellView: NSTableCellView {
         label.lineBreakMode = .byTruncatingTail
         label.usesSingleLineMode = true
         addSubview(label)
-        textField = label
+        amberTextField = label
     }
 
     @available(*, unavailable)

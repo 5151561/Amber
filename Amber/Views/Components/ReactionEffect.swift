@@ -93,7 +93,7 @@ final class ReactionEffectView: NSView {
         cell.alignmentMode = .center
         cell.truncationMode = .none
         cell.isWrapped = false
-        cell.contentsScale = window?.backingScaleFactor ?? 2
+        cell.contentsScale = amberWindow?.backingScaleFactor ?? 2
         cell.bounds = CGRect(x: 0, y: 0, width: box * 2, height: box)
         cell.anchorPoint = CGPoint(x: 0.5, y: 0.5)
 

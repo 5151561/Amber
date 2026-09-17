@@ -429,7 +429,7 @@ final class PlayQueueCell: NSTableCellView {
         // [实测] §3.8：两个文本都 `setHorizontalContentSizeConstraintActive: false`
         titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         titleField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textField = titleField
+        amberTextField = titleField
 
         secondaryLine.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         secondaryLine.textColor = .secondaryLabelColor
