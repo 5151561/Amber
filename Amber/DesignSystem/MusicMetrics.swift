@@ -203,7 +203,7 @@ enum MusicMetrics {
         /// [AX] `lyrics-panel.json`（1470×923）：歌词组`[1212, 33, 258, 923]`、
         /// 里面的滚动区**同尺寸**，行 `[1231, …, 220, …]`——19pt 落在滚动区**里面**。
         /// 与整窗那档（`NowPlaying.hostedContentInset`）同值，也同样必须走
-        /// `SyncedLyricsView.Overrides.horizontalMargin` 而不是外面的`.padding`：
+        /// `SyncedLyricsViewController.margins`（滚动视图**内部**）而不是外面的`.padding`：
         /// 加在外面的话，行贴着 clip view 左沿时逐行模糊糊出去的那一圈会被剪掉。
         static let lyricsInset: CGFloat = 19
     }
@@ -1759,21 +1759,11 @@ enum MusicMetrics {
 
         // MARK: 背景（`NowPlayingViewModel.Backdrop`）
 
-        /// [PX] 背景不是纯色，也不是「原图大模糊」——Music 那片场压得很平：
-        /// 非内容区亮度中位数 31.5、p95 45.2、最大 54.5，
-        /// RGB 落在 (23,23,22)…(107,83,36) 之间。
-        /// 复刻法：封面降成 12×12 方块均值 → 每块的 HSB 夹进下面这两个区间 →
-        /// 拉伸铺满再模糊。见 `NSImage.amberBackdropField`。
-        static let backdropGrid = 12
-        /// [PX] 亮度 0.09…0.42（= 23/255 … 107/255）
-        static let backdropBrightness: ClosedRange<CGFloat> = 0.09...0.42
-        /// [PX] 最亮处 (107,83,36) 的饱和度
-        static let backdropMaxSaturation: CGFloat = 0.66
-        /// [PX] 最亮处 (107,83,36) 的相对亮度 = 83/255。无彩色方块靠 HSB 亮度夹不住，
-        /// 要再按相对亮度压一次，白底封面才不会把背景洗成浅灰。
-        static let backdropMaxLuminance: CGFloat = 83.0 / 255
-        /// 方块均值拉伸后本身就很软，模糊只是抹掉插值留下的棱
-        static let backdropBlur: CGFloat = 60
+        // 阶段 6 之前这里还有一组 [PX] 色域常量（12×12 方块均值 → 夹进实测 HSB 区间 →
+        // 拉伸铺满再模糊），配 `NSImage.amberBackdropField` 用。整窗背景换成
+        // `MiniPlayerBackdropMetalView`（`TSLBackdropMetalView` 的复刻，数值在
+        // `MusicMetrics.Backdrop`）之后那条路整条没了，常量随之删净——两支背景里
+        // 留下的这一支才是有实测出处的那一支。
 
         /// [实测] §2.1：纱罩浓度与律动速度**都是内容视图宽度的
         /// 分段线性函数**——400pt 以下恒 0.7 / 10.5，800pt 以上恒 0.3 / 1.5。
@@ -1801,11 +1791,6 @@ enum MusicMetrics {
             10.5 - 9 * backdropProgress(contentWidth: contentWidth)
         }
 
-        /// 上面那片色域（`backdropBrightness` 一带）是在整窗尺寸下采的，
-        /// 即 p = 1、纱罩已经是 0.3 的那一档——**采到的像素里已经含这 0.3**。
-        /// 所以视图层只补「比基线更浓的那一部分」；窗宽 ≥ 800 时补 0。
-        static let backdropCalibratedScrim: CGFloat = 0.3
-
         // MARK: 抽屉（歌词 / 待播清单）
 
         /// [实测] §2.2 `MPContentView.setDrawerHeight:`（段）常量 **200**：
@@ -1819,12 +1804,11 @@ enum MusicMetrics {
         /// 动画名 `trackSectionsPlatter.expanded` / `.collapsed`，
         /// 另有专用视图标识 `NowPlayingView.TrackSectionsScrollableContentFade`
         /// （音轨列表滚动内容渐隐）。
-        static let platterPadding: CGFloat = 16
-        static let platterRowSpacing: CGFloat = 8
+        ///
+        /// 这一串里只有圆角还落在 Amber 上：盘里装的已经是 `PlayQueueViewController`
+        /// （inspector 规格 §4：整窗抽屉与主窗侧栏是同一个容器类的两个实例），
+        /// 行距与内边距归 playqueue 规格 §3 那套，不再由本组给。
         static let platterCornerRadius: CGFloat = 16
-        static let platterInnerSpacing: CGFloat = 4
-        /// 滚动内容渐隐带占盘高的比例（`TrackSectionsScrollableContentFade`，比例未回收）[推]
-        static let platterFadeFraction: CGFloat = 0.06
 
         // MARK: 动态封面视差（NowPlayingArtworkMotionReplicatorLayer）
 

@@ -646,7 +646,7 @@ final class LyricsInstrumentalTests: XCTestCase, LyricsKitFixtures {
     /// [PX] Music 实测 delta ≈ 上一句行盒/2 + 行距，撑开量 = 间奏行高 + 行距。
     func testFullWindowInstrumentalPushesFollowingLinesDown() throws {
         let (controller, visual) = makeExpansionFixture(instrumentalAt: 6, lineCount: 12)
-        // 整窗覆盖项：居中版式 + 行距 48（见 SyncedLyricsView.makeSpecs）
+        // 整窗覆盖项：居中版式 + 行距 48（见 InspectorLyricsViewController.makeSpecs）
         controller.specs.lineSpacing = 48
         controller.specs.selectedLinePosition =
             .center(rect: CGRect(x: 0, y: 0, width: 683, height: 700))

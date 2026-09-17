@@ -1254,7 +1254,7 @@ private final class MiniVolumeBar: NSView {
 
 /// 系统输出设备选择器（Music 用的是同一颗）。`AVRoutePickerView` 的固有尺寸比 Music
 /// 的按钮大一圈（实测画到 41.5×38），会把自己撑出给定的盒子、压掉与相邻两键的间距，
-/// 所以把固有尺寸钉成 `trailingButtonSize` 见方——与旧`AirPlayButton.Fixed` 同一手法。
+/// 所以把固有尺寸钉成 `trailingButtonSize` 见方——与那份已删的 SwiftUI 壳同一手法。
 private final class MiniRoutePickerView: AVRoutePickerView {
     override var intrinsicContentSize: NSSize {
         NSSize(width: MusicMetrics.MiniPlayer.trailingButtonSize,

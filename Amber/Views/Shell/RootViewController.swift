@@ -22,7 +22,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
 
     private let appState: AppState
     let splitViewController: MainSplitViewController
-    private let nowPlayingController: NowPlayingHostController
+    private let nowPlayingController: NowPlayingContainerViewController
     private var miniPlayer: NSView?
     private let toast = ToastView()
     private var cancellables = Set<AnyCancellable>()
@@ -31,7 +31,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
     init(appState: AppState) {
         self.appState = appState
         self.splitViewController = MainSplitViewController(appState: appState)
-        self.nowPlayingController = NowPlayingHostController(appState: appState)
+        self.nowPlayingController = NowPlayingContainerViewController(appState: appState)
         super.init(nibName: nil, bundle: nil)
     }
 

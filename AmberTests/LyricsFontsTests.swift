@@ -233,9 +233,10 @@ final class LyricsFontsTests: XCTestCase, LyricsKitFixtures {
 
 /// 设置 › 通用 ›「更大字体」是**歌词与发音同屏时谁更大**，与译文无关。
 ///
-/// 这一组走的是真实宿主路径：`AppSettings.shared` → `SyncedLyricsView`
-/// （`NSHostingView` 里的 representable）→`SyncedLyricsViewController.setLyrics`
-/// → 行视图的内容层，最后读内容层真正拿去排版的那两个字体。
+/// 这一组走的是真实宿主路径：`AppSettings.shared` → `InspectorLyricsViewController`
+/// （歌词那一档的控制器，直接持有 `SyncedLyricsViewController` 当子控制器）
+/// →`SyncedLyricsViewController.setLyrics` → 行视图的内容层，
+/// 最后读内容层真正拿去排版的那两个字体。
 /// 单测 spec 那一层（上面 `LyricsFontsTests` 里那几条）过不了这一关：
 /// 曾经的 bug 正是「spec 自己算对了，但要译文也在屏上才分岔」。
 @MainActor
@@ -275,39 +276,49 @@ final class LargerTextPipelineTests: XCTestCase {
     }
 
     /// 整条路：改 `AppSettings.shared` → 行视图上的发音字号跟着变。
-    /// 侧栏档与整窗档各跑一遍（整窗那档还多一道 `scaleSecondaryFonts`）。
+    /// 侧栏档与整窗（沉浸）档各跑一遍：侧栏恒 `.sidebar`，
+    /// 沉浸档 600 宽落 `.medium`（断点 `[528, 672)`），还多一道`scaleSecondaryFonts`。
     func testSettingReachesLineViews() {
-        for sizeClass in [MusicMetrics.Lyrics.SizeClass.sidebar, .medium] {
+        // 两条副行的显隐是 `UserDefaults` 里那两个键（`LyricsTranslationOptions`），
+        // 出厂都是关的——发音行得先打开才上屏。跑完还回去。
+        let defaults = UserDefaults.standard
+        let keys = [LyricsTranslationOptions.showTranslationKey,
+                    LyricsTranslationOptions.showTransliterationKey]
+        let restoreKeys = keys.map { defaults.object(forKey: $0) }
+        for key in keys { defaults.set(true, forKey: key) }
+        defer {
+            for (key, value) in zip(keys, restoreKeys) {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+
+        for immersion in [false, true] {
             let restore = AppSettings.shared.values.largerText
             defer { AppSettings.shared.values.largerText = restore }
             AppSettings.shared.values.largerText = .pronunciation
 
-            let player = PlayerController()
-            let host = NSHostingView(rootView: SyncedLyricsView(
-                lyrics: [pronunciationOnlyLine()],
-                player: player,
-                showsTranslation: true,
-                showsTransliteration: true,
-                overrides: .init(horizontalMargin: 19, sizeClass: sizeClass)))
-            host.sizingOptions = []
-            host.frame = CGRect(x: 0, y: 0, width: sizeClass == .sidebar ? 260 : 700, height: 600)
-            let window = NSWindow(contentRect: host.frame, styleMask: [.titled],
+            let controller = InspectorLyricsViewController(appState: AppState(),
+                                                           immersion: immersion)
+            let frame = CGRect(x: 0, y: 0, width: immersion ? 600 : 260, height: 600)
+            let window = NSWindow(contentRect: frame, styleMask: [.titled],
                                   backing: .buffered, defer: false)
-            window.contentView = host
+            window.contentViewController = controller
             window.orderFront(nil)
-            host.layoutSubtreeIfNeeded()
+            controller.lines = [pronunciationOnlyLine()]
+            controller.view.layoutSubtreeIfNeeded()
             pump()
 
-            let big = pronunciationSize(in: host)
-            XCTAssertNotNil(big, "\(sizeClass)：没建出逐字内容层")
+            let label = immersion ? "沉浸档" : "侧栏档"
+            let big = pronunciationSize(in: controller.view)
+            XCTAssertNotNil(big, "\(label)：没建出逐字内容层")
 
             AppSettings.shared.values.largerText = .lyrics
             pump()
-            host.layoutSubtreeIfNeeded()
-            let small = pronunciationSize(in: host)
+            controller.view.layoutSubtreeIfNeeded()
+            let small = pronunciationSize(in: controller.view)
             XCTAssertNotNil(small)
             XCTAssertLessThan(small ?? 0, big ?? 0,
-                              "\(sizeClass)：切到「歌词」之后发音没有让档")
+                              "\(label)：切到「歌词」之后发音没有让档")
             window.orderOut(nil)
         }
     }

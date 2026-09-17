@@ -67,9 +67,9 @@ final class AppState: ObservableObject {
     let qqLogin: QQLoginStore
     let neteaseLogin: NeteaseLoginStore
     let providerSettings: ProviderSettingsStore
-    /// 歌词缓存。侧栏歌词（InspectorLyricsView）与整窗歌词（NowPlayingLyrics）共用一份，
-    /// 同一首在两处之间来回切只打一次网络。整窗那条路上拿不到 AppState，
-    /// 所以本体是 `LyricsStore.shared`，这里只是给能拿到 AppState 的视图一个入口。
+    /// 歌词缓存。侧栏与整窗播放器那两台 `InspectorLyricsViewController` 共用一份，
+    /// 同一首在两处之间来回切只打一次网络。本体是进程级的 `LyricsStore.shared`，
+    /// 这里只是给能拿到 AppState 的那一路一个入口。
     let lyricsStore = LyricsStore.shared
     /// 注册表始终是全量：关掉的源仍要能给资料库里的旧内容取流
     private let providers: [ProviderKind: any MusicProvider]

@@ -153,7 +153,7 @@ extension PlayerMoreMenu {
 
     /// [实测] §8.4 `PBPlayerMetadataViewModel.doReportAConcernForLyricsForCurrentlyPlayingItem`
     /// Amber 没有受理端，落成一条提示——位置与归属与 Music 一致。
-    /// 歌词面板自己那份右键菜单（`LyricsOptionsMenu`）走的也是这一句。
+    /// 歌词面板自己那份菜单（[TYPE] `LyricsOptions._buildOptionsMenu`）走的也是这一句。
     @MainActor
     static func reportLyricsConcern(_ appState: AppState) {
         appState.showToast("已记录歌词问题反馈")
