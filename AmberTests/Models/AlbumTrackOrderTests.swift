@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Amber
 
@@ -37,5 +38,69 @@ final class AlbumTrackOrderTests: XCTestCase {
                       makeTrack("有序", disc: 0, number: 4),
                       makeTrack("无序一")].sortedByAlbumOrder()
         XCTAssertEqual(sorted.map(\.title), ["有序", "无序二", "无序一"])
+    }
+}
+
+/// `Array.amberRemove(atOffsets:)` / `amberMove(fromOffsets:toOffset:)` 与 SwiftUI 自带
+/// 那两个的**差分测试**。
+///
+/// 起因：`LibraryStore` 是服务层，为这两个方法 `import SwiftUI` 不合适（打开
+/// `MemberImportVisibility` 之后这条依赖还会明着写在文件头），于是手写了一份。
+/// 手写就得证明它跟原版逐位相同——尤其 `move` 的 `toOffset` 是**原数组**下标，
+/// 摘出再插回时落点要减掉「摘走的元素里有几个排在它前面」，差一位就是静默错序。
+///
+/// 这里不编样例，直接拿 SwiftUI 那份当参照跑随机对拍。
+final class IndexSetEditingParityTests: XCTestCase {
+
+    func testRemoveAtOffsetsMatchesSwiftUI() {
+        for count in 0...12 {
+            for _ in 0..<40 {
+                let base = Array(0..<count)
+                let offsets = IndexSet((0..<count).filter { _ in Bool.random() })
+                var mine = base, theirs = base
+                mine.amberRemove(atOffsets: offsets)
+                theirs.remove(atOffsets: offsets)
+                XCTAssertEqual(mine, theirs, "count=\(count) offsets=\(offsets.map { $0 })")
+            }
+        }
+    }
+
+    func testMoveFromOffsetsMatchesSwiftUI() {
+        for count in 0...12 {
+            let base = Array(0..<count)
+            for destination in 0...count {
+                for _ in 0..<40 {
+                    let offsets = IndexSet((0..<count).filter { _ in Bool.random() })
+                    var mine = base, theirs = base
+                    mine.amberMove(fromOffsets: offsets, toOffset: destination)
+                    theirs.move(fromOffsets: offsets, toOffset: destination)
+                    XCTAssertEqual(mine, theirs,
+                                   "count=\(count) offsets=\(offsets.map { $0 }) dest=\(destination)")
+                }
+            }
+        }
+    }
+
+    /// 几条手算过的边界，免得随机用例恰好都没覆盖到。
+    func testKnownEdgeCases() {
+        var a = ["a", "b", "c", "d", "e"]
+        a.amberMove(fromOffsets: IndexSet(integer: 0), toOffset: 3)
+        XCTAssertEqual(a, ["b", "c", "a", "d", "e"], "往后挪：落点要减掉摘走的那一个")
+
+        var b = ["a", "b", "c", "d", "e"]
+        b.amberMove(fromOffsets: IndexSet(integer: 3), toOffset: 1)
+        XCTAssertEqual(b, ["a", "d", "b", "c", "e"], "往前挪：落点不用减")
+
+        var c = ["a", "b", "c", "d", "e"]
+        c.amberMove(fromOffsets: IndexSet([0, 1]), toOffset: 4)
+        XCTAssertEqual(c, ["c", "d", "a", "b", "e"], "不连续的多个一起挪，相对顺序保留")
+
+        var d = ["a", "b", "c"]
+        d.amberRemove(atOffsets: IndexSet([0, 2]))
+        XCTAssertEqual(d, ["b"])
+
+        var e = ["a", "b", "c"]
+        e.amberMove(fromOffsets: IndexSet(), toOffset: 2)
+        XCTAssertEqual(e, ["a", "b", "c"], "空集合是恒等变换")
     }
 }

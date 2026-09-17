@@ -509,7 +509,7 @@ final class LibraryStore: ObservableObject {
     func removeTracks(at offsets: IndexSet, fromPlaylist id: String) {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
-        playlists[index].tracks.remove(atOffsets: offsets)
+        playlists[index].tracks.amberRemove(atOffsets: offsets)
         let updated = playlists[index]
         persist("列表删歌") { try self.persistPlaylistTracks(updated, in: $0) }
         notify(.playlists)
@@ -518,7 +518,7 @@ final class LibraryStore: ObservableObject {
     func moveTracks(fromOffsets offsets: IndexSet, toOffset destination: Int, inPlaylist id: String) {
         guard let index = playlists.firstIndex(where: { $0.id == id }),
               playlists[index].isEditable else { return }
-        playlists[index].tracks.move(fromOffsets: offsets, toOffset: destination)
+        playlists[index].tracks.amberMove(fromOffsets: offsets, toOffset: destination)
         // 重排没有增量写法——一次任意置换的最小描述就是新顺序本身，见 §position。
         // 重写的范围是**这一份列表**，不是整张 `playlist_track`。
         let updated = playlists[index]

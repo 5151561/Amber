@@ -86,6 +86,34 @@ extension Track {
     }
 }
 
+/// `IndexSet` 版的删除与重排。
+///
+/// SwiftUI 给 `RangeReplaceableCollection` / `MutableCollection` 带了同名的
+/// `remove(atOffsets:)` / `move(fromOffsets:toOffset:)`，但那要 `import SwiftUI`——
+/// 服务层（`LibraryStore`）为两个数组方法把整个界面框架拉进来不合适，何况
+/// `MemberImportVisibility` 打开之后这条依赖会明着写在文件头上。
+///
+/// 语义与 SwiftUI 那份**逐位相同**，由 `AlbumTrackOrderTests` 里的差分测试钉住：
+/// 两份实现跑同一批随机用例，结果必须一致。
+extension Array {
+    /// 删掉这些下标上的元素。下标按**原数组**计。
+    mutating func amberRemove(atOffsets offsets: IndexSet) {
+        guard !offsets.isEmpty else { return }
+        self = enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
+    }
+
+    /// 把这些下标上的元素整体挪到 `destination` **之前**。
+    ///
+    /// 坑在 `destination` 是**原数组**的下标：先摘出来再插回去时，落点要减掉
+    /// 「摘走的元素里有几个排在它前面」，否则往后挪时会差这么多位。
+    mutating func amberMove(fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard !source.isEmpty else { return }
+        let moved = source.map { self[$0] }
+        for index in source.reversed() { remove(at: index) }
+        insert(contentsOf: moved, at: destination - source.count(in: 0 ..< destination))
+    }
+}
+
 extension Array where Element == Track {
     /// 排成原专辑的曲序：先碟号后碟内音轨号。**稳定**：音源没给序号的保持原有先后，
     /// 并排在有序号的之后——不去按标题猜顺序（那是资料库里本地文件的活，见

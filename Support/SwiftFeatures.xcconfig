@@ -34,3 +34,11 @@ SWIFT_UPCOMING_FEATURE_INTERNAL_IMPORTS_BY_DEFAULT = YES
 // 这一个**没有对应的 Xcode build setting**（Xcode 27 的 Swift.xcspec 里查无此项），
 // 只能走 OTHER_SWIFT_FLAGS。$(inherited) 必须写：后面再叠 flag 时不写就会覆盖掉前一个。
 OTHER_SWIFT_FLAGS = $(inherited) -enable-upcoming-feature ImmutableWeakCaptures
+
+// MemberImportVisibility（SE-0444）：用到某个模块的成员就必须自己 import 它，
+// 不能靠别的文件/模块「顺带」带进来。
+//
+// 直接开是 139 个 error 看着吓人，实际只是 13 个文件各缺一行 import——其中 104 条
+// 报在 <unknown>:0（@Published 的 _enclosingInstance 下标展开，没有文件位置），
+// 另有 10 条 "does not conform to ObservableObject" 是缺 import Combine 的连带错误。
+SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES

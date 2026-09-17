@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 // MARK: - QQ 音乐登录凭证
