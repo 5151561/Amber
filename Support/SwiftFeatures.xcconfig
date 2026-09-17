@@ -46,3 +46,21 @@ SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES
 // ExistentialAny（SE-0335）：协议当类型用必须写 any。67 处，纯机械。
 // 其中 27 处是可选，要写 (any X)? 而不是 any X?——后者是硬错误，不会静默。
 SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY = YES
+
+// MARK: - 内存安全
+//
+// StrictMemorySafety（SE-0458）：用到不安全语言构造或 API 而没有明确承认时报警。
+// 它不是 upcoming feature（语言模式 7 也不会默认开），是**可选**的严格档，
+// 与 `-strict-concurrency=complete` 同性质：编译器帮你把「这里绕过了安全检查」标出来。
+//
+// 开它的代价是 502 条诊断，全部在 2026-09-17 这一轮按三档收掉了：
+// 能改成安全代码的先改（`String(format:)` → `Models.swift` 的「数字成串」三件套、
+// QRC 的手写 inflate → `NSData.decompressed`）；无安全替代但反复出现的收进
+// `Amber/Safety/AppKitSafeAccess.swift` 的 `@safe` 外壳（AppKit 的 `unowned(unsafe)`
+// 反向指针 84 处）；剩下本质不安全的就地 `unsafe` + 契约注释（AudioTap 的实时回调、
+// SQLite 的 C 绑定、CoreAudio / CoreText / Metal 那几族）。
+//
+// 开着它的用处在往后：新写的代码一碰裸指针就会报，而不是等出事才发现。
+// 反向哨兵是 `[#UnnecessaryUnsafe]`——标过头了编译器会指出来，**且这一条在开关关着时
+// 也报**，所以平时的 warning 基线就能兜住「有没有乱套 fix-it」。
+SWIFT_STRICT_MEMORY_SAFETY = YES
