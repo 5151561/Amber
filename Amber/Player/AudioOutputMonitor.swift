@@ -81,8 +81,8 @@ final class AudioOutputMonitor: ObservableObject {
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var listenedDevice: AudioDeviceID = 0
 
-    /// 每次现造一份：`AudioObject*PropertyListenerBlock` 要 `inout`，
-    /// 而 deinit 是 nonisolated，摸不了 `@MainActor` 的静态存储属性。
+    /// 每次现造一份而不是立一个静态常量：`AudioObject*PropertyListenerBlock` 那两个
+    /// 函数要的是 `inout`，静态常量还得先抄进一个 var 才能取地址，不如现造。
     private nonisolated static func defaultDeviceAddress() -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -102,7 +102,10 @@ final class AudioOutputMonitor: ObservableObject {
             AudioObjectID(kAudioObjectSystemObject), &address, .main, block)
     }
 
-    deinit {
+    /// `isolated deinit`：监听块的类型不是 `Sendable`，非隔离的 deinit 摸不了。
+    /// 注销时机不变——监视器由主 actor 上的 `AppState` 持有，最后一次释放本来就在主 actor 上，
+    /// 隔离的 deinit 在那里是就地同步跑的。
+    isolated deinit {
         if let defaultDeviceListener {
             var address = Self.defaultDeviceAddress()
             AudioObjectRemovePropertyListenerBlock(

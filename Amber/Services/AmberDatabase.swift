@@ -62,7 +62,10 @@ final class AmberDatabase {
         try self.init(fileURL: Self.fileURL(in: Self.resolvedDirectory(directory)))
     }
 
-    deinit {
+    /// `isolated deinit`：观察者令牌是 `any NSObjectProtocol`，非隔离的 deinit 摸不了。
+    /// 注销时机不变——四个 store 都在主 actor 上，最后一个放手时本来就在主 actor，
+    /// 隔离的 deinit 在那里是就地同步跑的（测试里那些临时库也一样）。
+    isolated deinit {
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
         }
