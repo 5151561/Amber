@@ -331,20 +331,6 @@ struct RatingStars: View {
     }
 }
 
-/// 音源无损档标记：只表示音源侧提供无损，Amber 自身仍按可播档位取流。
-struct LosslessBadge: View {
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "waveform")
-                .font(.system(size: 11, weight: .medium))
-            Text("无损")
-                .font(.system(size: MusicMetrics.Detail.albumMetaSize))
-        }
-        .foregroundStyle(.secondary)
-        .help("音源提供无损档；Amber 目前播放最高 320k")
-    }
-}
-
 struct AmberTrackBar: View {
     var progress: Double
     var height: CGFloat = 5

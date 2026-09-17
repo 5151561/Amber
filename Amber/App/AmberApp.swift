@@ -610,3 +610,24 @@ extension AppDelegate {
     }
     #endif
 }
+
+// MARK: - 导航意图（响应链的终点）
+
+/// 主窗的响应链够不着的那几处导航意图落在这里。
+///
+/// `NSApplication.targetForAction` 给 `to: nil` 定的顺序是：key 窗的第一响应者及其链
+/// → key 窗 → 它的委托 → `NSApp` → **`NSApp` 的委托** → main 窗的链。所以这一环是
+/// 文档保证的兜底，三类调用点靠它：
+///
+/// 1. **另一扇窗 key 时**（迷你播放器、整窗播放器的 ⋯ 菜单）——主窗的链根本没被走到；
+/// 2. **第一响应者就是窗口自己时**（菜单栏命令）——窗口的下一位是窗口控制器，
+///    不会往 `contentViewController` 的子控制器里下探；
+/// 3. **发的时候还没有第一响应者**（启动参数从 `Task` / `asyncAfter` 里发）。
+///
+/// 它排在 `MainSplitViewController` 那一环之后，所以主窗有焦点时永远轮不到这里。
+extension AppDelegate: NavigationIntentReceiving {
+
+    @objc func amberOpenRoute(_ sender: Any?) {
+        windowController?.splitViewController?.amberOpenRoute(sender)
+    }
+}
