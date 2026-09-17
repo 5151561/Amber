@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - 目录页（主页 / 新发现 / 广播 / 艺人）的 AppKit 页面控制器
@@ -208,6 +207,9 @@ class CatalogPageViewController: ContentPageController {
     private weak var hoveredShelf: NSScrollView?
     private weak var hoveredCard: (any CatalogHoverTarget)?
     private var shelfBoundsObserver: (any NSObjectProtocol)?
+    /// 纵向 clip view 的 bounds 观察者（见 `bind()` 末尾那条）。与上面那条同族，
+    /// 一样是块式令牌、一样在 `isolated deinit` 里摘。
+    private var pageBoundsObserver: (any NSObjectProtocol)?
     private var arrowsShown = false
     /// 离开这一页时记下各货架横滚到哪，回来时恢复（VC 常驻，item 也不重建，
     /// 这一份只是保险：`transition(from:to:)` 会把视图整棵摘下来再挂回去）。
@@ -229,6 +231,9 @@ class CatalogPageViewController: ContentPageController {
     isolated deinit {
         if let shelfBoundsObserver {
             NotificationCenter.default.removeObserver(shelfBoundsObserver)
+        }
+        if let pageBoundsObserver {
+            NotificationCenter.default.removeObserver(pageBoundsObserver)
         }
     }
 
@@ -453,16 +458,26 @@ class CatalogPageViewController: ContentPageController {
         // 纵向滚动时把箭头跟着货架挪、卡片悬浮态跟着鼠标下面那张走、
         // 艺人页的钉住封面按滚动位置淡清晰层。滚轮不产生 mouseMoved，
         // 不跟的话箭头会浮在原地、悬浮态会留在滚走的那张卡上。
+        //
+        // 这一条**不**走 `for await`：clip view 的 bounds 是滚动时每帧发的，悬浮态与钉住
+        // 封面的清晰层要跟当前这一帧的滚动位置对齐；`for await` 每条通知多绕一跳 await，
+        // 就成了「画面已经滚过去、悬浮态慢一帧」。块式观察者是同步回调，时序与
+        // `.sink` 一模一样。写法照本文件下面的 `observeShelf(_:)`（横向货架那条，
+        // 同样每帧）与 `LibraryGridCards` 里同款的悬浮跟随。
+        // 闭包是 `@Sendable`；`queue: .main` 已经把投递线程钉死在主线程，
+        // 所以用 `assumeIsolated` 接回主 actor 隔离的自己。
         scrollView.contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default
-            .publisher(for: NSView.boundsDidChangeNotification, object: scrollView.contentView)
-            .sink { [weak self] in _ = $0
+        pageBoundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.refreshHover()
                 self.pinnedBackdrop?.catalogPageScrollOffsetDidChange(
                     self.scrollView.contentView.bounds.origin.y)
             }
-            .store(in: &cancellables)
+        }
 
         apply(model.state)
         model.reload()

@@ -1,6 +1,5 @@
 import AVKit
 import AppKit
-import Combine
 
 /// 独立的「迷你播放器」窗（Music 的窗口 ▸ 迷你播放器 ⌥⌘M / 切换到迷你播放器 ⇧⌘M）。
 ///
@@ -80,12 +79,12 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
     /// +96 `airPlaySelector`，init 里直接 new。
     private let airPlaySelector = MiniPlayerRoutePickerView()
 
-    private var cancellables = Set<AnyCancellable>()
-
     private let observers = TaskBag()
     /// `NSApplication` 没有公开的`isTerminating`，用`willTerminateNotification` 自己记一位：
     /// spec §6 要求「App 不在退出中」时才把状态归档回 UserDefaults。
     private var appIsTerminating = false
+    /// 上面那条通知的观察者令牌。
+    private var terminationObserver: (any NSObjectProtocol)?
 
     /// 「切回主窗」：内容视图上的封面/展开键点下去时叫，关窗时若这次是切过来的也叫。
     /// 由 `AuxiliaryWindows` 接。
@@ -112,16 +111,36 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
             self?.playerVolumeDidChange(volume)
         }
 
-        NotificationCenter.default
-            .publisher(for: NSApplication.willTerminateNotification)
-            .sink { [weak self] _ in self?.appIsTerminating = true }
-            .store(in: &cancellables)
+        // 这一位**必须同步置上**：`willTerminate` 一发，AppKit 紧接着就关窗、走完退出，
+        // 而读它的 `windowWillClose(_:)` 就在同一趟 runloop 里。换成 `for await` 的话
+        // 置位排到下一次调度，那时归档早写过了——这一位永远是 false，
+        // 等于把 spec §6 那条「退出中不归档」整条废掉。所以走块式观察者：
+        // 同步、时序与 `.sink` 一模一样。`queue: nil` = 在发通知的那条线程上就地跑
+        //（`willTerminate` 本来就在主线程发），与 `AmberDatabase` 里同一条通知同款。
+        //
+        // [编译器实测] 类型化通知这条路要等下一个系统：`NSApplication.WillTerminateMessage`
+        // 在 SDK 里有，但整族 AppKit message 都是 `@available(macOS 27.0, *)`，
+        // 而本仓部署目标是 macOS 26——用它得包一层 `if #available` 外加一条回落分支，
+        // 比现在多两倍机械。
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appIsTerminating = true }
+        }
 
         buildWindow()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 观察者令牌不是 `Sendable`，非隔离的 `deinit` 取不到它。标 `isolated`：
+    /// 主线程上释放时照旧同步跑完，注销时机不变（同 `AmberDatabase`）。
+    isolated deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
+    }
 
     // MARK: - §2 窗口装配
 
@@ -231,7 +250,7 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate, NS
     }
 
     /// spec §2 的两条 KVO（`toolbarDefaultObserver` / `alwaysOnTopObserver`）。
-    /// Amber 的偏好走 `AppSettings`，所以用同语义的 Combine 订阅：两条都要**实时**生效。
+    /// Amber 的偏好走 `AppSettings`，所以用同语义的属性观察：两条都要**实时**生效。
     private func observeDefaults() {
         observers.observe({ AppSettings.shared.values.miniPlayerOnTop }) { [weak self] onTop in
             self?.window?.level = Self.level(onTop: onTop)

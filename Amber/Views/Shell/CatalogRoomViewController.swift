@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 // MARK: - 网格类目录二级页（房间页）—— 计划阶段 5 批 B
@@ -133,7 +132,17 @@ final class CatalogRoomViewController: ContentPageController {
     private static let gridSectionID = "__room-grid__"
     private static let headerIdentifier = NSUserInterfaceItemIdentifier("CatalogRoomHeaderView")
 
-    deinit { loadTask?.cancel() }
+    /// 滚动 clip view 的 bounds 观察者（见 `viewDidLoad`）。
+    private var boundsObserver: (any NSObjectProtocol)?
+
+    /// 观察者令牌不是 `Sendable`，非隔离的 `deinit` 取不到它。标 `isolated`：
+    /// 主线程上释放时照旧同步跑完，注销时机不变（同 `CatalogPageViewController`）。
+    isolated deinit {
+        loadTask?.cancel()
+        if let boundsObserver {
+            NotificationCenter.default.removeObserver(boundsObserver)
+        }
+    }
 
     // MARK: - 视图
 
@@ -196,11 +205,16 @@ final class CatalogRoomViewController: ContentPageController {
         configure(headerPrototype)
 
         // 滚轮滚动不产生 mouseMoved：不跟的话悬浮态会留在滚走的那张卡上。
+        //
+        // 块式观察者而不是 `for await`：bounds 是每帧发的，悬浮态必须与当前这一帧
+        // 对齐，多绕一跳 await 就慢一帧。闭包是 `@Sendable`；`queue: .main` 把投递
+        // 线程钉死在主线程，所以用 `assumeIsolated` 接回主 actor 隔离的自己
+        //（与 `CatalogPageViewController`、`LibraryGridCards` 同一写法）。
         scrollView.contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default
-            .publisher(for: NSView.boundsDidChangeNotification, object: scrollView.contentView)
-            .sink { [weak self] _ in self?.refreshHover() }
-            .store(in: &cancellables)
+        boundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.refreshHover() } }
 
         switch content {
         case .albums(_, let albums):

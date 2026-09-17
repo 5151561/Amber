@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 
 /// 侧栏「播放列表」面板（Music 的 `NativePlayQueueViewController`）。
 ///
@@ -122,8 +121,6 @@ final class PlayQueueViewController: NSViewController {
     private var dataSource: PlayQueueDataSource!
 
     // MARK: 状态
-
-    private var cancellables = Set<AnyCancellable>()
 
     private let observers = TaskBag()
     /// identifier → item，快照重建时一起刷新（cellProvider 与交互都要按 identifier 回查）。
@@ -283,10 +280,17 @@ final class PlayQueueViewController: NSViewController {
         // [实测] §3.11：滚动结束是「5 秒回滚」三个重置点之一。Music 走的是 AMP 滚动视图的
         // `didEndScrollInScrollView:` 回调（`NSScrollView` 没有公开 delegate），
         // 这里用公开的 `didEndLiveScrollNotification` 代替——语义是「用户这一下滑完了」。
-        NotificationCenter.default.publisher(for: NSScrollView.didEndLiveScrollNotification,
-                                             object: scroller)
-            .sink { [weak self] _ in self?.resetScrollBackTimer() }
-            .store(in: &cancellables)
+        //
+        // 这一条走 `for await` 进 `observers`，与上面两条同构：它是**一次滑动一条**的
+        // 低频信号，而且落点是「把 5 秒计时器重新起头」——晚一跳 await 在 5 秒尺度上
+        // 量不出来。同文件另外两条订阅也是这个形状，一起收摊。
+        //（每帧发的 bounds 类通知不能这么换，那几处仍走块式同步观察者。）
+        observers.add(Task { @MainActor [weak self, scroller] in
+            for await _ in NotificationCenter.default.notifications(
+                named: NSScrollView.didEndLiveScrollNotification, object: scroller) {
+                self?.resetScrollBackTimer()
+            }
+        })
 
         reload(animated: false)
         needsToScrollToIdealRow = true
