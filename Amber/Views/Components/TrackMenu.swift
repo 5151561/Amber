@@ -308,15 +308,26 @@ private extension TrackActions {
 
     /// [实测] spec §3.2：`FavoriteItemsAction` 与`UndoFavoriteItemsAction` 判据同一个、
     /// 方向相反，所以两条永远只出现一个。
+    ///
+    /// **整批合成一次撤销**（`withUndoGrouping`）：这两条对整份选中集生效，一下能改
+    /// 几十首，逐首各记一笔的话用户要按几十次 ⌘Z 才回得去。写入口那边一个字不用改。
     var favoriteEntry: MenuSpec.Entry {
         .command(.init("心水", run: isEmpty || allFavorite ? nil : {
-            for track in tracks where !library.isFavorite(track) { library.toggleFavorite(track) }
+            library.withUndoGrouping("心水") {
+                for track in tracks where !library.isFavorite(track) {
+                    library.toggleFavorite(track)
+                }
+            }
         }))
     }
 
     var undoFavoriteEntry: MenuSpec.Entry {
         .command(.init("取消心水", run: !isEmpty && allFavorite ? {
-            for track in tracks where library.isFavorite(track) { library.toggleFavorite(track) }
+            library.withUndoGrouping("取消心水") {
+                for track in tracks where library.isFavorite(track) {
+                    library.toggleFavorite(track)
+                }
+            }
         } : nil))
     }
 
@@ -343,7 +354,12 @@ private extension TrackActions {
         let children: [MenuSpec.Entry] = (0...5).map { value in
             .command(.init(value == 0 ? "无" : String(repeating: "★", count: value),
                            isOn: value == current,
-                           run: { for track in tracks { library.setRating(value, for: track.id) } }))
+                           run: {
+                               // 与心水那两条同解：整份选中集一次改完，撤销也只一步。
+                               library.withUndoGrouping("评分") {
+                                   for track in tracks { library.setRating(value, for: track.id) }
+                               }
+                           }))
         }
         return .submenu(.init("评分"), children)
     }
@@ -397,7 +413,11 @@ private extension TrackActions {
         .command(.init("从资料库中删除", run: !isEmpty && allInLibrary ? { [tracks, appState] in
             let picked = tracks.filter { appState.library.isInLibrary($0) }
             LibraryDeleteAlert.askFileDisposition(tracks: picked, appState: appState) {
-                for track in picked { appState.library.removeFromLibrary(track) }
+                // 多选删除也是一步撤销（撤销能把条目放回来，放不回已经进废纸篓的文件，
+                // 见 `LibraryStore.LibraryRemoval`）。
+                appState.library.withUndoGrouping("从资料库中删除") {
+                    for track in picked { appState.library.removeFromLibrary(track) }
+                }
             }
         } : nil))
     }

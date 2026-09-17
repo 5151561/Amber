@@ -71,6 +71,26 @@ final class PlayQueueModel {
     private var player: PlayerController { appState.player }
     private let observers = TaskBag()
 
+    // MARK: 撤销
+
+    /// 面板宿主给的撤销登记处：面板挂在哪扇窗上就用那扇窗的（见
+    /// `PlayQueueViewController`）。主窗那份由 `MainWindowController` 持有；
+    /// 迷你窗没有委托，于是取回 nil ＝ 一条都不注册，行为与从前逐字相同。
+    @ObservationIgnored var undoManagerProvider: (() -> UndoManager?)?
+    private var undoManager: UndoManager? { undoManagerProvider?() }
+
+    /// 撤销用的动作名（`setActionName` 收动词短语，菜单自己拼成「撤销 + 它」）。
+    private enum UndoName {
+        static let remove = "从待播清单中移除"
+        static let reorder = "重新排序"
+    }
+
+    private func registerUndo(_ actionName: String, _ body: @escaping (PlayQueueModel) -> Void) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self, handler: body)
+        undoManager.setActionName(actionName)
+    }
+
     /// 四个分区。任何一个为空，面板就不 append 那个分区
     /// （[实测] playqueue spec §3.4：四对 `(tag, 数组)` 逐对判空，空的不进快照）。
     private(set) var historyItems: [PlayQueueItem] = []
@@ -102,8 +122,8 @@ final class PlayQueueModel {
         let player = appState.player
 
         // 面板会频繁问这四个数组（每次快照、每次行高、每次选区都要），所以订阅着重算一次存下来，
-        // 不在 getter 里每次现推。`@Published` 是 willSet 语义（订阅到的是**改之前**的值），
-        // 所以统一 `receive(on: DispatchQueue.main)` 推到下一跳再读，与仓库里其它订阅口径一致。
+        // 不在 getter 里每次现推。`observeAny` 在值落定之后才发，循环体就跑在本模型所在的
+        // 主 actor 上，读到的一定是新值——不需要再往下一跳推一手。
         observers.observeAny({ [player] in (player.queue, player.queueOrigins, player.currentIndex) }) {
             [weak self] in self?.recompute()
         }
@@ -135,8 +155,8 @@ final class PlayQueueModel {
         upNextItems = result.upNext
         continuePlayingItems = result.continuePlaying
         autoplayItems = result.autoplay
-        // [实测] §3.3 末：四个数组落定之后才发「数据变了」——`@Published` 是 willSet 语义，
-        // 订阅方直接读 `historyItems` 会读到旧值，所以通知放在赋值之后自己发。
+        // [实测] §3.3 末：四个数组落定之后才发「数据变了」——通知放在四次赋值**之后**，
+        // 订阅方一收到就能读到这一轮的新值。
         dataDidChange.send(())
     }
 
@@ -300,7 +320,53 @@ final class PlayQueueModel {
     /// `removeFromPlayQueueActionWithItems:`；Amber 这边合成一条批量路径）。
     func doDeleteAction(for items: [PlayQueueItem]) {
         guard !items.isEmpty else { return }
-        player.removeFromQueue(at: IndexSet(items.map(\.queueIndex)))
+        removeQueueItems(items.map(entry(for:)).sorted { $0.index < $1.index })
+    }
+
+    /// 撤销「移除」要记的东西：下标、曲目本身、它原来落在哪个分区（`origin`）。
+    private struct QueueEntry {
+        let index: Int
+        let track: Track
+        let origin: PlayerController.QueueOrigin
+    }
+
+    private func entry(for item: PlayQueueItem) -> QueueEntry {
+        let origins = player.queueOrigins
+        return QueueEntry(index: item.queueIndex, track: item.track,
+                          origin: origins.indices.contains(item.queueIndex)
+                              ? origins[item.queueIndex] : .source)
+    }
+
+    /// 移除 + 记一条反向。`entries` 必须按下标升序。
+    ///
+    /// 动手之前先逐条核对「这个下标上现在还是不是那首歌」：这条路既是用户点的删除，
+    /// 也是**重做**走的路，而重做那一刻队列可能已经被别的操作挪过了。
+    /// 对不上就整批放弃——宁可什么都不做，也不能去删别的歌。
+    private func removeQueueItems(_ entries: [QueueEntry]) {
+        guard !entries.isEmpty, matchesQueue(entries) else { return }
+        player.removeFromQueue(at: IndexSet(entries.map(\.index)))
+        // 删光了当前曲之后所有项时播放器会收摊（`currentIndex` 变 nil）。这一档不记撤销：
+        // `insertIntoQueue` 在 `currentIndex == nil` 时会**当场起播**（见 PlayerController），
+        // 一次 ⌘Z 冒出声音不是撤销该干的事。
+        guard player.currentIndex != nil else { return }
+        registerUndo(UndoName.remove) { $0.restoreQueueItems(entries) }
+    }
+
+    /// 撤销「移除」：按原下标**升序**逐条插回去——升序插入时前面那几条已经就位，
+    /// 后面那条的原下标就还是对的。
+    private func restoreQueueItems(_ entries: [QueueEntry]) {
+        guard player.currentIndex != nil else { return }
+        for entry in entries {
+            player.insertIntoQueue([entry.track], at: min(entry.index, player.queue.count),
+                                   origin: entry.origin)
+        }
+        registerUndo(UndoName.remove) { $0.removeQueueItems(entries) }
+    }
+
+    private func matchesQueue(_ entries: [QueueEntry]) -> Bool {
+        let queue = player.queue
+        return entries.allSatisfy { queue.indices.contains($0.index)
+            && queue[$0.index].id == $0.track.id }
     }
 
     /// 「继续播放」分区头那颗「清除」（[实测] §3.6：按钮 enabled 绑
@@ -329,8 +395,37 @@ final class PlayQueueModel {
     /// `target` 为 nil ＝拖到最后（排到队尾）。
     func doReorder(_ items: [PlayQueueItem], before target: PlayQueueItem?) {
         guard !items.isEmpty else { return }
+        let previousOrder = player.queue.map(\.id)
         player.moveInQueue(IndexSet(items.map(\.queueIndex)),
                            to: target?.queueIndex ?? player.queue.count)
+        guard player.queue.map(\.id) != previousOrder else { return }
+        registerUndo(UndoName.reorder) { $0.restoreQueueOrder(previousOrder) }
+    }
+
+    /// 撤销重排：把队列恢复成 `order` 那个次序。
+    ///
+    /// **按目标序列逐格归位，不是「反着再拖一次」**：多选拖动是一次任意置换，
+    /// 反向那一下未必表达得出来（原来那几项本来就可能不相邻）。这里从左往右扫，
+    /// 每一格不对就发一次**单项** `moveInQueue` 把对的那一项调过来——引擎侧那条路
+    /// 是现成的，随机序与当前曲下标都由它一起搬（见 `PlayerController.moveInQueue`）。
+    ///
+    /// 队列的**成员**变过（中间插了歌、删了歌）就整个放弃：那时候「恢复顺序」
+    /// 已经没有确定含义，硬做只会把新加的歌排到莫名其妙的位置上。这正是
+    /// 「撤销一条已经被后续操作改过的记录」那一档，取保守那一侧。
+    private func restoreQueueOrder(_ order: [String]) {
+        var current = player.queue.map(\.id)
+        guard current.sorted() == order.sorted() else { return }
+        let redoOrder = current
+        for slot in order.indices where current[slot] != order[slot] {
+            guard let from = (slot..<current.count).first(where: { current[$0] == order[slot] })
+            else { return }
+            player.moveInQueue(IndexSet(integer: from), to: slot)
+            // 跟着在本地这份序列上做同一次搬运（两句写，别写成一句——
+            // 一句里同时读写 `current` 是重叠访问）。
+            let moved = current.remove(at: from)
+            current.insert(moved, at: slot)
+        }
+        registerUndo(UndoName.reorder) { $0.restoreQueueOrder(redoOrder) }
     }
 
     /// 行内 ••• 与右键共用的同一份菜单（[实测] §3.8 / §3.10：
