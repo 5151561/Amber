@@ -389,14 +389,20 @@ final class PlaylistDetailViewController: TrackTableViewController {
         loadSortPreference()
         // 心水歌曲：心水一首歌这一页当场跟着变。
         if case .favorites = source {
-            observers.observe({ [appState] in appState.library.favoriteTracks }) { [weak self] tracks in
-                self?.showFavorites(tracks)
+            // 这一页是侧栏的缓存根页，切走后一直挂在场上：被收着时心水一首歌不整表重灌，
+            // 等回来再按那一刻的心水列表灌一次（见 `reloadWhenVisible`）。
+            observers.observe({ [appState] in appState.library.favoriteTracks }) { [weak self] _ in
+                self?.reloadWhenVisible { [weak self] in
+                    guard let self else { return }
+                    self.showFavorites(self.appState.library.favoriteTracks)
+                }
             }
         }
         // 资料库播放列表：改名 / 加歌 / 删歌 / 整份被删都要跟着变。
         if case .library = source {
+            // 被收着（压在栈里 / 切走）时同样只记一笔，回来再现读资料库补一次。
             observers.observe({ [appState] in appState.library.playlists }) { [weak self] _ in
-                self?.libraryPlaylistsChanged()
+                self?.reloadWhenVisible { [weak self] in self?.libraryPlaylistsChanged() }
             }
         }
         reload()

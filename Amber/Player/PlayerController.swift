@@ -15,6 +15,11 @@ import os
 @Observable
 final class PlaybackClock {
     fileprivate(set) var time: TimeInterval = 0
+
+    /// 同一个值，但**不登记订阅**。给「此刻不该跟着走时」的读取点用——
+    /// 例如 `PlaybackTimeReader` 闸关着时顶上去的冻结读数：要是在 body 里读 `time`，
+    /// 整个 body 就订阅了时钟，闸等于白关。
+    var untrackedTime: TimeInterval { _time }
 }
 
 /// 「从列表播放」的上下文：整份可见行 + 要起播的那一首在其中的下标。
@@ -139,6 +144,8 @@ final class PlayerController {
         get { clock.time }
         set { clock.time = newValue }
     }
+    /// 见 `PlaybackClock.untrackedTime`。
+    var untrackedCurrentTime: TimeInterval { clock.untrackedTime }
     var duration: TimeInterval = 0
     var repeatMode: RepeatMode = .off
     var isShuffled = false

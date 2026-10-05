@@ -57,10 +57,12 @@ enum LyricsDebugFlags {
     }
 }
 
-func lyricsDebugLog(_ message: String) {
+/// `@autoclosure`：调用点有在弹簧滚动里每帧打的（`setScrollOrigin`），不开日志时
+/// 也照样先把插值串拼出来再扔掉——Release 下函数体是空的，拼串那一步却还在调用方。
+func lyricsDebugLog(_ message: @autoclosure () -> String) {
     #if DEBUG
     guard LyricsDebugFlags.enablesLogging else { return }
-    let line = "\(Date()) [Lyrics] \(message)\n"
+    let line = "\(Date()) [Lyrics] \(message())\n"
     if let data = line.data(using: .utf8) {
         if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/lyrics_debug.log")) {
             handle.seekToEndOfFile()

@@ -61,6 +61,10 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
         addChild(nowPlayingController)
         view.addSubview(nowPlayingController.view)
         nowPlayingController.setPresented(appState.showingNowPlaying, animated: false)
+        // 整窗盖在分栏上面而不隐藏它，主窗面板列的歌词不推这一位就在底下照样建行、
+        // 每帧走（与整窗抽屉那份同时满负荷）。展开那一刻就停：滑上来的半秒里底下那份
+        // 停在原处，被盖住之前看不出来。
+        splitViewController.inspectorContainer.isActive = !appState.showingNowPlaying
 
         toast.translatesAutoresizingMaskIntoConstraints = false
         toast.isHidden = true
@@ -77,6 +81,7 @@ final class RootViewController: NSViewController, AboutPanelPresenting {
 
         observers.observe({ [appState] in appState.showingNowPlaying }) { [weak self] presented in
             self?.nowPlayingController.setPresented(presented, animated: true)
+            self?.splitViewController.inspectorContainer.isActive = !presented
         }
 
         // 播放列表命名（改名 / 新建）：侧栏行、网格卡、详情页头、⌘N 都只登记意图，

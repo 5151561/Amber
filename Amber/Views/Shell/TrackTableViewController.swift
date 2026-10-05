@@ -124,6 +124,22 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
     private var emptyView: TrackTableEmptyStateView?
     private var lastLaidOutWidth: CGFloat = 0
 
+    // 隐藏期间攒下的活（形状照资料库四页的 `setNeedsRefresh` / `needsRefreshWhenShown`）。
+    // 导航容器切页只切 `isHidden`、不摘视图（`ContentNavigationController.install`），
+    // 压在栈里的专辑页、歌单页与切走的心水歌曲根页照样收得到每一条资料库 / 播放器变化，
+    // 照样参与拖窗时的每一次布局。看不见就只记一笔，`pageDidAppear()` 同步补。
+    //
+    // 判的一律是本页自己的 `view.isHidden`，不是 `isHiddenOrHasHiddenAncestor`：
+    // 能和 `pageDidAppear()` 一一配对的只有导航容器切的这一位，祖先被藏起来时
+    // 没人回头通知本页，挡了就补不上。
+    /// 隐藏期间可见行该重配没重配（播放态 / 心水 / 入库 / 评分）。
+    private var needsRowRefreshWhenShown = false
+    /// 隐藏期间子类该整份重灌没重灌的那一笔。只留最后一次：每一次都是「按此刻资料库
+    /// 重算」，前面几次被后一次完全覆盖。
+    private var deferredReload: (() -> Void)?
+    /// 本页此刻是不是被导航容器收着。
+    private var isPageHidden: Bool { viewIfLoaded?.isHidden == true }
+
     // 三态覆盖层（照 `CatalogPageViewController`：spinner / 图标 + 文案 + 重试）
     private let overlay = TrackTableOverlayView()
     private let spinner = NSProgressIndicator()
@@ -203,6 +219,14 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        // 拖窗时栈里每一页都会走到这里；隐藏的页列宽与变高行都等 `pageDidAppear()`
+        // 一次补齐（那时读到的已经是最终宽度——隐藏的视图照样参与布局）。
+        guard !isPageHidden else { return }
+        syncTableWidth()
+    }
+
+    /// 列宽跟表宽、变高行跟宽度重问。`viewDidLayout` 与 `pageDidAppear` 共用。
+    private func syncTableWidth() {
         let width = tableView.bounds.width
         guard width > 0 else { return }
         // 单列表：列宽跟着表宽走（否则格子视图只有 minWidth 那么宽）。
@@ -211,6 +235,30 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
         lastLaidOutWidth = width
         // 变高的那几行（头部按宽度判横竖排、页脚按宽度折行）重问一次高度。
         noteVariableRowHeights()
+    }
+
+    /// 回到台上：隐藏期间攒下的宽度变化、整份重灌、可见行重配，按这个顺序同步补完。
+    /// 都在本轮里做掉，真正的重排落在本轮布局阶段、先于这一帧上屏，所以回来那一帧
+    /// 就是对的（push / pop 那条还有淡入垫着，换根那条不动画，靠的就是这一点）。
+    override func pageDidAppear() {
+        super.pageDidAppear()
+        syncTableWidth()
+        if let reload = deferredReload {
+            deferredReload = nil
+            reload()
+        }
+        if needsRowRefreshWhenShown {
+            needsRowRefreshWhenShown = false
+            refreshVisibleRows()
+        }
+    }
+
+    /// 子类的整份重灌（会落到 `rebuildRows` → `reloadData()` 的那种）走这一句：
+    /// 看得见就当场做，被收着就留到 `pageDidAppear()`。`reload` 要在执行时**现读**
+    /// 资料库，别捕获触发那一刻的值——留到回来才跑，中间可能又变过好几次。
+    func reloadWhenVisible(_ reload: @escaping () -> Void) {
+        guard isPageHidden else { reload(); return }
+        deferredReload = reload
     }
 
     // MARK: - 数据
@@ -604,6 +652,12 @@ class TrackTableViewController: ContentPageController, NSTableViewDataSource, NS
     /// 一圈已装配好的行，滚回来时**不会**再问一次`rowViewForRow`，漏掉它们就会看到
     /// 旧状态滚进视野（专辑页入库换形态那一路尤其明显——那一整列星级就是这么补上的）。
     func refreshVisibleRows() {
+        // 被收着就只记一笔（见 `needsRowRefreshWhenShown`）：每跳一首歌、每按一次播放/暂停
+        // 都会走到这里，栈里压着几页就重配几页看不见的行。
+        guard !isPageHidden else {
+            needsRowRefreshWhenShown = true
+            return
+        }
         headerView?.refreshLibraryState()
         tableView.enumerateAvailableRowViews { rowView, row in
             guard row >= 0, row < rows.count, case .track(let index) = rows[row],

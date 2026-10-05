@@ -256,6 +256,14 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
     /// 每次投递自增。烘好的画布拿着投递时的号回来，对不上就是过期画布，丢掉——
     /// 实时拖窗时后发的先回来是常态，不校验就会贴上一档尺寸的画布。
     private var canvasToken: UInt64 = 0
+    /// 正在后台烘的那一趟。留住句柄是为了**新一档来时把旧的取消**：号（`canvasToken`）
+    /// 只管「回来了贴不贴」，挡不住旧那趟把高斯模糊算完——实时拖窗时每一档宽度都会
+    /// 整页糊一遍，算出来全扔。取消后 `bake` 在两次渲染之间看 `Task.isCancelled` 提前收工。
+    private var bakeTask: Task<Void, Never>?
+    /// 被 `isHidden` 收着（艺人页压在栈里、或切走了）期间该烘没烘的那一笔，
+    /// 等 `viewDidUnhide()` 补。导航容器只切 `isHidden` 不摘视图，隐藏的页照样参与布局，
+    /// 不挡的话拖窗时栈里每一张艺人页都在后台按每一档宽度烘一遍。
+    private var needsBakeWhenShown = false
     /// `CIContext` 是 `NS_SWIFT_SENDABLE` 的（头文件里就这么标的），建一次交给后台那一路复用。
     /// `cacheIntermediates: false`：这些中间结果只用一次，留着白占显存。
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
@@ -312,6 +320,8 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
         // 换人时把号推过去：上一位的画布可能还在后台烘，回来时不作废就会贴到这一位身上。
         pendingCanvas = nil
         canvasToken &+= 1
+        bakeTask?.cancel()
+        bakeTask = nil
         guard let request else { return }
         if let cached = ImageCache.shared.memoryCachedImage(for: request) {
             install(image: cached)
@@ -400,11 +410,18 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
         }
         if isSameCanvas(pendingCanvas) { return }
         if isSameCanvas(canvasFor), blurLayer.contents != nil { return }
+        // 看不见就不起新的，记一笔等露出来再烘（见 `needsBakeWhenShown`）。在飞的那趟
+        // 不动：它烘的是隐藏之前那一档，回来时多半正好用得上。
+        if isHiddenOrHasHiddenAncestor {
+            needsBakeWhenShown = true
+            return
+        }
         pendingCanvas = canvas
         canvasToken &+= 1
         let token = canvasToken
         let context = ciContext
-        Task { [weak self] in
+        bakeTask?.cancel()
+        bakeTask = Task { [weak self] in
             let baked = await Self.bake(source: sharpImage, width: width, height: height,
                                         heroHeight: heroHeight, context: context)
             // 号对不上＝这趟的输入已经过时（拖窗时后发的先回来是常态），画布丢掉，
@@ -417,7 +434,19 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
             CATransaction.commit()
             self.canvasFor = canvas
             self.pendingCanvas = nil
+            self.bakeTask = nil
         }
+    }
+
+    /// 露出来了（自己或祖先的 `isHidden` 翻回 false 都会调）：隐藏期间挡下的那次烘
+    /// 在这里补。只标 `needsLayout`，真正投递仍走 `layout()` → `regenerateBackdropIfNeeded`
+    /// 同一条路，尺寸取露出时那一刻的。烘好之前层上还是旧画布（不清 `contents`），
+    /// 与拖窗途中的表现一样，不会闪空。
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        guard needsBakeWhenShown else { return }
+        needsBakeWhenShown = false
+        needsLayout = true
     }
 
     /// 烘那一趟本身。`@concurrent`：SE-0461 之后非隔离 async 函数默认继承调用方隔离，
@@ -452,7 +481,11 @@ final class ArtistBackdropView: NSView, CatalogPageBackdroping {
         // 清晰画布：hero 带那一段（2x）。
         let heroCrop = CGRect(x: 0, y: (height - heroHeight) * 2,
                               width: width * 2, height: heroHeight * 2)
+        // 被取消（又来了新一档 / 换了人）就别再算了：结果拿回去也对不上号。
+        // 两次渲染各看一眼，最贵的那张糊画布尤其要挡在前面。
+        guard !Task.isCancelled else { return (nil, nil) }
         let sharp = context.createCGImage(composed, from: heroCrop)
+        guard !Task.isCancelled else { return (nil, nil) }
         // 糊画布：整页（1x 像素空间另算一遍映射，反正马上糊掉）。
         var blurred: CGImage?
         if let filter = CIFilter(name: "CIGaussianBlur") {

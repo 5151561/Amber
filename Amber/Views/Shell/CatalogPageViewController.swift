@@ -177,8 +177,9 @@ class CatalogPageViewController: ContentPageController {
     private var layoutSections: [PageLayoutSection] = []
     /// 货架段的翻页参数（按段序号）。
     private var shelfMetrics: [Int: ShelfMetrics] = [:]
-    /// 上一次算过卡宽的内容列宽，用来只在真的换宽时重算（与资料库网格同一条）。
-    private var laidOutWidth: CGFloat = 0
+    /// 上一次让组合布局失效时用的那组几何（文稿宽 + 两列玻璃各糊住的宽），
+    /// 只在真的变了时才重算卡宽、重解布局（与资料库网格同一条）。见 `syncGeometry()`。
+    private var laidOutGeometry: LayoutGeometry?
     private var itemsByID: [CatalogEntryID: CatalogItem] = [:]
     /// 宽度还没落定时挡下来的那一份快照，等 `viewDidLayout` 补灌（见`apply(sections:)`）。
     private var pendingSections: [CatalogSection]?
@@ -323,7 +324,7 @@ class CatalogPageViewController: ContentPageController {
         // 接不住这种变化，而 AppKit 又没有 `safeAreaInsetsDidChange`（那是 UIKit 的）——
         // 这是让「按 safe area 排版的布局」自己醒过来的办法。
         safeAreaProbe.translatesAutoresizingMaskIntoConstraints = false
-        safeAreaProbe.onWidthChange = { [weak self] _ in self?.safeAreaDidChange() }
+        safeAreaProbe.onWidthChange = { [weak self] _ in self?.syncGeometry() }
         container.addSubview(safeAreaProbe)
         NSLayoutConstraint.activate([
             safeAreaProbe.leadingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.leadingAnchor),
@@ -533,6 +534,11 @@ class CatalogPageViewController: ContentPageController {
     /// 切回来：被压住期间攒下的那次台账变动在这里补上。
     override func pageDidAppear() {
         super.pageDidAppear()
+        // 被压住期间宽度 / 可用区变过的话，几何在这里**同步**补一次（见 `syncGeometry()`）：
+        // 隐藏的页照样参与布局，所以此刻读到的宽与 inset 已经是新值；布局失效只是记账，
+        // 真正重解落在本轮的布局阶段，先于这一帧上屏，回来那一帧版式就是对的。
+        // 悬浮态不在这里补：从前切回来也不补（`pageDidDisappear` 清掉后等鼠标再动）。
+        syncGeometry(refreshesHover: false)
         guard needsLocalRefresh else { return }
         needsLocalRefresh = false
         model.refreshLocalSections()
@@ -548,14 +554,48 @@ class CatalogPageViewController: ContentPageController {
 
     private let safeAreaProbe = SafeAreaProbeView()
 
-    /// 可用区变了（开合侧栏／面板、拖分隔线）：卡宽、段内缩、段头位置、翻页箭头、
-    /// 滚动条位置全按可用宽算，得重来一遍。
-    private func safeAreaDidChange() {
+    /// 让组合布局失效的那组输入。段布局吃的是可用宽**和**左缩进（`overlayInsets.left`，
+    /// 见 `makeLayout` 里段的 leading），所以三样都记：只比可用宽的话，侧栏开、面板合
+    /// 恰好抵消那种情形会漏掉一次重排。
+    private struct LayoutGeometry: Equatable {
+        var width: CGFloat
+        var left: CGFloat
+        var right: CGFloat
+    }
+
+    /// 宽度 / 可用区可能变了：卡宽、段内缩、段头位置、翻页箭头、滚动条位置全按可用宽算。
+    ///
+    /// 两条入口都汇到这里：`viewDidLayout`（改窗口宽）与 `safeAreaProbe`（开合侧栏／面板、
+    /// 拖分隔线——本页 view 铺满整窗，这种变化 `viewDidLayout` 接不住）。同一次变化两条
+    /// 常常都会来，从前探针那条不比较、无条件 `invalidateLayout()`，于是一次宽度变化
+    /// 失效两回。现在两条都比 `laidOutGeometry`，**输入真变了才失效**，第二声落空。
+    /// （若第一声来时文稿宽还是旧的、第二声才拿到新宽，两组输入不同，照样各失效一次——
+    /// 那两次都是必要的，与从前一致。）
+    ///
+    /// **隐藏时只记脏**：导航容器切页只切 `isHidden`、不摘视图（`ContentNavigationController
+    /// .install`），逛过的目录页全挂在场上一起参与布局，拖窗时每一页都在重算货架参数、
+    /// 重解组合布局。看不见就什么都不做，`pageDidAppear()` 再补——比较的是「上次失效时
+    /// 的几何」，所以不需要另记脏位，回来时一比就知道。
+    /// 这里判的是本页自己的 `view.isHidden` 而不是 `isHiddenOrHasHiddenAncestor`：
+    /// 能和 `pageDidAppear()` 一一配对的只有导航容器切的这一位；祖先被藏起来时没人会
+    /// 回头通知本页，挡了就再也补不上。
+    ///
+    /// **宽度 0 不失效**：已进窗口、宽度却是 0 时让组合布局求解会无限生成 item
+    /// （见 `apply(sections:)` 的硬闸）。0 宽也没有可排的东西，等宽度到了输入自然不同。
+    private func syncGeometry(refreshesHover: Bool = true) {
+        guard viewIfLoaded?.isHidden == false else { return }
         syncScrollInsets()
-        laidOutWidth = usableWidth
-        rebuildShelfMetrics()
-        collectionView.collectionViewLayout?.invalidateLayout()
-        refreshHover()
+        let overlay = overlayInsets
+        let geometry = LayoutGeometry(width: collectionView.bounds.width,
+                                      left: overlay.left, right: overlay.right)
+        if geometry.width > 0, geometry != laidOutGeometry {
+            laidOutGeometry = geometry
+            rebuildShelfMetrics()
+            // 段布局吃的是可用宽，开合侧栏／面板改的正是它——组合布局自己不知道
+            // safe area 变了，得说一声。
+            collectionView.collectionViewLayout?.invalidateLayout()
+        }
+        if refreshesHover { refreshHover() }
     }
 
     /// 侧栏／面板覆盖在内容之上时，各自糊住的那一段宽度。
@@ -570,21 +610,17 @@ class CatalogPageViewController: ContentPageController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        syncScrollInsets()
+        // 纵向 inset 先抄好再补灌快照（与从前同序）；隐藏时连这个也等 `pageDidAppear()`。
+        if !view.isHidden { syncScrollInsets() }
+        // 挡下的首份快照照旧在这里补灌，不看显隐：它只在宽度从 0 到有的那一下触发一次，
+        // 不是拖窗时每一档都来的那种活。
         if let pending = pendingSections, collectionView.bounds.width > 0 {
             pendingSections = nil
             apply(sections: pending)
         }
         // 内容列宽变了（改窗口宽、开合侧栏或右侧面板）：卡宽跟着换一档，
-        // 翻页胶囊的 pitch 与封面中心也得跟着重算。段布局本身由组合布局自己重求解。
-        if usableWidth != laidOutWidth {
-            laidOutWidth = usableWidth
-            rebuildShelfMetrics()
-            // 段布局吃的是可用宽，开合侧栏／面板改的正是它——组合布局自己不知道
-            // safe area 变了，得说一声。
-            collectionView.collectionViewLayout?.invalidateLayout()
-        }
-        refreshHover()
+        // 翻页胶囊的 pitch 与封面中心也得跟着重算。见 `syncGeometry()`。
+        syncGeometry()
     }
 
     /// 自动调整关掉之后，纵向那两档得自己抄进 `contentInsets`：顶上是标题栏那 52
