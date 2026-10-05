@@ -850,6 +850,11 @@ final class DownloadStore {
     }
 
     /// 给刚落地的新文件写标签。返回「真写进去了」（认不出的容器返回 false，不是错）。
+    ///
+    /// `@concurrent`（与 `retag` 同）：`AudioTagWriter.write` 把整份音频重写一遍，
+    /// 而两个调用方都在主 actor 上——不标的话 SE-0461 让它跟着调用方跑，一首 FLAC
+    /// 就卡主线程几十毫秒。`Task(priority: .background)` 只改优先级、不改隔离，救不了。
+    @concurrent
     nonisolated private static func writeTags(for track: Track, artworkURL: String?,
                                               lyrics: String?, to url: URL) async -> Bool {
         let tags = await makeTags(for: track, artworkURL: artworkURL, lyrics: lyrics)
@@ -999,6 +1004,9 @@ final class DownloadStore {
     /// 先在同目录复制一份备份（同目录才不跨卷，还原就是一次 rename），写完验一眼这份文件
     /// 还能被解码器打开；不通过就整份还原、`tagged` 不置位——留着下次再试，
     /// 也好过把一首本来能播的歌改坏。
+    ///
+    /// `@concurrent` 的理由见 `writeTags`；这条还多一次整份 `copyItem`。
+    @concurrent
     nonisolated private static func retag(_ track: Track, artworkURL: String?,
                                           lyrics: String?, at url: URL) async -> Bool {
         let fm = FileManager.default
