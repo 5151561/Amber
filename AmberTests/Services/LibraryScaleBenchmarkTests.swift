@@ -70,7 +70,8 @@ final class LibraryScaleBenchmarkTests: XCTestCase {
         #else
         let config = "Release"
         #endif
-        print(String(format: "BENCH %@ %@ N=%d %.3f ms %@", config, name, size, ms, note))
+        // 不用 `String(format:)`：C 变参在 strict memory safety 下要标 `unsafe`，为一行打印不值。
+        print("BENCH \(config) \(name) N=\(size) \(ms.formatted(.number.precision(.fractionLength(3)))) ms \(note)")
     }
 
     // MARK: - 合成库
@@ -156,7 +157,7 @@ final class LibraryScaleBenchmarkTests: XCTestCase {
         for size in sizes {
             let (directory, shape) = try seedLibrary(size)
 
-            let loadMs = try best(3) { _ in _ = LibraryStore(directory: directory) }
+            let loadMs = best(3) { _ in _ = LibraryStore(directory: directory) }
             report("load(init)", size, loadMs)
 
             let store = LibraryStore(directory: directory)
@@ -184,6 +185,16 @@ final class LibraryScaleBenchmarkTests: XCTestCase {
                 }
             }
             report("reconcileArtists(全程)", size, reconcileMs)
+            // 增量对账：动到一个名字（触发器记下的那种），只核对它。先全量一次立起「全是 NFC」的前提。
+            try db.transaction { try index.reconcileAllArtists(in: db) }
+            let touchedMs = try best(5) { run in
+                try db.transaction {
+                    try db.run("INSERT OR IGNORE INTO artist_touched (name) VALUES (?)",
+                               ["Artist \(run)"])
+                    try index.reconcileTouchedArtists(in: db)
+                }
+            }
+            report("reconcileTouchedArtists(1 名)", size, touchedMs)
 
             // 单首退库：每次删一首不同的、所在碟不会因此变空的歌（每碟第 1 首）。
             // 从后半段挑：空碟检查对每张碟从头扫到第一首成员，越靠后的碟越贵，后半段是代表值。

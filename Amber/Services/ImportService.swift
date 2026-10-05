@@ -176,7 +176,9 @@ final class ImportService {
                 // 会经 `onTracksRemoved` 让下载索引把「媒体」文件夹里的旧产物清掉
                 // （原地引用的用户文件不动，见 `DownloadStore.remove(ids:)`），
                 // 腾出来的落点正好被下面这一轮重新占上，不会长出个 ` 1` 来。
-                for collision in collisions { library.removeFromLibrary(collision.track) }
+                // 一次调批量版：逐首调是每首一整套快照 / 落库事务 / 对账 / 通知，批量版结果
+                // 与逐首调逐字相同（撤销顺序也是，见 `removeFromLibrary(_: [Track])`）。
+                library.removeFromLibrary(collisions.map(\.track))
             } else {
                 // 「不替换」＝维持从前的行为：这些文件不导，末尾按「已在资料库」报。
                 let declined = Set(collisions.map(\.url))

@@ -79,11 +79,24 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// 一个排版行对应的图层。
     final class Row {
         let base = CALayer()
+        /// 亮字那一半的**容器**。它与遮罩（`gradient`）、整体 opacity 一直都在，
+        /// 每帧照常推进；按需建、按需拆的只是挂在它下面的那些亮字 `CATextLayer`。
         let sung = CALayer()
         let gradient = LineProgressGradientLayer()
-        var syllables: [(base: CATextLayer, sung: CATextLayer)] = []
+        /// 每个音节一对。`sung` 为 nil = 这一行此刻看不见亮字（见 `hasSungLayers`）。
+        var syllables: [(base: CATextLayer, sung: CATextLayer?)] = []
         /// 发音那一层。与正文同 x 起点、同一条遮罩，只是落在正文下面。
-        var ruby: [(base: CATextLayer, sung: CATextLayer)] = []
+        var ruby: [(base: CATextLayer, sung: CATextLayer?)] = []
+        /// 亮字 `CATextLayer` 建着没有。
+        ///
+        /// 为什么按需：非选中行的 `sung.opacity` 是 0，可 opacity 0 的子层照样
+        /// display、背衬照样占着——[实测 2026-09] 一份进程 4258 个 `CATextLayer`、
+        /// CoreAnimation 59 MB，亮字这一半约占音节层的一半。所以只在行被选中或预热时
+        /// 照着 base 现建，淡出**完全落位**之后再拆（`SBS_TextContentLayer+SungLayers.swift`）。
+        var hasSungLayers = false
+        /// 拆层的口令。每次变可见、每次重新起淡出都加一；淡出跑完时口令对不上，
+        /// 说明中途又被选中 / 预热过、或者换了一条新淡出，那次拆层就作废。
+        var sungTeardownToken = 0
         /// 已经上抬过的音节，避免每帧重发弹簧。倒着 seek 会把越过的项清掉。
         var lifted: Set<Int> = []
         /// 已经起过辉光 ramp 的**词**（键是这个词首音节的展平下标），
@@ -152,7 +165,12 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         isSungPrepared = true
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        let sungColor = LyricsSpecs.cgColor(specs.lineProgressionGradientColor, in: appearance)
         for row in rows {
+            // 亮字与 opacity 同一个事务里落：建出来的那一帧就是「opacity 1 + 遮罩当前宽度」，
+            // 不存在先空着再冒出来的一帧。
+            row.sungTeardownToken &+= 1
+            ensureSungLayers(in: row, color: sungColor)
             row.sung.opacity = 1
         }
         transliterationSung.opacity = 1
@@ -223,15 +241,21 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
                 row.glowed.removeAll()
                 CATransaction.commit()
             }
+            // 要亮就先把亮字建出来（已建则什么都不做），再走下面原样的取色与 opacity。
+            // 口令加一：作废还在路上的那次拆层（淡出中途又被选中 / 预热）。
+            if sungOpacity > 0 {
+                row.sungTeardownToken &+= 1
+                ensureSungLayers(in: row, color: sung)
+            }
             for pair in row.syllables {
                 baseColorTargets.append((pair.base, base))
-                pair.sung.foregroundColor = sung
+                pair.sung?.foregroundColor = sung
             }
             // 发音与正文同一套明暗：未唱走 `translationColor`（nil 时就是正文的暗色），
             // 已唱走 `lineProgressionGradientColor`——和整行式那条副行取色一致。
             for pair in row.ruby {
                 rubyColorTargets.append((pair.base, translationCGColor))
-                pair.sung.foregroundColor = sung
+                pair.sung?.foregroundColor = sung
             }
             // 逐字高亮由渐变遮罩（row.gradient）的 sweptWidth 随音频推进，
             // 亮字层的整体 opacity 在选中时必须立即可见（1.0），绝不能套 120ms 的 ease-in 淡入动画——
@@ -241,13 +265,28 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             if animated && !isSelected && !isSungPrepared {
                 let animator = LayerPropertyAnimator(curve: SyncedLyricsLineLayer.focusTransitionCurve)
                 animator.layers = [row.sung]
-                animator.addAnimation(to: row.sung, keyPath: "opacity",
-                                      from: row.sung.presentation()?.opacity ?? row.sung.opacity,
-                                      to: sungOpacity,
-                                      frameRateRange: (min: 0, max: 0))
+                let fade = animator.addAnimation(to: row.sung, keyPath: "opacity",
+                                                 from: row.sung.presentation()?.opacity ?? row.sung.opacity,
+                                                 to: sungOpacity,
+                                                 frameRateRange: (min: 0, max: 0))
+                // 「完全退场」= 这条淡出落位的那一刻，不是 `finishDispatch` 的闭包——
+                // 那个闭包是当场写模型值的，此时淡出才刚开始。`completionHandlers`
+                // 在动画 didStop 后跑；被下一条淡出顶掉时也会 didStop，靠口令作废。
+                if fade != nil {
+                    row.sungTeardownToken &+= 1
+                    let token = row.sungTeardownToken
+                    animator.completionHandlers.append { [weak self, weak row] in
+                        guard let self, let row, row.sungTeardownToken == token,
+                              !self.isSungVisible else { return }
+                        self.discardSungLayers(in: row)
+                    }
+                }
                 animator.finishDispatch { row.sung.opacity = sungOpacity }
+                // 没建出淡出（关着隐式动作被退化成直接赋值，或本来就是 0）：等同瞬时熄灭。
+                if fade == nil { discardSungLayersIfSettled(in: row) }
             } else {
                 row.sung.opacity = sungOpacity
+                if sungOpacity == 0 { discardSungLayersIfSettled(in: row) }
             }
         }
 
@@ -296,6 +335,9 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             transliterationSung.opacity = sungOpacity
         }
     }
+
+    /// 亮字此刻该不该看得见。`applyColors` 的 `sungOpacity` 就是它。
+    var isSungVisible: Bool { isSelected || isSungPrepared }
 
     var baseColor: NSColor {
         if isSelected { return specs.selectedUpcomingTextColor }
@@ -505,7 +547,9 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
                     guard row.lifted.remove(flat) != nil else { continue }
                 }
                 let pair = row.syllables[flat]
-                for layer in [pair.base, pair.sung] {
+                // 亮字没建时只抬 base：之后现建的亮字照抄 base 的模型位置与在飞的那条
+                // 叠加动画（`makeSungTwin`），落点与飘的相位都与这里一致。
+                for layer in [pair.base] + (pair.sung.map { [$0] } ?? []) {
                     emphasize(layer, lift: started ? -lift : lift,
                               scale: scale.map { started ? $0 : 1 },
                               animated: animated)
@@ -588,8 +632,10 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             for pair in row.syllables + row.ruby {
                 Self.cancelBasicAnimations(on: pair.base,
                                            keyPaths: Self.syllableAnimationKeyPaths)
-                Self.cancelBasicAnimations(on: pair.sung,
-                                           keyPaths: Self.syllableAnimationKeyPaths)
+                if let sung = pair.sung {
+                    Self.cancelBasicAnimations(on: sung,
+                                               keyPaths: Self.syllableAnimationKeyPaths)
+                }
             }
         }
         layoutWidth = 0

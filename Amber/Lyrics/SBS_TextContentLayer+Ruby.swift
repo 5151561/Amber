@@ -162,7 +162,7 @@ extension SBS_TextContentLayer {
                         text: syllable.text,
                         frame: CGRect(x: entry.x + syllable.minX, y: 0,
                                       width: syllable.width, height: layout.textHeight),
-                        base: baseColor, sung: sungColor,
+                        base: baseColor,
                         emphasis: word.emphasis, row: row))
                 }
                 layoutLine.words.append(word)
@@ -175,7 +175,7 @@ extension SBS_TextContentLayer {
                     frame: CGRect(x: entry.x, y: layout.rubyTop,
                                   width: block.rubyWidth, height: layout.rubyHeight),
                     font: transliterationFontForMeasuring,
-                    base: rubyColor, sung: sungColor, row: row))
+                    base: rubyColor, row: row))
             }
 
             layoutLine.startTime = layoutLine.words.first?.syllables.first?.startTime
@@ -195,7 +195,8 @@ extension SBS_TextContentLayer {
                     font: specs.font, lineHeight: layout.textHeight, specs: specs))
             row.gradient.frame = CGRect(x: 0, y: 0, width: 0, height: layout.height)
             row.sung.mask = row.gradient
-            row.sung.opacity = (isSelected || isSungPrepared) ? 1 : 0
+            row.sung.opacity = isSungVisible ? 1 : 0
+            if isSungVisible { ensureSungLayers(in: row, color: sungColor) }
 
             rows.append(row)
             layoutLines.append(layoutLine)

@@ -261,7 +261,8 @@ final class LibraryStore {
     @ObservationIgnored private let database: AmberDatabase?  // 注入依赖，跟着公开那份一起变，观察它只会重复发一轮
 
     /// `search_index` 那张表的维护者。曲目 / 专辑 / 歌单的增删改都从下面那十来个
-    /// 落库助手里顺手带它一把，艺人那一档由 `persist` 末尾的对账带（见 `artistIndexDirty`）。
+    /// 落库助手里顺手带它一把，艺人那一档由 `persist` 末尾的对账带
+    ///（见 `LibrarySearchIndex.reconcileTouchedArtists`）。
     @ObservationIgnored private let searchIndex = LibrarySearchIndex()  // 注入依赖，跟着公开那份一起变，观察它只会重复发一轮
 
     /// `directory` 供测试注入临时目录；默认落`~/Library/Application Support/Amber/`。
@@ -1176,8 +1177,8 @@ final class LibraryStore {
         let change = relationMask(of: id)
         persist("改曲目") { db in
             // 改的可能正是艺人名（「显示简介」面板里那一栏），而资料库曲目的艺人名
-            // 是艺人那一档的来源之一。改完之后老艺人可能整个没人引用了，要对一遍账。
-            self.artistIndexDirty = true
+            // 是艺人那一档的来源之一。改完之后老艺人可能整个没人引用了——
+            // `track` 上的触发器会把新旧两个名字记下，`persist` 末尾对账。
             try self.persistTracks([canonical], in: db)
         }
         notify(change)
@@ -1931,7 +1932,6 @@ final class LibraryStore {
     /// `isLoaded` 那道闸见它自己的注释：**读不出来的时候一个字都不许往回写。**
     private func persist(_ label: String, _ body: (SQLiteDatabase) throws -> Void) {
         guard isLoaded, let db = database?.sqlite else { return }
-        artistIndexDirty = false
         do {
             try db.transaction {
                 try body(db)
@@ -1939,12 +1939,16 @@ final class LibraryStore {
                 //（`library_album` / `library_track` 的艺人名）之后对一遍账。
                 // 与那次写在同一个事务里：对账写了一半失败要跟着一起回滚，
                 // 否则表里留下的是「专辑回滚掉了、艺人却留着」这种半边账。
-                if artistIndexDirty {
-                    try searchIndex.reconcileArtists(
-                        LibrarySearchIndex.derivedArtists(in: db), in: db)
-                }
+                //
+                // 只核对这次动到的艺人名（由 SQL 触发器记，见 `LibrarySearchIndex.artistNamesAllNFC`
+                // 上那段）。从前是一位 `artistIndexDirty` 由落库助手举手、举了就全量重算，
+                // 5 万首时一次 25 ms [实测 2026-10-06，Release]；什么都没动到时这里只读一次空表，
+                // 所以那一位连同各处举手一起删了。
+                try searchIndex.reconcileTouchedArtists(in: db)
             }
         } catch {
+            // 回滚了：内存指纹可能与表对不上，下一次艺人对账不走增量。
+            searchIndex.invalidateArtistBaseline()
             // 这一刻起表可能与内存对不上了。读路径里读表的那几条派生查询要知道
             // 这件事，否则界面当场就是错的（见 `mirrorIsStale`）。
             mirrorIsStale = true
@@ -1983,14 +1987,6 @@ final class LibraryStore {
     ///
     /// 于是这一步之后的口径与这一步之前逐字相同：**写库失败只丢持久化，不丢当场的正确性。**
     private(set) var mirrorIsStale = false
-
-    /// 这一次写动没动到艺人那一档的来源（`library_album` / `library_track` 的艺人名）。
-    ///
-    /// 由几个落库助手自己举手（`moveToFront`/`remove` 的 `.library` 那一路、三个专辑助手、
-    /// 改曲目），`persist` 在事务末尾看它决定要不要对账。**不在每一次写之后都对账**：
-    /// 起播记账、播放记账、星级、勾选这些一秒钟能来好几次的路径与艺人毫无关系，
-    /// 让它们每次都去扫两张表算一遍候选，是白花钱。
-    private var artistIndexDirty = false
 
     /// 派生查询走 SQL 那条路的唯一入口：走得通答结果，走不通答 nil。
     ///
@@ -2066,8 +2062,8 @@ final class LibraryStore {
     private func moveToFront(_ tracks: [Track], of relation: TrackRelation,
                              in db: SQLiteDatabase) throws {
         guard !tracks.isEmpty else { return }
-        // 资料库曲目是艺人的第二个来源（第一个是入库专辑），动了它就要对一遍艺人的账。
-        if relation == .library { artistIndexDirty = true }
+        // 资料库曲目是艺人的第二个来源（第一个是入库专辑）：`library_track` 上的触发器
+        // 记下动到的艺人名，`persist` 末尾对账，这里不用举手。
         try persistTracks(tracks, in: db)
         let deleteSQL = "DELETE FROM \(relation.rawValue) WHERE track_id = ?"
         for track in tracks { try db.run(deleteSQL, [track.id]) }
@@ -2078,7 +2074,6 @@ final class LibraryStore {
 
     private func remove(_ ids: some Sequence<String>, from relation: TrackRelation,
                         in db: SQLiteDatabase) throws {
-        if relation == .library { artistIndexDirty = true }
         let sql = "DELETE FROM \(relation.rawValue) WHERE track_id = ?"
         for id in ids { try db.run(sql, [id]) }
         // 索引里那条曲目**不删**：`track` 表故意不做 GC，退库只是把它从 `library_track`
@@ -2116,7 +2111,6 @@ final class LibraryStore {
 
     /// 新入库的一张碟：整表让一格，再插一行。
     private func prependAlbum(_ album: Album, in db: SQLiteDatabase) throws {
-        artistIndexDirty = true
         try db.run("UPDATE library_album SET position = position + 1")
         try db.run("""
             INSERT INTO library_album (id, kind, name, artist_name, artist_id, artwork_url,
@@ -2131,7 +2125,6 @@ final class LibraryStore {
     /// 已经在库里那张：只按内存现值改字段，**position 一格不动**
     ///（用户改过的评分、喜爱都挂在原条目上，位置也是原来的位置）。
     private func updateAlbum(_ album: Album, in db: SQLiteDatabase) throws {
-        artistIndexDirty = true
         try db.run("UPDATE library_album SET \(Self.albumColumns) WHERE id = ?",
                    albumBinds(album) + [album.id])
         try searchIndex.upsert(.album, id: album.id, name: album.name,
@@ -2143,7 +2136,6 @@ final class LibraryStore {
     /// 不写成 `DELETE … WHERE id NOT IN (…)`：那个 IN 列表的长度是资料库里碟的张数。
     /// 先读一遍 id（只有一列、张数级别）再逐条删，删的条数才是真正变了的那几条。
     private func pruneAlbumRows(in db: SQLiteDatabase) throws {
-        artistIndexDirty = true
         let alive = Set(libraryAlbums.map(\.id))
         for id in try db.query("SELECT id FROM library_album", [], { $0.text(0) })
         where !alive.contains(id) {
