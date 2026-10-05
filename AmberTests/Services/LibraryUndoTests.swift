@@ -363,4 +363,92 @@ final class LibraryUndoTests: XCTestCase {
         XCTAssertFalse(store.isInLibrary(track))
         XCTAssertFalse(manager.canUndo)
     }
+
+    // MARK: - 批量退库
+
+    /// 批量退库（`removeFromLibrary(_: [Track])`）与逐首调**逐字同解**：删完、撤销、重做、
+    /// 重开读盘，四个时刻的曲目 / 专辑 / 心水 / 列表都一样，**连撤销之后的数组顺序也一样**。
+    ///
+    /// 场景故意把几条容易走偏的路都铺上：不带 albumId、靠名字归碟的曲目（空碟检查的
+    /// `fallbackKey` 那一路）、一张本来就空的占位碟（第一首删完时就被摘）、
+    /// 两张在这一批的不同位置被删空的碟、给的顺序与库里顺序不一样、重复给的与不在库里的。
+    func testBatchRemoveMatchesRemovingOneByOne() throws {
+        set(playlistSync: true, favoriteSync: true)
+        func album(_ id: String, _ name: String) -> Album {
+            Album(id: id, kind: .qq, name: name, artistName: "某人", artistId: nil,
+                  artworkURL: nil, publishDate: nil, trackCount: 2, description: nil)
+        }
+        func track(_ id: String, album: String, albumId: String?) -> Track {
+            Track(id: id, kind: .qq, title: "歌\(id)", artistName: "某人", artistId: nil,
+                  albumName: album, albumId: albumId, artworkURL: nil, duration: 200)
+        }
+        let a = album("A", "碟A"), b = album("B", "碟B"), c = album("C", "碟C")
+        let empty = album("E", "空碟")
+        let a1 = track("a1", album: "碟A", albumId: "A")
+        let a2 = track("a2", album: "碟A", albumId: nil)  // 靠名字归碟
+        let b1 = track("b1", album: "碟B", albumId: "B")
+        let c1 = track("c1", album: "碟C", albumId: "C")
+        let c2 = track("c2", album: "碟C", albumId: nil)
+        let stray = track("x", album: "", albumId: nil)
+
+        func build(_ directory: URL) -> LibraryStore {
+            let store = LibraryStore(directory: directory)
+            store.addAlbumToLibrary(empty, tracks: [])
+            store.addAlbumToLibrary(a, tracks: [a1])
+            store.addAlbumToLibrary(b, tracks: [b1])
+            store.addAlbumToLibrary(c, tracks: [c1])
+            for extra in [a2, c2, stray] { store.addToLibrary(extra) }
+            let playlist = store.createPlaylist(name: "L")
+            store.addTracks([c1, a2, b1], toPlaylist: playlist.id)
+            store.toggleFavorite(b1)
+            store.toggleFavorite(c2)
+            store.toggleFavorite(a2)
+            return store
+        }
+        // 给的顺序与库里顺序不同；a1 重复给、`ghost` 不在库里。
+        let ghost = track("ghost", album: "碟A", albumId: "A")
+        let picked = [c2, a1, b1, ghost, a2, a1, c1]
+
+        let loopDirectory = directory.appendingPathComponent("loop", isDirectory: true)
+        let batchDirectory = directory.appendingPathComponent("batch", isDirectory: true)
+        let looped = build(loopDirectory)
+        let batched = build(batchDirectory)
+
+        func snapshot(_ store: LibraryStore) -> [[String]] {
+            [store.libraryTracks.map(\.id), store.libraryAlbums.map(\.id),
+             store.favoriteTracks.map(\.id), store.playlists.flatMap { $0.tracks.map(\.id) }]
+        }
+        XCTAssertEqual(snapshot(looped), snapshot(batched))
+
+        let loopManager = UndoManager()
+        loopManager.groupsByEvent = false
+        looped.undoManager = loopManager
+        loopManager.beginUndoGrouping()
+        looped.withUndoGrouping("从资料库中删除") {
+            for track in picked { looped.removeFromLibrary(track) }
+        }
+        loopManager.endUndoGrouping()
+
+        attach(batched)
+        step { batched.withUndoGrouping("从资料库中删除") { batched.removeFromLibrary(picked) } }
+
+        XCTAssertEqual(snapshot(batched), snapshot(looped), "删完")
+        XCTAssertEqual(batched.libraryAlbums.map(\.id), [], "四张碟都该被摘：A/B/C 删空、E 本来就空")
+        XCTAssertEqual(batched.libraryTracks.map(\.id), ["x"])
+
+        loopManager.undo()
+        manager.undo()
+        XCTAssertEqual(snapshot(batched), snapshot(looped), "撤销之后，连数组顺序都一样")
+
+        loopManager.redo()
+        manager.redo()
+        XCTAssertEqual(snapshot(batched), snapshot(looped), "重做")
+
+        loopManager.undo()
+        manager.undo()
+        looped.flushNow()
+        batched.flushNow()
+        XCTAssertEqual(snapshot(LibraryStore(directory: batchDirectory)),
+                       snapshot(LibraryStore(directory: loopDirectory)), "落盘那份也一样")
+    }
 }

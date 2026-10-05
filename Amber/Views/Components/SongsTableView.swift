@@ -500,9 +500,10 @@ final class SongsTableController: NSObject, NSTableViewDataSource, NSTableViewDe
                                    appState: appState) { [weak self, weak table] in
             guard let self else { return }
             // 一次删一批 = 一步撤销（撤销放得回条目、放不回已经进废纸篓的文件，
-            // 见 `LibraryStore.LibraryRemoval`）。
+            // 见 `LibraryStore.LibraryRemoval`）。走批量入口而不是逐首调：逐首调每一首都
+            // 重走一遍落库、艺人对账、下载清单重写与通知（理由与实测见那个入口的注释）。
             self.appState.library.withUndoGrouping("从资料库中删除") {
-                for track in picked { self.appState.library.removeFromLibrary(track) }
+                self.appState.library.removeFromLibrary(picked)
             }
             table?.deselectAll(nil)
         }

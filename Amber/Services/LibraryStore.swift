@@ -310,30 +310,66 @@ final class LibraryStore {
         return true
     }
 
-    func removeFromLibrary(_ track: Track) {
-        guard libraryTrackIDs.remove(track.id) != nil else { return }
+    func removeFromLibrary(_ track: Track) { removeFromLibrary([track]) }
+
+    /// 一次移出一批（多选删除、菜单「从资料库中删除」）。
+    ///
+    /// **为什么要有批量入口，而不是让调用点逐首调单首那个**：单首退库里有三段 O(资料库)
+    /// 的活——撤销快照扫一遍、`removeAll` 扫一遍、空碟检查扫一遍——外加一次落库事务、
+    /// 一次艺人对账、一次 `onTracksRemoved`（下载清单整份重写）、一次 `notify`。逐首调就是
+    /// 每一首都把这一整套重来一遍。[实测 2026-10-06，Debug，`LibraryScaleBenchmarkTests`]
+    /// 1 万首的库逐首删 100 首 83 s（那时空碟检查还是 O(专辑×曲目)，单首就 824 ms）；
+    /// 空碟检查修好之后逐首删仍要 1.2 s，走这里 12 ms（5 万首 6.4 s → 63 ms）。
+    ///
+    /// **结果与逐首调逐字相同**，包括撤销之后的数组顺序：快照里曲目与心水按 `tracks`
+    /// 给的顺序排（逐首撤销是倒着一首首插回最前面，落下来正好是这个顺序），空碟按
+    /// 「第几首删完它就空了」排（同一首删空的几张之间按库里原序）——见 `emptiedOrder`。
+    /// 不在库里的、重复给的那几首原样跳过，与逐首调时单首那道守卫同解。
+    func removeFromLibrary(_ tracks: [Track]) {
+        var seen = Set<String>()
+        let picked = tracks.filter { libraryTrackIDs.contains($0.id) && seen.insert($0.id).inserted }
+        guard !picked.isEmpty else { return }
+        let ids = seen
+        libraryTrackIDs.subtract(ids)
         // 撤销要的那一份：动之前把这一下会动到的内存状态原样记下来（见 `LibraryRemoval`）。
-        var removal = snapshotBeforeRemoval([track.id],
-                                            redo: { $0.removeFromLibrary(track) })
-        libraryTracks.removeAll { $0.id == track.id }
+        var removal = snapshotBeforeRemoval(ids, order: picked.map(\.id),
+                                            redo: { $0.removeFromLibrary(picked) })
+        libraryTracks.removeAll { ids.contains($0.id) }
         // 退库会顺带动到播放列表 / 心水 / 勾选 / 空碟，各自动没动由两个 prune 自己报，
         // 别在这里一律按最坏情况发一整套（那就又退回「一个出口」了）。
         var change: LibraryChange = .tracks
-        let pruned = pruneAfterLibraryRemoval([track.id])
+        let pruned = pruneAfterLibraryRemoval(ids)
         change.formUnion(pruned)
         let emptied = pruneEmptyAlbums()
-        removal.albums = emptied.albums
+        removal.albums = Self.emptiedOrder(emptied.albums, removedInOrder: picked)
         removal.albumAddedAt = emptied.addedAt
         if !emptied.albums.isEmpty { change.insert(.albums) }
-        onTracksRemoved?([track.id])
+        onTracksRemoved?(picked.map(\.id))
         persist("退库") { db in
-            try self.remove([track.id], from: .library, in: db)
-            try self.persistLibraryRemoval([track.id], pruned, in: db)
+            try self.remove(picked.map(\.id), from: .library, in: db)
+            try self.persistLibraryRemoval(ids, pruned, in: db)
             // 空碟清理：`pruneEmptyAlbums` 已经把内存那份摘干净了，表跟着对齐。
             if change.contains(.albums) { try self.pruneAlbumRows(in: db) }
         }
         registerUndo(UndoName.deleteFromLibrary) { $0.restore(removal) }
         notify(change)
+    }
+
+    /// 一批里删空的碟，排成「逐首删时撤销放回来的那个顺序」。
+    ///
+    /// 逐首删的话，第 k 首删完才空的碟记在第 k 次的快照里；撤销倒着一次次放回最前面，
+    /// 落下来是「越早空的越靠前、同一次空的按库里原序」。这里把那个次序算出来：
+    /// 每张碟的序号＝这一批里最后一首属于它的歌的下标；一首都不属于它（本来就是空碟，
+    /// 第一首删完时那次空碟检查顺手摘掉的）记 0。`sorted` 是稳定的，同序号的保持
+    /// `emptied` 原有的库内顺序。只在删空了碟时才走到，代价是「删空的碟 × 这一批」。
+    private static func emptiedOrder(_ emptied: [Album], removedInOrder picked: [Track]) -> [Album] {
+        guard emptied.count > 1 else { return emptied }
+        return emptied
+            .map { album in
+                (album, picked.lastIndex { belongs($0, to: album) } ?? 0)
+            }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
     }
 
     func toggleLibrary(_ track: Track) {
@@ -466,12 +502,20 @@ final class LibraryStore {
     }
 
     /// 退库动手**之前**照一张相。专辑那两格由调用方补（空碟清理要等曲目摘完才算得出来）。
-    private func snapshotBeforeRemoval(_ ids: Set<String>,
+    ///
+    /// `order` 给了的话，快照里的曲目与心水按它排而不是按库里原序（批量退库要与逐首退库
+    /// 撤销出同一个顺序，见 `removeFromLibrary(_:)`）。
+    private func snapshotBeforeRemoval(_ ids: Set<String>, order: [String]? = nil,
                                        redo: @escaping (LibraryStore) -> Void) -> LibraryRemoval {
         var removal = LibraryRemoval(redo: redo)
         removal.tracks = libraryTracks.filter { ids.contains($0.id) }
         for id in ids { removal.addedAt[id] = addedAt[id] }
         removal.favorites = favoriteTracks.filter { ids.contains($0.id) }
+        if let order, order.count > 1 {
+            let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+            removal.tracks.sort { rank[$0.id, default: 0] < rank[$1.id, default: 0] }
+            removal.favorites.sort { rank[$0.id, default: 0] < rank[$1.id, default: 0] }
+        }
         for playlist in playlists
         where playlist.origin == .local && playlist.tracks.contains(where: { ids.contains($0.id) }) {
             removal.playlistTracks[playlist.id] = playlist.tracks
@@ -600,9 +644,7 @@ final class LibraryStore {
     /// 撤销退库要把这几张原样放回去，而「哪几张是这一下摘的」只有这里算得出来。
     /// 空数组 ＝ 一张都没摘，调用方据此决定发不发 `.albums`。
     private func pruneEmptyAlbums() -> (albums: [Album], addedAt: [String: Date]) {
-        let emptyAlbums = libraryAlbums.filter { album in
-            !libraryTracks.contains { Self.belongs($0, to: album) }
-        }
+        let emptyAlbums = albumsWithoutTracks(libraryAlbums)
         guard !emptyAlbums.isEmpty else { return ([], [:]) }
         let emptyIDs = Set(emptyAlbums.map(\.id))
         libraryAlbumIDs.subtract(emptyIDs)
@@ -614,6 +656,39 @@ final class LibraryStore {
         }
         rebuildAlbumIndex()
         return (emptyAlbums, saved)
+    }
+
+    /// `albums` 里哪几张在资料库里一首歌都没有（按 `belongs(_:to:)` 判），保持原序。
+    ///
+    /// **与逐张 `!libraryTracks.contains { belongs($0, to: album) }` 同解，只是不再是
+    /// O(专辑 × 曲目)。** `belongs` 只有两条路：曲目带 `albumId` 就只认 id 相等；不带的才按
+    /// 名字归位（碟名与曲目的专辑名都非空、两边 `fallbackKey` 相等）。于是「这张碟有没有歌」
+    /// ＝「id 在带 id 的曲目那份集合里」或「碟名非空且它的键在不带 id 的那份键集合里」。
+    /// 两份集合各扫一遍曲目就够；第二份只在头一份筛完还剩碟时才算（常态下一张都不剩，
+    /// 一个 `fallbackKey` 都不用现算）。
+    ///
+    /// [实测 2026-10-06，Debug，`LibraryScaleBenchmarkTests`] 合成库（每 12 首一张碟、
+    /// 每 6 首有 1 首不带 albumId）上，旧写法 1 万首 818 ms / 5 万首 20.7 s（Release 446 ms /
+    /// 11.3 s）；退库一首、开库时的孤儿本地碟检查走的都是这一段，那两处从前就是这个量级。
+    /// 换成这里之后退库一首整趟 1 万首 12 ms、5 万首 64 ms（Debug；Release 6.4 / 34 ms，
+    /// 5 万首时剩下的大头是 `persist` 末尾的艺人对账，约 25 ms）。
+    private func albumsWithoutTracks(_ albums: [Album]) -> [Album] {
+        guard !albums.isEmpty else { return [] }
+        var withID = Set<String>()
+        for track in libraryTracks {
+            if let albumId = track.albumId { withID.insert(albumId) }
+        }
+        let remaining = albums.filter { !withID.contains($0.id) }
+        guard remaining.contains(where: { !$0.name.isEmpty }) else { return remaining }
+        var byKey = Set<String>()
+        for track in libraryTracks where track.albumId == nil && !track.albumName.isEmpty {
+            byKey.insert(Self.fallbackKey(for: track))
+        }
+        return remaining.filter { album in
+            album.name.isEmpty
+                || !byKey.contains(Self.fallbackKey(name: album.name, artist: album.artistName,
+                                                    kind: album.kind, isLocal: album.isLocal))
+        }
     }
 
     // MARK: - 播放列表
@@ -1704,9 +1779,10 @@ final class LibraryStore {
         // 库建好之后再加一张空的本地碟、退出、重开，迁移一次都不会再跑，那张幽灵碟
         // 就永远留着了（`LibraryStoreDerivedTests.testOrphanLocalAlbumPrunedOnLoad`
         // 走的正是这条路）。语义一字不改，只是顺手把表里那几行也删掉。
-        let orphanLocalAlbums = libraryAlbums.filter { album in
-            album.isLocal && !libraryTracks.contains { Self.belongs($0, to: album) }
-        }
+        // 判据走 `albumsWithoutTracks`（与逐张 `contains { belongs }` 同解，O(专辑 + 曲目)）：
+        // 旧写法每张本地碟都从头扫一遍曲目，[实测 2026-10-06，Debug] 1 万首的合成库
+        // （三成本地碟）开库 274 ms，几乎全在这一段。
+        let orphanLocalAlbums = albumsWithoutTracks(libraryAlbums.filter(\.isLocal))
         if !orphanLocalAlbums.isEmpty {
             let orphanIDs = Set(orphanLocalAlbums.map(\.id))
             libraryAlbums.removeAll { orphanIDs.contains($0.id) }
