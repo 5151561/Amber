@@ -1018,6 +1018,7 @@ final class DownloadStoreTests: XCTestCase {
         XCTAssertEqual(try localFileRows(in: support).count, 1)
 
         // 只把清单删掉，目录还在（＝那个凭空建出来的空壳）。
+        DownloadStore.flushManifestWrites()
         try FileManager.default.removeItem(at: media.appendingPathComponent("index.json"))
         store.rebuildMediaProjection()
 
@@ -1131,7 +1132,11 @@ final class DownloadStoreTests: XCTestCase {
 
     /// 直接落一份索引 JSON。外部条目存的是绝对路径、文件也不在「媒体」文件夹里，
     /// 上面那个 helper 的「顺手造文件」帮不上忙。
+    ///
+    /// 先等 store 排着的清单写入落盘（清单是异步写的，见 `DownloadStore.saveManifest`），
+    /// 否则那次晚到的写会把这里落的这份盖掉。
     private func writeIndex(_ entries: [String: [String: Any]], in folder: URL? = nil) throws {
+        DownloadStore.flushManifestWrites()
         let data = try JSONSerialization.data(withJSONObject: entries)
         try data.write(to: (folder ?? directory!).appendingPathComponent("index.json"))
     }
@@ -1147,8 +1152,10 @@ final class DownloadStoreTests: XCTestCase {
         return try XCTUnwrap(object as? [String: [String: Any]])
     }
 
+    /// 读之前先等 store 排着的清单写入落盘（理由同 `writeIndex`）。
     private func readIndexData(in folder: URL? = nil) throws -> Data {
-        try Data(contentsOf: (folder ?? directory!).appendingPathComponent("index.json"))
+        DownloadStore.flushManifestWrites()
+        return try Data(contentsOf: (folder ?? directory!).appendingPathComponent("index.json"))
     }
 
     /// `local_file` 的一行，读回来比对用。

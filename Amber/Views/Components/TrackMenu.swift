@@ -415,8 +415,9 @@ private extension TrackActions {
             LibraryDeleteAlert.askFileDisposition(tracks: picked, appState: appState) {
                 // 多选删除也是一步撤销（撤销能把条目放回来，放不回已经进废纸篓的文件，
                 // 见 `LibraryStore.LibraryRemoval`）。
+                // 批量入口，理由同 `SongsTableView.deleteSelection`。
                 appState.library.withUndoGrouping("从资料库中删除") {
-                    for track in picked { appState.library.removeFromLibrary(track) }
+                    appState.library.removeFromLibrary(picked)
                 }
             }
         } : nil))

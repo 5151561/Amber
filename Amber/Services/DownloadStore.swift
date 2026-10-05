@@ -122,7 +122,55 @@ final class DownloadStore {
     /// 正在下载的曲目 id → 任务，用来做并发闸门与取消。
     @ObservationIgnored private var running: [String: Task<Void, Never>] = [:]
     /// 排队等位的曲目，先进先出。
-    @ObservationIgnored private var pending: [Track] = []
+    @ObservationIgnored private var pending = PendingQueue()
+
+    /// 下载队列：先进先出 + 一份 id 集合。
+    ///
+    /// **为什么不是一个裸 `[Track]`**：「始终检查可用的下载」启动时把整库丢进 `download(_:)`
+    ///（`AppState.checkForMissingDownloads`），裸数组上的 `contains(where:)` 去重让这一下是
+    /// O(N²)；出队的 `removeFirst` 每次再搬一遍整个数组；退库摘队（`remove`/`forget`/`trash`）
+    /// 每个 id 又各扫一遍。[实测 2026-10-06，Debug，`LibraryScaleBenchmarkTests`] 整库排队
+    /// 1 万首 5.4 s、5 万首 135 s，全在主线程；换成下面这个之后 5.8 / 33 ms（Release 2.8 / 16 ms）。
+    /// 集合判重是 `LoudnessStore.pendingIDs` 的先例；出队用队头下标，攒够一半才压缩一次。
+    private struct PendingQueue {
+        private var items: [Track] = []
+        private var head = 0
+        private var ids: Set<String> = []
+
+        var isEmpty: Bool { head == items.count }
+
+        func contains(_ id: String) -> Bool { ids.contains(id) }
+
+        mutating func append(_ track: Track) {
+            items.append(track)
+            ids.insert(track.id)
+        }
+
+        mutating func popFirst() -> Track? {
+            guard head < items.count else { return nil }
+            let track = items[head]
+            head += 1
+            ids.remove(track.id)
+            if head == items.count {
+                items.removeAll(keepingCapacity: true)
+                head = 0
+            } else if head >= 1024, head * 2 >= items.count {
+                items.removeFirst(head)
+                head = 0
+            }
+            return track
+        }
+
+        /// 摘掉这几首（不在队里的原样忽略）。与逐个 `removeAll { $0.id == id }` 同解，
+        /// 只是整批一趟；一首都不在队里时连这一趟都不走。
+        mutating func remove(_ removed: some Collection<String>) {
+            guard removed.contains(where: { ids.contains($0) }) else { return }
+            let gone = Set(removed)
+            items = items[head...].filter { !gone.contains($0.id) }
+            head = 0
+            ids.subtract(gone)
+        }
+    }
 
     /// 读库失败与落库失败两条。与 `LibraryStore.log` 同解（都是降级路径，不弹界面）。
     private static let log = AmberDiagnostics.logger("downloads")
@@ -289,6 +337,8 @@ final class DownloadStore {
         // 而回填那条线还在跑的话，它写的行会落在 checkpoint 之后。
         // 与 `LoudnessStore` 停扫描是同一处登记点（全 App 只有 `AmberDatabase` 那一个观察者）。
         database?.addTerminationTask { [weak self] in self?.backfillTask?.cancel() }
+        // 清单是异步写的（见 `saveManifest`），退出前把排着的那次等完。
+        database?.addTerminationTask { Self.flushManifestWrites() }
 
         // 设置窗按「好」才写回 `AppSettings`，所以这条订阅每次改路径只会响一次。
         // `dropFirst` 跳过当前值：上面已经按它开的目录。
@@ -510,7 +560,7 @@ final class DownloadStore {
     func download(_ tracks: [Track]) {
         for track in tracks {
             guard !isDownloaded(track.id), running[track.id] == nil,
-                  !pending.contains(where: { $0.id == track.id })
+                  !pending.contains(track.id)
             else { continue }
             // 先把状态摆成 0 进度：点了菜单要马上有反应，不能等排到它才变样。
             states[track.id] = .downloading(progress: 0)
@@ -541,10 +591,10 @@ final class DownloadStore {
     /// 条目都不在资料库里了，索引里却还记着一条「已下载」，下次同一首歌重新入库时
     /// 会顶着一个指向旧文件的「已下载」状态。
     func forget(ids: [String]) {
+        pending.remove(ids)
         for id in ids {
             running[id]?.cancel()
             running[id] = nil
-            pending.removeAll { $0.id == id }
             index[id] = nil
             states.removeValue(forKey: id)
         }
@@ -558,10 +608,10 @@ final class DownloadStore {
     /// 用户还能反悔捞回来。外部引用的文件照旧一个字节都不碰（只清索引）——
     /// 那是用户自己的文件，删歌不该把人家硬盘上的歌扔进废纸篓。
     func trash(ids: [String]) {
+        pending.remove(ids)
         for id in ids {
             running[id]?.cancel()
             running[id] = nil
-            pending.removeAll { $0.id == id }
             if let entry = index[id], !Self.isExternal(entry.path) {
                 // `resultingItemURL` 在 Swift 里是 `AutoreleasingUnsafeMutablePointer<NSURL?>?`
                 // ——ObjC 的 out 参数导过来就长这样，没有安全替代的重载。我们不要回传的
@@ -578,10 +628,10 @@ final class DownloadStore {
 
     /// 按 id 删（曲目从资料库移出时走这条：那时手里只有 id）。
     func remove(ids: [String]) {
+        pending.remove(ids)
         for id in ids {
             running[id]?.cancel()
             running[id] = nil
-            pending.removeAll { $0.id == id }
             if let entry = index[id] {
                 // 原地引用的本地文件（绝对路径）只清索引：那份文件是用户的，
                 // 「从资料库移除」不该把人家硬盘上的歌删了。
@@ -598,8 +648,7 @@ final class DownloadStore {
 
     /// 把队头补到并发上限。每条任务结束时再叫一次。
     private func pump() {
-        while running.count < Self.maxConcurrent, !pending.isEmpty {
-            let track = pending.removeFirst()
+        while running.count < Self.maxConcurrent, let track = pending.popFirst() {
             running[track.id] = Task { [weak self] in
                 await self?.run(track)
                 guard let self else { return }
@@ -1160,6 +1209,7 @@ final class DownloadStore {
     /// 宁可媒体文件夹与设置不一致，也不能让已下好的歌凭空「消失」。
     private func adoptLegacyIfNeeded(from legacy: URL) {
         let fm = FileManager.default
+        Self.flushManifestWrites()
         guard legacy.standardizedFileURL != directory.standardizedFileURL,
               !fm.fileExists(atPath: indexURL.path),
               fm.fileExists(atPath: legacy.appendingPathComponent("index.json").path)
@@ -1232,6 +1282,7 @@ final class DownloadStore {
             throw error
         }
         let sourceIndex = source.appendingPathComponent("index.json")
+        Self.flushManifestWrites()
         if fm.fileExists(atPath: sourceIndex.path) {
             try? fm.removeItem(at: destination.appendingPathComponent("index.json"))
             try? fm.moveItem(at: sourceIndex, to: destination.appendingPathComponent("index.json"))
@@ -1498,6 +1549,7 @@ final class DownloadStore {
     /// 以及用户手上那份老的——整份就是 `{id: Entry}`。
     /// 老的读进来之后，下一次写就换成新形状（见 `saveManifest`）。
     private static func decodeIndex(at url: URL) -> [String: Entry] {
+        flushManifestWrites()
         guard let data = try? Data(contentsOf: url) else { return [:] }
         let decoder = JSONDecoder()
         if let manifest = try? decoder.decode(Manifest.self, from: data) { return manifest.entries }
@@ -1508,12 +1560,57 @@ final class DownloadStore {
     ///
     /// 一个例外——主库没载入成功时（`isLoaded == false`）external 照旧写进清单。
     /// 那一程主库一个字都不写，清单这份就是唯一的记录，摘掉等于替用户把它们删了。
+    ///
+    /// **编码与写盘不在主线程。** 这里只在主 actor 上拍一份快照（字典是写时复制，O(1)），
+    /// 筛 external、整份编码、原子写全扔给 `manifestQueue`。[实测 2026-10-06，
+    /// `LibraryScaleBenchmarkTests`] 从前这三步在主线程上：清单 1 万条时一次 28.5 ms、
+    /// 5 万条 169 ms，Debug 与 Release 几乎一样（时间全在 Foundation 的编码与写盘里，
+    /// 不是我们自己的代码）；而它每认领一首导入跑两次、每下完一首跑一次、回填每首跑一次，
+    /// 一次就超一帧。
+    ///
+    /// **写出来的内容一个字节都没变**，变的只有「什么时候落到盘上」：
+    ///
+    /// - 串行队列保序；排在后面的写入一到，前面还没轮到的那几次直接作废（按目录记一个
+    ///   代号，轮到时不是最新的就跳过）——它们写的本来就会被后一次整份盖掉。导入一万首
+    ///   那种连写，于是只有赶上的那几次真编码。
+    /// - 读这份文件的地方（`decodeIndex`、搬家、投影重建前那道「清单在不在」、首启搬家）
+    ///   先 `flushManifestWrites()` 等队列排空，看到的永远是最后一次写的结果，与同步写时同解。
+    /// - 退出前排空一次（`init` 里登记的终止任务），不会有一份「改了还没写」的清单留在内存里。
     private func saveManifest() {
-        let entries = isLoaded ? index.filter { !$0.value.isExternal } : index
+        let snapshot = index
+        let includeExternal = !isLoaded
+        let url = indexURL
+        let generation = Self.manifestGenerations.withLock { latest in
+            let next = (latest[url] ?? 0) &+ 1
+            latest[url] = next
+            return next
+        }
+        Self.manifestQueue.async {
+            guard Self.manifestGenerations.withLock({ $0[url] }) == generation else { return }
+            Self.writeManifest(snapshot, includeExternal: includeExternal, to: url)
+        }
+    }
+
+    /// 清单落盘的那条串行队列。**全进程一条**、所有实例共用：测试里同一个目录前后开好几份
+    /// store 是常态，后开的那份读清单前要等的是「谁写的都算」的那一次。
+    nonisolated private static let manifestQueue = DispatchQueue(label: "Amber.DownloadStore.manifest",
+                                                                 qos: .utility)
+
+    /// 每份清单（按文件地址）最新一次写入的代号，`saveManifest` 用它作废排队中的旧写入。
+    nonisolated private static let manifestGenerations = OSAllocatedUnfairLock(
+        initialState: [URL: Int]())
+
+    nonisolated private static func writeManifest(_ index: [String: Entry], includeExternal: Bool,
+                                                  to url: URL) {
+        let entries = includeExternal ? index : index.filter { !$0.value.isExternal }
         let manifest = Manifest(manifestVersion: Manifest.currentVersion, entries: entries)
         guard let data = try? JSONEncoder().encode(manifest) else { return }
-        try? data.write(to: indexURL, options: .atomic)
+        try? data.write(to: url, options: .atomic)
     }
+
+    /// 等排着队的清单写入全部落盘。读 / 搬 / 判 `index.json` 之前调；测试里直接读那份
+    /// 文件之前也要调（文件是异步写的，见 `saveManifest`）。
+    nonisolated static func flushManifestWrites() { manifestQueue.sync {} }
 
     // MARK: - 落库
 
@@ -1523,8 +1620,8 @@ final class DownloadStore {
     /// 单条用例也未必覆盖得到，只在用户重开 App 之后现形（阶段 3 那十来个
     /// `persist` 助手买的是同一件东西）。
     ///
-    /// 清单每次整份重写（它一直就是这么写的，一个小 JSON 文件）；表这边是按键定向写，
-    /// 不整表重灌。
+    /// 清单每次整份重写（它一直就是这么写的；编码与写盘在后台队列，见 `saveManifest`）；
+    /// 表这边是按键定向写，不整表重灌。
     private func save(changed: [String] = [], removed: [String] = []) {
         saveManifest()
         guard !changed.isEmpty || !removed.isEmpty else { return }
@@ -1621,6 +1718,7 @@ final class DownloadStore {
         // 2. **也不能只判目录在不在。** `init` 里那句 `createDirectory` 在盘没插上时会把
         //    `/Volumes/<盘名>/…` 整条路径凭空建在启动盘上——目录「在」，里面空无一物，
         //    照着它重建等于把投影清光。
+        Self.flushManifestWrites()
         guard FileManager.default.fileExists(atPath: indexURL.path),
               let volume = Self.volumeUUID(of: directory) else { return }
         persist("重建投影") { db in
