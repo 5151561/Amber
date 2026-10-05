@@ -289,7 +289,7 @@ private struct MacTimeControlView: View {
     /// 整窗播放器展开着没有。收起期间整块播放器仍在视图树里（故障 16 之后不再靠
     /// `isHidden` 停更新），所以得自己把 10 Hz 的走时闸上——不然没人看的时候
     /// 这三处还在跟着 `PlaybackClock` 跳。闸一关，`PlaybackTimeReader` 换成不订阅的
-    /// 那一支，读数冻在 `player.currentTime` 上；一展开立刻换回活的。
+    /// 那一支，读数冻在 `player.untrackedCurrentTime` 上（不订阅）；一展开立刻换回活的。
     ///
     /// 换支路会重建括号里的子树（`AmberTrackBar` 的悬浮态 `@State` 跟着归零），
     /// 而这件事只发生在收起／展开那一刻——那时鼠标不在上面，看不出来。
@@ -310,7 +310,7 @@ private struct MacTimeControlView: View {
         // 徽标不读进度，必须留在框外：它上面挂着音质气泡，气泡宿主每 100ms
         // 重建一次会闪。
         VStack(spacing: M.scrubberToTime) {
-            PlaybackTimeReader(isActive: isActive, frozenTime: player.currentTime) { time in
+            PlaybackTimeReader(isActive: isActive, frozenTime: player.untrackedCurrentTime) { time in
                 AmberTrackBar(
                     progress: playbackProgress(at: time),
                     height: M.scrubberBarHeight,
@@ -325,26 +325,29 @@ private struct MacTimeControlView: View {
             }
 
             HStack(spacing: 0) {
-                PlaybackTimeReader(isActive: isActive, frozenTime: player.currentTime) { time in
+                PlaybackTimeReader(isActive: isActive, frozenTime: player.untrackedCurrentTime) { time in
                     Text(timecodeText(meta.currentTimecode(at: time), duration: meta.endingTimecode))
                 }
                 Spacer(minLength: 4)
                 badges(meta.badges)
                 Spacer(minLength: 4)
-                Button {
-                    onCycleTimeAccessory()
-                } label: {
-                    PlaybackTimeReader(isActive: isActive, frozenTime: player.currentTime) { time in
+                // 整颗键收进读数器：读数值（value）也要跟着走时，而它挂在键上、不在 label 里。
+                // 从前是在 body 里直接读 `player.currentTime`，等于整个 body 订阅了时钟，
+                // 收起之后 `isActive` 的闸也拦不住这 10 Hz。
+                PlaybackTimeReader(isActive: isActive, frozenTime: player.untrackedCurrentTime) { time in
+                    Button {
+                        onCycleTimeAccessory()
+                    } label: {
                         Text(trailingTimeText(meta, at: time))
+                            .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .help("切换剩余时间／总时长／播完时刻")
+                    // [HIG] 这颗的 label 是时间文本本身（如「-1:23」），听不出可以点；
+                    // 补一个说明名，读数留给 value。
+                    .accessibilityLabel("切换剩余时间／总时长／播完时刻")
+                    .accessibilityValue(Text(trailingTimeText(meta, at: time)))
                 }
-                .buttonStyle(.plain)
-                .help("切换剩余时间／总时长／播完时刻")
-                // [HIG] 这颗的 label 是时间文本本身（如「-1:23」），听不出可以点；
-                // 补一个说明名，读数留给 value。
-                .accessibilityLabel("切换剩余时间／总时长／播完时刻")
-                .accessibilityValue(Text(trailingTimeText(meta, at: player.currentTime)))
             }
             .font(.system(size: M.timeSize).monospacedDigit())
             .foregroundStyle(.white.opacity(M.timeOpacity))

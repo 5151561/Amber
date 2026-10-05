@@ -64,10 +64,10 @@ final class InspectorContainerViewController: NSViewController {
 
     /// 面板是不是**真的在跟随**（[TYPE] `LyricsOptions.isActive`）。
     ///
-    /// 只有整窗播放器那台宿主要推这一位：它是**常驻 + 位移**的（收起时整块挪到窗外
-    /// + alpha 0），既不走 `viewWillDisappear` 也不走`viewDidHide()`，
-    /// 歌词的每帧驱动得靠这一位停。主窗与迷你窗都不用碰——那两处收面板走的是
-    /// 上面两条通路，歌词控制器自己就停了（见 `InspectorLyricsViewController.syncVisibility()`）。
+    /// 两台宿主推这一位：整窗播放器（**常驻 + 位移**，收起时整块挪到窗外 + alpha 0，
+    /// 既不走 `viewWillDisappear` 也不走`viewDidHide()`），以及主窗（整窗展开时
+    /// 被盖在底下、但没被隐藏，由 `RootViewController` 推）。迷你窗不用碰——收面板与
+    /// 关窗各有通路（见 `InspectorLyricsViewController.syncVisibility()`）。
     var isActive: Bool {
         get { lyrics.isActive }
         set { lyrics.isActive = newValue }

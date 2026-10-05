@@ -408,8 +408,14 @@ extension SyncedLyricsViewController {
     /// `position` 上，`bounds` 不参与——所以高度取模型值、中心取呈现层，两者拼出
     /// 上沿。呈现层拿不到（没有动画在跑、或还没上屏）就回落模型值，
     /// 与改这条之前的取值完全一致。
+    ///
+    /// 层上一条动画都没挂时呈现层与模型值必然相等，直接回落、不去问它：
+    /// 播放态每帧全表走一遍，`presentation()` 是 7ca0dd3 那次 sample 里认出的热点
+    /// （`CA::Layer::presentation_layer()` 每次都要现拼一份），而同一时刻真在动的
+    /// 只有翻行弹簧与间奏偏移挂着的那几行。
     private func presentedMinY(of view: SyncedLyricsLineView) -> CGFloat {
-        guard let layer = view.layer, let presented = layer.presentation() else {
+        guard let layer = view.layer, layer.animationKeys() != nil,
+              let presented = layer.presentation() else {
             return view.frame.minY
         }
         return presented.position.y - layer.bounds.height * layer.anchorPoint.y

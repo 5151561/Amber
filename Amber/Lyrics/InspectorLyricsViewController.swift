@@ -100,9 +100,10 @@ final class InspectorLyricsViewController: NSViewController {
     /// 也不走 `viewDidHide()`——只认那两条通路的话，每帧驱动在看不见的时候照样跑。
     /// 所以整窗那台宿主收起时把这一位置 false。
     ///
-    /// 侧栏那档**不接**：容器切到待播盘就把这一片从视图树里摘掉、面板列收起会走
-    /// `viewDidHide()`，两条都已经停住了；再按`isPlaying` 关一道的话，
-    /// 暂停时拖进度条就不会重新落行。
+    /// 主窗那份也接，由 `RootViewController` 按整窗播放器展开与否推：整窗盖在主窗
+    /// 分栏上面、并不隐藏分栏，面板列的歌词在底下照样建行、照样每帧走。
+    /// 迷你窗那份不接——它收面板走 `viewDidHide()`、关窗走遮挡通知。
+    /// 别按 `isPlaying` 关这一位：暂停时拖进度条就不会重新落行。
     var isActive = true {
         didSet {
             guard isActive != oldValue else { return }
@@ -562,9 +563,11 @@ final class InspectorLyricsViewController: NSViewController {
     ///   上面两条都不触发，见 `isActive` 的注释。
     private func syncVisibility() {
         guard isViewLoaded else { return }
-        if isOnScreen {
-            // 看不见那阵子换过歌的话行视图是空的（见 `syncController`），上台前补建。
-            if isActive, content == .lyrics { syncController() }
+        // 看不见那阵子换过歌的话行视图是空的（见 `syncController`），上台前补建。
+        if isShowing, content == .lyrics { syncController() }
+        // 每帧驱动比「建不建行」多看一项遮挡：窗被别的窗整个盖住（音乐软件常年压在
+        // 别的窗底下）时没必要按 120 Hz 走，但行视图留着——露出来那一刻不用重建。
+        if isOnScreen, view.amberWindow?.occlusionState.contains(.visible) == true {
             // `tearDown()` 会把块式滚动观察者摘掉，再次上台得装回来（幂等）。
             lyricsController.installScrollObserversIfNeeded()
             lyricsController.isVisible = true
@@ -583,7 +586,8 @@ final class InspectorLyricsViewController: NSViewController {
     private var isOnScreen: Bool {
         // `viewIfLoaded` 而不是 `view`：空态期间歌词控制器的视图还没建，
         // 读 `view` 会把它顺手建出来。
-        view.amberWindow != nil
+        // `isVisible`：迷你窗关掉之后窗口对象还在、视图也还挂在上面，前两条都拦不住。
+        view.amberWindow?.isVisible == true
             && !view.isHiddenOrHasHiddenAncestor
             && lyricsController.viewIfLoaded?.amberSuperview != nil
     }
@@ -733,8 +737,27 @@ private final class PanelRootView: NSView {
         onVisibilityChanged?()
     }
 
+    /// 窗口关掉（order out）、被整个盖住或露出来都会发这一条；没有它，
+    /// 「窗还在但看不见」那两种状态就没有人通知 `syncVisibility`。
+    private var occlusionObserver: (any NSObjectProtocol)?
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+        occlusionObserver = nil
+        if let window = amberWindow {
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onVisibilityChanged?() }
+            }
+        }
         onVisibilityChanged?()
+    }
+
+    /// 令牌不是 `Sendable`，非隔离的 `deinit` 取不到它（同 `MiniPlayerBackdropMetalView`）。
+    isolated deinit {
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
     }
 }
