@@ -71,12 +71,35 @@ final class ImageCache: @unchecked Sendable {
         return memory.object(forKey: urlString as NSString)
     }
 
+    /// `@concurrent`：调用方几乎全是主 actor 上起的 `Task {}`，而 approachable concurrency
+    /// 下不标的 `nonisolated async` 跟着调用方跑——读盘 + 解码就落在主线程上了
+    /// （本地导入的原图 1500–3000px，一张 5–40 ms）。
+    @concurrent
     func image(for urlString: String?) async -> NSImage? {
         guard let urlString, let url = URL(string: urlString) else { return nil }
         sweepDiskIfNeeded()
 
         if let cached = memory.object(forKey: urlString as NSString) { return cached }
 
+        // 查与插必须在同一次加锁里：分两次的话两个调用方会各自建一份 task，各取一次图。
+        // 本地文件与磁盘命中也走这张表：同一张碟一屏十几行要的是同一个地址，不去重就
+        // 各读各解一遍。
+        let task: Task<NSImage?, Never> = inFlight.withLock { inFlight in
+            if let existing = inFlight[urlString] { return existing }
+            let created = Task<NSImage?, Never> { [weak self] in
+                guard let self else { return nil }
+                defer { self.inFlight.withLock { _ = $0.removeValue(forKey: urlString) } }
+                return await self.load(url, key: urlString)
+            }
+            inFlight[urlString] = created
+            return created
+        }
+        return await task.value
+    }
+
+    /// 真正取一张图：本地文件 → 磁盘缓存 → 网络。只由 `image(for:)` 的在途 task 调。
+    @concurrent
+    private func load(_ url: URL, key urlString: String) async -> NSImage? {
         // 本地导入曲目的封面是 `file://`（内嵌图落在 Application Support/Amber/Artwork）。
         // 这种地址不走网络那条路：URLSession 认 file 协议，但再往磁盘缓存里存一份
         // 只是把同一张图抄了两遍，而且那份抄件会被 30 天的清理误删。
@@ -91,33 +114,21 @@ final class ImageCache: @unchecked Sendable {
             return image
         }
 
-        let fileName = Self.fileName(urlString)
-        let diskURL = diskDirectory.appendingPathComponent(fileName)
+        let diskURL = diskDirectory.appendingPathComponent(Self.fileName(urlString))
         if let data = try? Data(contentsOf: diskURL), let image = Self.decode(data) {
             store(image, for: urlString)
             return image
         }
 
-        // 查与插必须在同一次加锁里：分两次的话两个调用方会各自建一份 task，各下一次图。
-        let task: Task<NSImage?, Never> = inFlight.withLock { inFlight in
-            if let existing = inFlight[urlString] { return existing }
-            let created = Task<NSImage?, Never> { [weak self] in
-                guard let self else { return nil }
-                defer { self.inFlight.withLock { _ = $0.removeValue(forKey: urlString) } }
-                do {
-                    let (data, _) = try await self.session.data(from: url)
-                    guard let image = Self.decode(data) else { return nil }
-                    try? data.write(to: diskURL, options: .atomic)
-                    self.store(image, for: urlString)
-                    return image
-                } catch {
-                    return nil
-                }
-            }
-            inFlight[urlString] = created
-            return created
+        do {
+            let (data, _) = try await session.data(from: url)
+            guard let image = Self.decode(data) else { return nil }
+            try? data.write(to: diskURL, options: .atomic)
+            store(image, for: urlString)
+            return image
+        } catch {
+            return nil
         }
-        return await task.value
     }
 
     /// 清空内存与磁盘上的全部封面（设置 › 高级 › 还原缓存）。

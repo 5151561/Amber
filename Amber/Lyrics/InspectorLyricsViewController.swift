@@ -87,7 +87,8 @@ final class InspectorLyricsViewController: NSViewController {
     /// 上一次下发的渲染档。有戳 ⇄ 无戳来回换歌时靠它判断要不要重建行视图。
     private var appliedRenderingMode: LyricsSpecs.RenderingMode = .synced
     /// 行的身份：条数 + 首尾时间 + 首行文字。够区分换歌，又不必逐行比。
-    private var appliedLyricsIdentity = 0
+    /// nil = 行视图眼下是空的（还没建，或者看不见的时候换了歌、已经拆掉）。
+    private var appliedLyricsIdentity: Int?
 
     private var showsTranslation = LyricsTranslationOptions.showTranslationDefault
     private var showsTransliteration = LyricsTranslationOptions.showTransliterationDefault
@@ -353,6 +354,18 @@ final class InspectorLyricsViewController: NSViewController {
         // 只在真的换了歌词时重建行视图——每次布局都重排的话，
         // 一首歌几十个 `NSView` 加一堆`CATextLayer` 会被反复拆建。
         if appliedLyricsIdentity != identity || fontsChanged || modeChanged {
+            // 看不见就不建。这台容器有三份（主窗面板列、整窗抽屉、迷你窗抽屉），
+            // 从前换一次歌三份都排一遍 CoreText、各建一整棵「每音节两个 CATextLayer」的层树
+            // ——[实测 heap 2026-10-06] 3 个 `SyncedLyricsViewController`、90 个行视图，
+            // 而屏幕上最多只有一份。手里那份已经是上一首的了，留着也没用，顺手拆掉放内存；
+            // 上台时 `syncVisibility` 会回到这里补建。
+            guard isShowing else {
+                if appliedLyricsIdentity != nil {
+                    appliedLyricsIdentity = nil
+                    lyricsController.setLyrics(nil)
+                }
+                return
+            }
             appliedLyricsIdentity = identity
             // `handover` 决定间奏行两头留多宽的进出场余量（见 `LyricsAdapter`），
             // 取的就是这份 specs 的翻行弹簧——和滚动真正跑的那条同源。
@@ -549,12 +562,9 @@ final class InspectorLyricsViewController: NSViewController {
     ///   上面两条都不触发，见 `isActive` 的注释。
     private func syncVisibility() {
         guard isViewLoaded else { return }
-        // `viewIfLoaded` 而不是 `view`：空态期间歌词控制器的视图还没建，
-        // 读 `view` 会把它顺手建出来。
-        let onScreen = view.amberWindow != nil
-            && !view.isHiddenOrHasHiddenAncestor
-            && lyricsController.viewIfLoaded?.amberSuperview != nil
-        if onScreen {
+        if isOnScreen {
+            // 看不见那阵子换过歌的话行视图是空的（见 `syncController`），上台前补建。
+            if isActive, content == .lyrics { syncController() }
             // `tearDown()` 会把块式滚动观察者摘掉，再次上台得装回来（幂等）。
             lyricsController.installScrollObserversIfNeeded()
             lyricsController.isVisible = true
@@ -569,6 +579,18 @@ final class InspectorLyricsViewController: NSViewController {
             lyricsController.tearDown()
         }
     }
+
+    private var isOnScreen: Bool {
+        // `viewIfLoaded` 而不是 `view`：空态期间歌词控制器的视图还没建，
+        // 读 `view` 会把它顺手建出来。
+        view.amberWindow != nil
+            && !view.isHiddenOrHasHiddenAncestor
+            && lyricsController.viewIfLoaded?.amberSuperview != nil
+    }
+
+    /// 有人看得见这一格：在屏上，且宿主说在跟随（整窗收起时不在屏的判据一条都不命中，
+    /// 只能靠 `isActive`）。
+    private var isShowing: Bool { isViewLoaded && isActive && isOnScreen }
 
     // MARK: - 订阅
 

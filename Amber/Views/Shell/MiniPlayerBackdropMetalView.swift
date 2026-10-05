@@ -303,6 +303,7 @@ final class MiniPlayerBackdropMetalView: MTKView {
 
     /// 停了之后还要**再画一帧**，否则上一首的背景会留在屏幕上（MTKView 停下来只是不再
     /// 驱动帧循环，drawable 里的内容还在）——所以转成暂停时补一次 `draw()` 直画。
+    /// 休眠时例外，见 `isDormant`。
     private func updatePausedState() {
         let visible = amberWindow?.isVisible == true
             && amberWindow?.occlusionState.contains(.visible) == true
@@ -310,7 +311,52 @@ final class MiniPlayerBackdropMetalView: MTKView {
         let shouldRun = isActive && isRenderable && visible
             && (sourceTexture != nil || destinationTexture != nil)
         isPaused = !shouldRun
+        if isDormant {
+            shrinkDrawable()
+            return
+        }
+        restoreDrawableIfNeeded()
         if !shouldRun, amberWindow != nil { draw() }
+    }
+
+    // MARK: - 休眠：把整窗大小的绘板还回去
+
+    /// 宿主说不跑（整窗播放器收起），或者窗口压根不在屏上（迷你窗关了）。
+    ///
+    /// 这两种状态下帧还在：整窗那块收起只是位移出窗 + alpha 0，帧仍与窗口一样大，
+    /// `CAMetalLayer` 的绘板池就一直攥着两张整窗像素的 IOSurface——
+    /// [实测 vmmap 2026-10-06] 2940×1800 BGRA × 2 = 41 MB，从启动一直留到退出。
+    /// 每次换歌 `adoptArtwork` 还要照整窗像素把「三层旋转 + 高斯模糊」补画一遍，
+    /// 而这一帧谁也看不见。
+    ///
+    /// 遮挡（`occlusionState`）不算休眠：被盖住的窗随时会露出来，留着绘板换的是
+    /// 露出来那一刻不用重建。
+    private var isDormant: Bool { !isActive || amberWindow?.isVisible != true }
+
+    /// 绘板缩成了 1×1。`draw` 看到它就只清屏不画。
+    private var isShrunk = false
+
+    /// 绘板缩成 1×1 再上屏一帧透明：图层显示着的那张换成 1×1 之后，整窗那两张
+    /// 才没有人引用，绘板池按新尺寸重建、旧的放掉。离屏那两张跟着画布尺寸走，一起放。
+    private func shrinkDrawable() {
+        guard !isShrunk else { return }
+        isShrunk = true
+        autoResizeDrawable = false
+        offscreenTexture = nil
+        blurredTexture = nil
+        offscreenSize = .zero
+        drawableSize = CGSize(width: 1, height: 1)
+        if amberWindow != nil { draw() }
+    }
+
+    /// 醒来时按当前帧把绘板尺寸要回来。`autoResizeDrawable` 只在帧变化时才重算，
+    /// 帧这期间没变，得自己给一次。
+    private func restoreDrawableIfNeeded() {
+        guard isShrunk else { return }
+        isShrunk = false
+        autoResizeDrawable = true
+        let size = convertToBacking(bounds).size
+        if size.width >= 1, size.height >= 1 { drawableSize = size }
     }
 
     // MARK: - 封面进背景（[实测] `setCGImage:`，spec §八）
@@ -467,6 +513,14 @@ final class MiniPlayerBackdropMetalView: MTKView {
               let drawable = currentDrawable,
               let buffer = queue.makeCommandBuffer()
         else { return }
+
+        // 休眠那一帧：只为把整窗大小的绘板从图层上换下来，清成透明就收工，时间也不推进。
+        if isShrunk {
+            buffer.makeRenderCommandEncoder(descriptor: descriptor)?.endEncoding()
+            buffer.present(drawable)
+            buffer.commit()
+            return
+        }
 
         stepFrame()
         ensureOffscreenTextures()
