@@ -270,7 +270,6 @@ extension SBS_TextContentLayer {
                 row.syllables.append(makeSyllableLayers(text: syllable.text,
                                                         frame: absoluteFrame,
                                                         base: baseColor,
-                                                        sung: sungColor,
                                                         emphasis: syllable.emphasis,
                                                         row: row))
             }
@@ -299,7 +298,6 @@ extension SBS_TextContentLayer {
                 row.syllables.append(makeSyllableLayers(text: layoutLine.text,
                                                         frame: frame,
                                                         base: baseColor,
-                                                        sung: sungColor,
                                                         emphasis: .none,
                                                         row: row))
             }
@@ -316,7 +314,8 @@ extension SBS_TextContentLayer {
                                                                      specs: specs))
             row.gradient.frame = CGRect(x: 0, y: 0, width: 0, height: metric.height)
             row.sung.mask = row.gradient
-            row.sung.opacity = (isSelected || isSungPrepared) ? 1 : 0
+            row.sung.opacity = isSungVisible ? 1 : 0
+            if isSungVisible { ensureSungLayers(in: row, color: sungColor) }
 
             rows.append(row)
             layoutLines.append(layoutLine)
@@ -331,23 +330,23 @@ extension SBS_TextContentLayer {
     func makeSyllableLayers(text: String,
                             frame: CGRect,
                             base: CGColor,
-                            sung: CGColor,
                             emphasis: Lyrics.Emphasis,
-                            row: Row) -> (base: CATextLayer, sung: CATextLayer) {
+                            row: Row) -> (base: CATextLayer, sung: CATextLayer?) {
         let pair = makeTextLayers(text: text, frame: frame, font: specs.font,
-                                  base: base, sung: sung, row: row)
+                                  base: base, row: row)
         configureGlow(on: pair.base, emphasis: emphasis)
         return pair
     }
 
-    /// 建一对同位的文字层：一层暗底进 `row.base`，一层亮字进`row.sung`
-    /// （后者被那条推进遮罩罩着）。正文与发音用的是同一套，只差字体。
+    /// 建一个音节（或一块发音）的暗底层，进 `row.base`。正文与发音用的是同一套，只差字体。
+    ///
+    /// 同位的亮字层（进 `row.sung`、被推进遮罩罩着）**不在这里建**：它按需照着这一层
+    /// 抄出来（`ensureSungLayers`），所以这里的每个属性都是两层共用的那一份。
     func makeTextLayers(text: String,
                         frame: CGRect,
                         font: NSFont,
                         base: CGColor,
-                        sung: CGColor,
-                        row: Row) -> (base: CATextLayer, sung: CATextLayer) {
+                        row: Row) -> (base: CATextLayer, sung: CATextLayer?) {
         let make: (CGColor) -> CATextLayer = { color in
             let layer = CATextLayer()
             layer.contentsScale = self.contentsScale
@@ -366,10 +365,8 @@ extension SBS_TextContentLayer {
             return layer
         }
         let baseLayer = make(base)
-        let sungLayer = make(sung)
         row.base.addSublayer(baseLayer)
-        row.sung.addSublayer(sungLayer)
-        return (baseLayer, sungLayer)
+        return (baseLayer, nil)
     }
 
     /// 发音、翻译两条副行依次落在最后一个排版行下面。

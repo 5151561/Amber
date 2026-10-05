@@ -426,4 +426,116 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         XCTAssertEqual(withLift.x, (30 + 10 + 10) * 0.5, accuracy: 1e-9)
         XCTAssertEqual(withLift.y, (40 + 20 + 20) * 0.25 - s.syllableLift, accuracy: 1e-9)
     }
+
+    // MARK: - 亮字按需建
+
+    /// 亮字 `CATextLayer` 只在看得见时存在：未选中没有、选中后与 base 逐个同位、
+    /// 熄灭（含淡出落位）后拆掉。容器与遮罩一直都在，每帧照常推进。
+    func testSungLayersAreBuiltOnDemandAndDiscardedAfterFadeOut() throws {
+        var line = TextLine()
+        line.text = "歌词"
+        line.startTime = 0
+        line.endTime = 2
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [
+            .init(text: "歌", startTime: 0, endTime: 1),
+            .init(text: "词", startTime: 1, endTime: 2),
+        ]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.bounds = CGRect(x: 0, y: 0, width: 300, height: 80)
+        layer.layoutSublayers()
+
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertFalse(row.hasSungLayers)
+        XCTAssertTrue(row.syllables.allSatisfy { $0.sung == nil })
+        XCTAssertTrue(row.sung.sublayers?.isEmpty ?? true)
+        XCTAssertTrue(row.sung.mask === row.gradient, "容器与遮罩不随亮字拆建")
+
+        // 未选中时已抬起一个音节（抬升挂着弹簧在飘）：之后现建的亮字要跟上落点与相位。
+        layer.setProgress(0.99, animated: true)
+        layer.setProgress(1.01, animated: true)
+        XCTAssertNotNil(row.syllables[1].base.animation(forKey: "position"))
+
+        layer.setSelected(true, animated: true)
+        XCTAssertTrue(row.hasSungLayers)
+        XCTAssertEqual(row.sung.opacity, 1)
+        for pair in row.syllables {
+            let sung = try XCTUnwrap(pair.sung)
+            XCTAssertTrue(sung.superlayer === row.sung)
+            XCTAssertEqual(sung.frame, pair.base.frame)
+            XCTAssertEqual(sung.string as? String, pair.base.string as? String)
+            XCTAssertEqual(sung.alignmentMode, pair.base.alignmentMode)
+        }
+        let lifted = try XCTUnwrap(row.syllables[1].sung)
+        let flight = try XCTUnwrap(lifted.animation(forKey: "position"))
+        let baseFlight = try XCTUnwrap(row.syllables[1].base.animation(forKey: "position"))
+        XCTAssertEqual(flight.beginTime, baseFlight.beginTime, "同一条弹簧、同一相位")
+        XCTAssertTrue((flight as? CAPropertyAnimation)?.isAdditive == true)
+
+        // 预热重复进来不重建。
+        layer.prepareSungOpacity()
+        XCTAssertTrue(row.syllables[1].sung === lifted)
+
+        // 淡出没建出动画（关着隐式动作 ⇒ 当场落值）时，收尾在 `finishDispatch` 里同步跑——
+        // 与淡出落位走的是同一条拆层路径。
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.setSelected(false, animated: true)
+        CATransaction.commit()
+        XCTAssertFalse(row.hasSungLayers)
+        XCTAssertTrue(row.syllables.allSatisfy { $0.sung == nil })
+        XCTAssertTrue(row.sung.sublayers?.isEmpty ?? true)
+        XCTAssertEqual(row.sung.opacity, 0)
+
+        // 再选中：重新建一批，仍与 base 同位。
+        layer.setSelected(true, animated: true)
+        let rebuilt = try XCTUnwrap(row.syllables[1].sung)
+        XCTAssertFalse(rebuilt === lifted)
+        XCTAssertEqual(rebuilt.frame, row.syllables[1].base.frame)
+
+        // 淡出：动画还在跑时亮字留着（画面上仍在淡）。
+        layer.setSelected(false, animated: true)
+        XCTAssertNotNil(row.sung.animation(forKey: "opacity"))
+        XCTAssertTrue(row.hasSungLayers)
+
+        // 淡出途中又被选中、又被瞬时熄灭：那条淡出还挂着，不许当场拆。
+        layer.setSelected(true, animated: true)
+        XCTAssertTrue(row.syllables[1].sung === rebuilt)
+        layer.setSelected(false, animated: false)
+        XCTAssertTrue(row.hasSungLayers)
+        XCTAssertEqual(row.sung.opacity, 0)
+    }
+
+    /// 预热后取消（瞬时熄灭、没有淡出在跑）：当场拆。
+    func testCancelledSungPreparationDiscardsSungLayers() throws {
+        var line = TextLine()
+        line.text = "Hello world"
+        line.syllables = [
+            .init(text: "Hello ", startTime: 10.0, endTime: 11.0),
+            .init(text: "world", startTime: 11.0, endTime: 12.0),
+        ]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.bounds = CGRect(x: 0, y: 0, width: 300, height: 50)
+        layer.layoutSublayers()
+
+        layer.prepareSungOpacity()
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertTrue(row.syllables.allSatisfy { $0.sung?.frame == $0.base.frame })
+        layer.cancelSungPreparation()
+        XCTAssertFalse(row.hasSungLayers)
+        XCTAssertTrue(row.syllables.allSatisfy { $0.sung == nil })
+
+        // 选中状态下重排：新行直接带着亮字建。
+        layer.setSelected(true, animated: false)
+        layer.updateAppearance(specs: specs(), appearance: nil)
+        layer.layoutSublayers()
+        let rebuilt = try XCTUnwrap(layer.rows.first)
+        XCTAssertFalse(rebuilt === row)
+        XCTAssertTrue(rebuilt.hasSungLayers)
+        XCTAssertTrue(rebuilt.syllables.allSatisfy { $0.sung?.frame == $0.base.frame })
+    }
 }
