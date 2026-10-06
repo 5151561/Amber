@@ -1131,7 +1131,14 @@ final class PlayerController {
         // 「先跳到目标点、往回闪一下、再跳回来」。
         let stale = deck.isSeekPending
         if !stale, seconds.isFinite { currentTime = seconds }
-        let playing = deck.player.timeControlStatus == .playing
+        // 缓冲、换 item、起播前的 seek 都是「还没出声」，不是「暂停」：用户想放的时候
+        // 这几段照样算在播。从前直接抄 `== .playing`，切歌那一下 `isPlaying` 先假后真，
+        // 整窗封面按暂停缩到 0.73 倍再弹回来，播放键、电平条也跟着翻一下。
+        // 没有 item 的那一路（`stop` / `haltPlayback` 卸干净之后迟到的一跳）不算。
+        let status = deck.player.timeControlStatus
+        let playing = status == .playing
+            || (wantsPlayback && deck.player.currentItem != nil
+                && (status == .waitingToPlayAtSpecifiedRate || !deck.isReady || stale))
         let stateChanged = playing != isPlaying
         // 只在真的变了才写：可观察属性不比较新旧值，每跳赋一次
         // 就等于每跳惊动一次订阅方，读 `isPlaying` 的那几块跟着重画。
