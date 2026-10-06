@@ -109,10 +109,24 @@ enum LyricsAdapter {
                 var text = TextLine()
                 text.index = index
                 text.startTime = line.time
-                text.endTime = line.end
+                // **行级歌词与下一句首尾相接时，尾巴让出一次翻行。**
+                //
+                // LRC 不知道一句什么时候唱完，解析器只能让它占到下一句开唱
+                //（`LyricParser.assemble`）。照这个区间走，`handoverDuration` 拿到的空档是 0，
+                // 每次翻行都是瞬时跳格。让出 `handover` 之后与间奏行同一个道理：
+                // 滚动在 `endTime` 起跑，跑完正好是下一句开唱——不提前点亮、也不晚落位。
+                //
+                // 只管没有逐字的行、且下一条是普通句：逐字行的结束是真唱完的时刻，不动；
+                // 下一条是间奏时间奏行自己头上已经让过了，再让就是两份。
+                var end = line.end
+                if line.syllables.isEmpty, index + 1 < lines.count,
+                   lines[index + 1].kind == .lyric, end >= lines[index + 1].time {
+                    end = max(line.time, lines[index + 1].time - handover)
+                }
+                text.endTime = end
                 // 主唱时间与整行时间在 QRC 里是同一组。
                 text.primaryVocalsStartTime = line.time
-                text.primaryVocalsEndTime = line.end
+                text.primaryVocalsEndTime = end
                 // 段首只认「前面一条都没有」这一种。段落是**结构信息**：原版的 TTML
                 // 用 `<div>` 直接声明，QRC / YRC / LRC 一家都不给。早先按「与上一句
                 // 空了 ≥3 秒」猜，猜出来的就是实机上那种忽宽忽窄的行距——
@@ -124,7 +138,7 @@ enum LyricsAdapter {
                 //   区间反复横跳。
                 // - **顺序还是反的。** 空 3.2 秒 → 大间隔；空 6 秒（真·间奏）→ 与普通
                 //   行同宽。空得越久反而越挤。
-                // - **行级歌词那档的空隙是编出来的。** 没有逐字时间轴时 `end` 按字数估
+                // - **行级歌词那档的空隙曾经是编出来的。** 没有逐字时间轴时 `end` 一度按字数估
                 //   （`LyricParser.secondsPerCharacter`），「空了多久」约等于「上一句
                 //   有几个字」，短句后面必出一个大间隔。
                 //

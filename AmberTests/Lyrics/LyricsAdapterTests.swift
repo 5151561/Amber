@@ -177,6 +177,26 @@ final class LyricsAdapterTests: XCTestCase {
         XCTAssertEqual(lines[1].endTime, lines[1].startTime, accuracy: 1e-9)
     }
 
+    /// 行级歌词（LRC）首尾相接时，尾巴让出一次翻行：滚动在 `endTime` 起跑、
+    /// 跑完正好是下一句开唱。不让的话空档是 0，每次翻行都是瞬时跳格。
+    /// 逐字行的结束是真唱完的时刻，不动；下一条是间奏时不再重复让。
+    func testTouchingLineLevelLinesLeaveRoomToScroll() {
+        let lead = LyricsSpecs().scrollLead
+        let syllable = LyricSyllable(text: "字", time: 30, duration: 1)
+        let source = [
+            line(0, 0, 10, text: "行级一"),
+            line(1, 10, 20, text: "行级二"),
+            line(2, 20, 30, kind: .interlude),
+            line(3, 30, 31, text: "字", syllables: [syllable]),
+            line(4, 31, 35, text: "最后"),
+        ]
+        let lines = LyricsAdapter.makeLyrics(from: source, handover: lead).lines
+        XCTAssertEqual(lines[0].endTime, 10 - lead, accuracy: 1e-9)
+        XCTAssertEqual(lines[1].endTime, 20, accuracy: 1e-9, "下一条是间奏，它头上已经让过了")
+        XCTAssertEqual(lines[3].endTime, 31, accuracy: 1e-9, "逐字行不动")
+        XCTAssertEqual(lines[4].endTime, 35, accuracy: 1e-9, "最后一句后面没有人等")
+    }
+
     func testLeadingSilenceIsFirstLineStart() {
         let lyrics = LyricsAdapter.makeLyrics(from: [line(0, 7.5, 10, text: "词")])
         XCTAssertEqual(lyrics.leadingSilence, 7.5, accuracy: 1e-9)
