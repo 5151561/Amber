@@ -164,7 +164,7 @@ class CatalogPageViewController: ContentPageController {
 
     let model: any CatalogPageModelProviding
 
-    private let scrollView = NSScrollView()
+    private let scrollView = CatalogPageScrollView()
     private let collectionView = CatalogShelfCollectionView()
     private var dataSource: NSCollectionViewDiffableDataSource<String, CatalogEntryID>!
 
@@ -272,6 +272,9 @@ class CatalogPageViewController: ContentPageController {
         scrollView.documentView = collectionView
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
+        // 外层只管纵向：横向弹性默认 `.automatic`，在货架上横扫时整页（连背景）会被往旁边
+        // 橡皮筋一下。横向一律归货架；货架「滑一半被外层接走」是另一回事，见 `CatalogPageScrollView`。
+        scrollView.horizontalScrollElasticity = .none
         // 顶部内缩交给系统：窗口是 fullSizeContentView，`automaticallyAdjustsContentInsets`
         // 会照标题栏自己把 52 补上（[实测 probe2] contentInsets.top == 52），
         // 内容因此能滚到工具栏底下。底部要给迷你播放器让位，但 `contentInsets` 的 setter
@@ -2245,5 +2248,54 @@ private final class SafeAreaProbeView: NSView {
         guard bounds.width != lastWidth else { return }
         lastWidth = bounds.width
         onWidthChange?(bounds.width)
+    }
+}
+
+/// 目录页的外层纵向滚动视图：**一次手势归收到它开头的那台 scroll view**。
+///
+/// 货架是布局内部的横向 `_NSCollectionScrollView`，它不能纵向滚。一次横划快结束时
+/// 手指常带出几帧纯纵向的位移（`dx = 0, dy = ±1`），货架把这几帧沿响应链转给外层，
+/// 外层就从半路把**整个手势的剩余部分**接走：货架当场停住（「滑一点就断」），
+/// 整页跟着那 1～3pt 上下抖一下。[实测 2026-10-07，DEBUG 埋点] 横划途中外层
+/// `bounds.origin.y` 在 −52 → −49 → −52 之间跳，同一手势里货架再收不到后续事件。
+///
+/// 所以外层只认**开头（`.began`）就到了它这里**的手势与它随后的惯性；半路转进来的
+/// 一律不接，剩下的事件照旧归货架。指针在货架上、手势一开头就是纵向的，货架会把
+/// `.began` 一起转来，外层照常接管——在货架上方上下滚页面不受影响。
+/// 没有 phase 的事件（老式滚轮）不受影响。
+///
+/// **这套记账依赖重写 `scrollWheel` 顺带关掉的响应式滚动**：响应式滚动开着时，外层自己那次
+/// 手势在 `.began` 之后的事件（含 `.ended` 与惯性）走后台线程、不经过这里（埋点实测一条都
+/// 没有），`ownsGesture` 就永远等不到复位。AppKit 对重写了 `scrollWheel` 的子类默认关掉它，
+/// 所以**别给这个类加 `isCompatibleWithResponsiveScrolling = true`**。
+private final class CatalogPageScrollView: NSScrollView {
+    /// 当前这次触控板手势是外层自己从开头接的。
+    private var ownsGesture = false
+    /// 随后的惯性也归外层（只有自己的手势松手后才置真）。
+    private var ownsMomentum = false
+
+    override func scrollWheel(with event: NSEvent) {
+        let phase = event.phase
+        let momentum = event.momentumPhase
+        if !phase.isEmpty {
+            if phase.contains(.began) {
+                ownsGesture = true
+                ownsMomentum = false
+            } else if phase.contains(.mayBegin) {
+                // 手指刚落下（还没动），只用来按停正在进行的惯性，照常放行。
+            } else if !ownsGesture {
+                return
+            }
+            if phase.contains(.ended) || phase.contains(.cancelled) {
+                ownsMomentum = ownsGesture && phase.contains(.ended)
+                ownsGesture = false
+            }
+        } else if !momentum.isEmpty {
+            guard ownsMomentum else { return }
+            if momentum.contains(.ended) || momentum.contains(.cancelled) {
+                ownsMomentum = false
+            }
+        }
+        super.scrollWheel(with: event)
     }
 }
