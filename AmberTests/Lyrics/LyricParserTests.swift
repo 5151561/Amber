@@ -513,17 +513,34 @@ final class LyricParserTests: XCTestCase {
         XCTAssertEqual(lines[0].end, 29.26, accuracy: 0.001)
     }
 
-    func testLongGapBetweenLinesBecomesInterlude() {
+    /// LRC 的空文字时间戳行是「上一句唱到这里」的标记：它后面空得够久就是间奏。
+    func testBlankLRCMarkerEndsTheLineAndOpensTheInterlude() {
         // 首句落在 2 秒，短于间奏门槛，开头不会另插一行
+        let lrc = """
+        [00:02.00]上半段最后一句
+        [00:09.50]
+        [01:00.00]下半段第一句
+        """
+        let lines = LyricParser.parse(lrc)
+        XCTAssertEqual(lines.map(\.kind), [.lyric, .interlude, .lyric])
+        XCTAssertEqual(lines[0].end, 9.5, accuracy: 0.001, "唱到空行标记为止")
+        XCTAssertEqual(lines[1].time, 9.5, accuracy: 0.001)
+        XCTAssertEqual(lines[1].end, 60.0, accuracy: 0.001)
+    }
+
+    /// 没有空行标记的 LRC 不知道一句什么时候唱完，就唱到下一句开唱——**不按字数猜**。
+    ///
+    /// 按字数猜（0.28 s/字）会在拖长音的句尾提前判「唱完」：焦点位人还在唱就翻走，
+    /// 后面空档一长还提前插出间奏行（实机：陈粒《果实》01:05.67 那句 17 个字，
+    /// 猜 4.76 s，于是 70.43 就出了三个点）。
+    func testUnmarkedLRCLineRunsUntilTheNextLine() {
         let lrc = """
         [00:02.00]上半段最后一句
         [01:00.00]下半段第一句
         """
         let lines = LyricParser.parse(lrc)
-        XCTAssertEqual(lines.map(\.kind), [.lyric, .interlude, .lyric])
-        // 间奏从上一句唱完接到下一句起点
-        XCTAssertEqual(lines[1].time, lines[0].end, accuracy: 0.001)
-        XCTAssertEqual(lines[1].end, 60.0, accuracy: 0.001)
+        XCTAssertEqual(lines.map(\.kind), [.lyric, .lyric])
+        XCTAssertEqual(lines[0].end, 60.0, accuracy: 0.001)
     }
 
     /// 「这一句唱完没有」以**音节**为准，不是行头那个 `[start,duration]`。
@@ -677,6 +694,19 @@ final class LyricParserTests: XCTestCase {
         XCTAssertEqual(lyricLines(lines).map(\.text), ["我天生有病才会喜欢你"])
         XCTAssertEqual(lines.filter { $0.kind == .credits }.map(\.text),
                        ["创作者：告五人云安 Pan Pan An"])
+    }
+
+    /// 以 `©` 打头的版权行排在尾块最后：认不出它，从尾往回扫第一行就停，整块制作表留在屏上。
+    /// 样本是 QQ《果实》（`004LpxQG1sf7FK`）歌尾那块，删到四行。
+    func testCopyrightSymbolLineClosesTrailingCreditBlock() {
+        let lrc = """
+        [03:57.86]保护你的可爱
+        [04:06.20]词Lyrics by：陈粒
+        [04:07.02]制作人/编曲Produced/Music Arranged by：李卓
+        [04:12.68]OP/SP/出品：北京有此山文化传媒有限公司
+        [04:13.51]©️版权所有 未经许可请勿使用
+        """
+        XCTAssertEqual(lyricLines(LyricParser.parse(lrc)).map(\.text), ["保护你的可爱"])
     }
 
     /// ★ 圆括号那一族是真·和声与旁白，一个都不许摘

@@ -23,10 +23,12 @@ enum LyricParser {
 
     // MARK: - 时长推断参数
     //
-    // QRC 自带每行时长，LRC 没有，只能估：不估的话「行结束」只能取下一行的起点，
-    // 于是永远不存在空隙，间奏和「唱完先翻页」这两件事都无从谈起。
+    // QRC 自带每行时长，LRC 没有。LRC 的「唱完」**不再按字数猜**：猜短了，焦点位
+    // 在人还在唱的时候就翻走，后面空档一长还会提前插出间奏行（拖长音的句尾恰恰
+    // 最常落在间奏前）。LRC 一行唱到哪儿只认两种真实信号：后面那条空文字时间戳行
+    //（LRC 惯用的「这里唱完了」标记），或者下一句开唱。见 `assemble`。
 
-    /// 每个字大致唱多久。[推]
+    /// 每个字大致唱多久。[推] 只剩**最后一句**在用：它后面既没有下一句也没有空行标记。
     private static let secondsPerCharacter: TimeInterval = 0.28
     /// 一行至少占这么久，避免「嗯」「啊」这种一个字的行瞬间就算唱完。[推]
     private static let minLineDuration: TimeInterval = 1.2
@@ -56,6 +58,9 @@ enum LyricParser {
             return parseUntimed(text, translation: translation,
                                 transliteration: transliteration, title: title)
         }
+        // 空文字行先记下时刻再摘：LRC 里它是「上一句唱到这里为止」的唯一真实信号
+        //（`assemble` 拿它当行级歌词的结束时刻），摘掉之后就找不回来了。
+        let breaks = raw.filter { $0.text.isEmpty && !$0.isMetadata }.map(\.time)
         // 正文不要空文字行（占位行是给副行对齐用的，正文里没有意义）。
         raw.removeAll { $0.text.isEmpty }
         guard !raw.isEmpty else { return [] }
@@ -72,7 +77,8 @@ enum LyricParser {
         // 网易的 `yromalrc` 是 YRC 逐字、`romalrc` 是纯 LRC，
         // `parseTimedLines` 三种都认，按时间就近配对。
         let roma = transliteration.map { parseTimedLines($0) } ?? []
-        return assemble(raw, translation: trans, transliteration: roma, credits: credits)
+        return assemble(raw, translation: trans, transliteration: roma, credits: credits,
+                        breaks: breaks)
     }
 
     // MARK: - 原始行
@@ -446,6 +452,13 @@ enum LyricParser {
     /// 括号」，那会一口吃掉全部和声行。
     private static func isNoticeLine(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
+        // 第三条形态：以版权符号 `©` / `℗` 打头。这两个符号的定义就是著作权 / 录音制品
+        // 权利声明，不会出现在唱词里——`©️版权所有 未经许可请勿使用` 没有冒号、没有
+        // 标示括号，又排在尾块最后一行，认不出它整块制作表就一行都摘不掉
+        //（QQ《果实》`004LpxQG1sf7FK`，22 行制作表连同 0.3 s 一行的时间戳全排上了屏）。
+        if let scalar = trimmed.unicodeScalars.first, scalar == "\u{00A9}" || scalar == "\u{2117}" {
+            return true
+        }
         guard let first = trimmed.first, let last = trimmed.last,
               noticeBrackets[first] == last
         else { return false }
@@ -814,9 +827,10 @@ enum LyricParser {
 
     private static func assemble(_ raw: [RawLine], translation: [RawLine],
                                  transliteration: [RawLine],
-                                 credits: Credits) -> [LyricLine] {
-        // 先算每行的结束时刻：有逐字就按音节，否则用行槽声明的时长，再否则按字数估；
-        // 一律不越过下一行起点。
+                                 credits: Credits,
+                                 breaks: [TimeInterval] = []) -> [LyricLine] {
+        // 先算每行的结束时刻：有逐字就按音节，否则用行槽声明的时长，再否则（LRC）
+        // 取后面最近的空行标记或下一句开唱，只有最后一句才按字数估；一律不越过下一行起点。
         //
         // **逐字排在 `declaredDuration` 前面**：行头那个 `[start,duration]` 是行**槽**
         // 的长度，可以把尾部留白也算进去；而这里要的是「这一句唱完没有」——它决定
@@ -830,6 +844,13 @@ enum LyricParser {
                 estimated = max(last.end - line.time, minLineDuration)
             } else if let declared = line.declaredDuration, declared > 0 {
                 estimated = declared
+            } else if case let boundary = min(breaks.first(where: { $0 > line.time }) ?? nextStart,
+                                              nextStart),
+                      boundary < .greatestFiniteMagnitude {
+                // LRC：唱到空行标记或下一句开唱为止。不知道的就别编——按字数估出来的
+                // 空隙会在长音没唱完时把焦点位翻走、把间奏行提前插进来。
+                // 于是没有空行标记的 LRC 句间不再出间奏，有标记的照真实空档出。
+                estimated = boundary - line.time
             } else {
                 estimated = max(minLineDuration, Double(line.text.count) * secondsPerCharacter)
             }
