@@ -59,8 +59,19 @@ final class LyricsStore {
     /// `try?` + 空数组的处理一致，视图只认「有词 / 没词」。
     @discardableResult
     func lyrics(for track: Track, using provider: any MusicProvider) async -> [LyricLine] {
-        await lyrics(for: track) { (try? await provider.lyrics(track: track)) ?? [] }
+        let alternate = alternateProvider?(track)
+        return await lyrics(for: track) {
+            let lines = (try? await provider.lyrics(track: track)) ?? []
+            guard let alternate else { return lines }
+            // 本家只有行级时去另一家找同一录音的逐字版（`LyricsSupplement`）。
+            // 放在缓存**里面**：换成的那份与本家那份一样只取一次，两处面板拿到的还是同一份。
+            return await LyricsSupplement.supplement(lines, for: track, from: alternate)
+        }
     }
+
+    /// 「另一家」是谁。由 `AppState` 接上（它手里才有两家音源）；nil 就不补逐字，
+    /// 测试里默认不接，取词行为与改造前一字不差。
+    var alternateProvider: ((Track) -> (any MusicProvider)?)?
 
     /// 取词的核心，`load` 是真正打音源的那一步（测试从这里注入）。
     func lyrics(for track: Track, load: @escaping () async -> [LyricLine]) async -> [LyricLine] {

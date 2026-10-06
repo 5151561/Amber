@@ -238,6 +238,11 @@ final class AppState {
         // 共用的就是这份缓存，刚看过词的那首下载时一趟网络都不用再打，也不会把同一首问两遍；
         // 二来勾了「自定义歌词」的那些歌，文件里写进去的要与面板上看到的是同一份。
         // 取不到（没有词、断网、这个音源不认这首）就是空数组，下载照旧成功。
+        // 行级歌词补逐字的「另一家」：网易缺 `yrc` 去 QQ 找 QRC，反过来也一样。
+        lyricsStore.alternateProvider = { [weak self] track in
+            guard let self else { return nil }
+            return ProviderKind.allCases.first { $0 != track.kind }.flatMap { self.providers[$0] }
+        }
         downloads.resolveLyrics = { [weak self] track in
             guard let self, let provider = self.providers[track.kind] else { return [] }
             return await self.lyricsStore.displayLyrics(for: track, using: provider)
