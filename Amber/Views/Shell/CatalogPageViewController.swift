@@ -805,11 +805,19 @@ class CatalogPageViewController: ContentPageController {
         var layout: [PageLayoutSection] = showsPageTitle ? [.pageTitle] : []
         var metrics: [Int: ShelfMetrics] = [:]
         var snapshot = NSDiffableDataSourceSnapshot<String, CatalogEntryID>()
-        if showsPageTitle { snapshot.appendSections([Self.titleSectionID]) }
+        var sectionOccurrences: [String: Int] = [:]
+        if showsPageTitle {
+            snapshot.appendSections([Self.titleSectionID])
+            sectionOccurrences[Self.titleSectionID] = 1
+        }
         itemsByID.removeAll()
         tracksByID.removeAll()
 
         for (offset, section) in sections.enumerated() {
+            let sectionOcc = sectionOccurrences[section.id, default: 0]
+            sectionOccurrences[section.id] = sectionOcc + 1
+            let sectionID = sectionOcc == 0 ? section.id : "\(section.id)#\(sectionOcc)"
+
             let topGap: CGFloat
             if case .artistHero = section.layout {
                 // 满幅 hero 顶着窗口顶画，上面一点空白都不留。
@@ -826,7 +834,7 @@ class CatalogPageViewController: ContentPageController {
             if let shelf = makeShelfMetrics(for: section, containerWidth: usableWidth) {
                 metrics[layout.count - 1] = shelf
             }
-            snapshot.appendSections([section.id])
+            snapshot.appendSections([sectionID])
             // 并排带一段里既有卡又有曲目：**卡在前、曲目在后**，与自定义 group 里
             // 那一串 `NSCollectionLayoutGroupCustomItem` 的顺序一一对应。
             // 数据源那边按 id 先查 `tracksByID` 再查`itemsByID`，混着放没问题。
@@ -836,7 +844,7 @@ class CatalogPageViewController: ContentPageController {
             func entry(_ rawID: String) -> CatalogEntryID {
                 let occurrence = occurrences[rawID, default: 0]
                 occurrences[rawID] = occurrence + 1
-                return CatalogEntryID(section: section.id, id: rawID, occurrence: occurrence)
+                return CatalogEntryID(section: sectionID, id: rawID, occurrence: occurrence)
             }
             for item in renderItems(of: section) {
                 let id = entry(item.id)
@@ -848,7 +856,7 @@ class CatalogPageViewController: ContentPageController {
                 tracksByID[id] = track
                 ids.append(id)
             }
-            snapshot.appendItems(ids, toSection: section.id)
+            snapshot.appendItems(ids, toSection: sectionID)
         }
 
         layoutSections = layout

@@ -177,11 +177,13 @@ extension QQAPI {
 
     private func loadHomeFeed(page: Int, direction: Int,
                               shelfCount: Int, seenShelfIDs: [String]) async -> [HomeFeedShelf]? {
+        let uin = credential?.uin.filter(\.isNumber) ?? ""
         guard let data = try? await musicu(module: "music.recommend.RecommendFeed",
                                            method: "get_recommend_feed",
                                            param: ["direction": direction, "page": page,
                                                    "s_num": shelfCount, "v_cache": seenShelfIDs],
-                                           clientType: 11, clientVersion: 12060012),
+                                           commOverride: ["ct": 11, "cv": 12060012, "format": "json",
+                                                          "uin": Int(uin) ?? 0, "g_tk": 5381]),
               let shelves = data["v_shelf"] as? [[String: Any]] else { return nil }
         return shelves.compactMap { shelf -> HomeFeedShelf? in
             guard let id = shelf["id"] as? Int else { return nil }

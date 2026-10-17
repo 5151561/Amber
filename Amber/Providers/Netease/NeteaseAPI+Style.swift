@@ -165,7 +165,7 @@ extension NeteaseAPI {
             }
             guard !charts.isEmpty else { return nil }
             return NeteaseToplistGroup(name: name,
-                                       categoryCode: group["categoryCode"] as? String,
+                                       categoryCode: (group["categoryCode"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                                        charts: charts)
         }
     }
@@ -487,7 +487,10 @@ struct NeteaseStyleDetail: Sendable {
 
 /// 榜单页的一组（「官方榜」「曲风榜」…）。
 struct NeteaseToplistGroup: Identifiable, Hashable, Sendable {
-    var id: String { categoryCode ?? name }
+    var id: String {
+        if let code = categoryCode, !code.isEmpty { return code }
+        return name
+    }
     let name: String
     let categoryCode: String?
     let charts: [NeteaseChartEntry]

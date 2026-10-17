@@ -502,9 +502,13 @@ final class QQAPI: MusicProvider {
             CatalogShelf.playlists(id: "made-for-you", title: "为你打造的歌单",
                                    style: .poster, Array(entryMixes.prefix(8))),
         ]
+        var seenFeedShelfIDs: [Int: Int] = [:]
         for shelf in dynamicPlaylistShelves {
+            let count = seenFeedShelfIDs[shelf.id, default: 0]
+            seenFeedShelfIDs[shelf.id] = count + 1
+            let shelfID = count == 0 ? "feed-shelf-\(shelf.id)" : "feed-shelf-\(shelf.id)-\(count)"
             shelves.append(CatalogShelf.playlists(
-                id: "feed-shelf-\(shelf.id)",
+                id: shelfID,
                 title: shelf.title.isEmpty ? "为你推荐歌单" : shelf.title,
                 style: .squares(rows: 1), showsChevron: shelf.playlists.count > 6,
                 Array(shelf.playlists.prefix(12))))
@@ -643,9 +647,13 @@ final class QQAPI: MusicProvider {
 
         // `GetRadiolist` 一次返回全部电台分组（热门 / 心情 / 主题 / 场景 / 曲风 / 语言 / 人群 / 乐器），
         // 全量铺成电台货架，不再丢弃后半部分分组。
+        var seenRadioGroupIDs: [String: Int] = [:]
         for group in groups {
+            let count = seenRadioGroupIDs[group.id, default: 0]
+            seenRadioGroupIDs[group.id] = count + 1
+            let shelfID = count == 0 ? "radio-\(group.id)" : "radio-\(group.id)-\(count)"
             shelves.append(CatalogShelf.playlists(
-                id: "radio-\(group.id)", title: "\(group.title)电台",
+                id: shelfID, title: "\(group.title)电台",
                 style: .stations, showsChevron: group.stations.count > 6,
                 group.stations))
         }
@@ -660,8 +668,8 @@ final class QQAPI: MusicProvider {
         in shelves: [HomeFeedShelf],
         excludingShelfIDs: Set<Int>
     ) -> [(id: Int, title: String, playlists: [Playlist])] {
-        shelves.compactMap { shelf in
-            guard !excludingShelfIDs.contains(shelf.id) else { return nil }
+        var result: [(id: Int, title: String, playlists: [Playlist])] = []
+        for shelf in shelves where !excludingShelfIDs.contains(shelf.id) {
             let playlists = shelf.cards.compactMap { card -> Playlist? in
                 guard card.type == 500,
                       let numericID = Int(card.id), numericID >= 10_000_000,
@@ -670,9 +678,14 @@ final class QQAPI: MusicProvider {
                                 coverURL: card.coverURL, description: card.subtitle,
                                 creatorName: shelf.id == 301 ? "QQ音乐" : (card.subtitle ?? "QQ音乐"))
             }.dedupedByID()
-            guard !playlists.isEmpty else { return nil }
-            return (shelf.id, shelf.title, playlists)
+            guard !playlists.isEmpty else { continue }
+            if let existingIndex = result.firstIndex(where: { $0.id == shelf.id && $0.title == shelf.title }) {
+                result[existingIndex].playlists = (result[existingIndex].playlists + playlists).dedupedByID()
+            } else {
+                result.append((shelf.id, shelf.title, playlists))
+            }
         }
+        return result
     }
 
     /// 数字 `songid` 批量换完整 `Track`（首页「大家都在听」给的是 `type=200` 数字 id 卡）。

@@ -872,7 +872,11 @@ final class NeteaseAPI: MusicProvider {
         }
 
         // 5. 排行榜全分组（/api/toplist/detail/v2 原生 7 组：榜单推荐/官方榜/精选榜/曲风榜/全球榜/语种榜/特色榜）
+        var seenToplistGroupIDs: [String: Int] = [:]
         for group in toplistGroups {
+            let count = seenToplistGroupIDs[group.id, default: 0]
+            seenToplistGroupIDs[group.id] = count + 1
+            let shelfID = count == 0 ? "toplist-\(group.id)" : "toplist-\(group.id)-\(count)"
             let charts = group.charts.map { entry in
                 Playlist(
                     id: entry.playlistID,
@@ -884,7 +888,7 @@ final class NeteaseAPI: MusicProvider {
                 )
             }
             if let shelf = CatalogShelf.playlists(
-                id: "toplist-\(group.id)",
+                id: shelfID,
                 title: group.name,
                 style: .squares(rows: 1),
                 showsChevron: true,
@@ -989,9 +993,13 @@ final class NeteaseAPI: MusicProvider {
         }
 
         // 4. 分类推荐电台全矩阵（/api/djradio/home/category/recommend 一次返回全部 12 组）
+        var seenCategoryIDs: [String: Int] = [:]
         for category in categories {
+            let count = seenCategoryIDs[category.id, default: 0]
+            seenCategoryIDs[category.id] = count + 1
+            let shelfID = count == 0 ? "dj-cat-\(category.id)" : "dj-cat-\(category.id)-\(count)"
             if let shelf = CatalogShelf.playlists(
-                id: "dj-cat-\(category.id)",
+                id: shelfID,
                 title: category.categoryName,
                 style: .stations,
                 showsChevron: true,
