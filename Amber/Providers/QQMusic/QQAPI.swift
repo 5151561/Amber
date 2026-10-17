@@ -428,21 +428,48 @@ final class QQAPI: MusicProvider {
     // MARK: 主页（Listen Now）
 
     private func homeShelves(recentTracks: [Track]) async -> [CatalogShelf] {
-        async let feedTask = homeFeed()
-        async let radarTask = radarTracks(page: 1)
+        async let feedTask = homeFeedTwoPages()
+        async let radar1Task = radarTracks(page: 1)
+        async let radar2Task = radarTracks(page: 2)
         async let guessTask = guessYouLikeTracks(count: 30)
+        async let officialTask = officialEditorPlaylists()
         async let newAlbumsTask = newAlbums(from: 0, count: 12)
         async let radiosTask = radioGroups()
-        async let squareTask = recommendedPlaylists(from: 0, size: 18)
         async let newSongsTask = recommendedNewSongs(channel: .latest)
-        async let similarTask = moreLikeThisSlot(seeds: Array(recentTracks.prefix(3)))
 
-        let (feed, radar, guess, albums, radioGroups, square, newSongs, similarSlot) = await (
-            feedTask, radarTask, guessTask, newAlbumsTask, radiosTask,
-            squareTask, newSongsTask, similarTask
+        let (feedPages, radar1, radar2, guess, official, albums, radioGroups, newSongs) = await (
+            feedTask, radar1Task, radar2Task, guessTask, officialTask,
+            newAlbumsTask, radiosTask, newSongsTask
         )
 
-        // 1. 专属精选推荐（Top Picks 海报流）：猜你喜欢（登录态）+ 私人雷达 + 个性电台 + 新碟
+        let radar = (radar1 + radar2).dedupedByID()
+
+        // 1. 客户端首页第 1 页 & 第 2 页的单曲推荐流（Shelf 207 / 315）
+        let p1Shelf207 = feedPages.page1.first { $0.id == 207 }
+        let p1SongIDs = p1Shelf207?.cards
+            .filter { $0.type == 200 }
+            .compactMap { Int($0.id) } ?? []
+
+        let p2Shelf207 = feedPages.page2.first { $0.id == 207 }
+        let p2Shelf315 = feedPages.page2.first { $0.id == 315 }
+        let p2SongIDs = ((p2Shelf207?.cards ?? []) + (p2Shelf315?.cards ?? []))
+            .filter { $0.type == 200 }
+            .compactMap { Int($0.id) }
+
+        async let p1TracksTask = tracks(songIDs: Array(p1SongIDs.prefix(24)))
+        async let p2TracksTask = tracks(songIDs: Array(p2SongIDs.prefix(24)))
+        let (everyoneListening, comfortZoneTracks) = await (p1TracksTask, p2TracksTask)
+
+        // 种子曲目池：优先用最近播放曲目，不足时用猜你喜欢 / 雷达曲目兜底
+        let seedTracks = Array((recentTracks + guess + radar).dedupedByID().prefix(6))
+        async let similarTracksTask = moreLikeTracksSlot(seeds: Array(seedTracks.prefix(3)))
+        async let similarAlbumsTask = moreLikeThisSlot(seeds: Array(seedTracks.dropFirst(1).prefix(3)))
+        async let similarArtistsTask = similarArtistsSlot(seeds: seedTracks)
+        let (similarTracksSlot, similarSlot, similarArtists) = await (
+            similarTracksTask, similarAlbumsTask, similarArtistsTask
+        )
+
+        // 2. 专属精选推荐（Top Picks 海报流）：猜你喜欢 + 私人雷达 + 打破舒适圈 + 个性电台 + 新碟
         var leadPacks: [CatalogTrackPack] = []
         if !guess.isEmpty {
             leadPacks.append(CatalogTrackPack(
@@ -464,27 +491,38 @@ final class QQAPI: MusicProvider {
                 artworkURL: radar.first?.artworkURL,
                 tracks: radar))
         }
+        if !comfortZoneTracks.isEmpty {
+            leadPacks.append(CatalogTrackPack(
+                id: "qq:pack:comfort-zone",
+                title: "打破音乐舒适圈",
+                eyebrow: "口味拓展",
+                subtitle: p2Shelf207?.title.isEmpty == false ? p2Shelf207!.title : "探索未曾听过的惊喜好歌",
+                description: comfortZoneTracks.prefix(3).map(\.title).joined(separator: " · "),
+                artworkURL: comfortZoneTracks.first?.artworkURL,
+                tracks: comfortZoneTracks))
+        }
+
         let hotRadios = radioGroups.first { $0.title == "热门" }?.stations ?? []
         let personalNames = ["猜你喜欢", "随心听"]
         let sortedRadios = hotRadios.filter { personalNames.contains($0.name) }
             + hotRadios.filter { !personalNames.contains($0.name) }
         let moodRadios = radioGroups.first { $0.title == "心情" }?.stations ?? []
+        let sceneRadios = radioGroups.first { $0.title == "场景" }?.stations ?? []
         let topPicksSlot = CatalogSlotResult.topPicks(
             leadPacks: leadPacks, radios: sortedRadios,
             moods: moodRadios, albums: Array(albums.prefix(4)))
 
-        // 2. 为你打造的歌单（客户端首页 shelf 301 的功能歌单卡：每日30首 / 百万收藏 / 新歌推荐）
-        let entryMixes = homeFeedPlaylists(in: feed.filter { $0.id == 301 }, excludingShelfIDs: [])
+        // 3. 为你打造的歌单（Shelf 301 的 4 张官方 Mix：每日30首 / 新歌推荐 / 百万收藏 / 歌手漫游 + 官方编辑精选补齐）
+        let entryMixes = homeFeedPlaylists(in: feedPages.page1.filter { $0.id == 301 }, excludingShelfIDs: [])
             .flatMap(\.playlists)
+        let madeForYouPlaylists = Array((entryMixes + official.prefix(4)).dedupedByID().prefix(8))
 
-        // 3. 大家都在听（客户端首页 shelf 207 的单曲卡，用 CgiGetTrackInfo 一次换回完整曲目）
-        let everyoneListeningIDs = feed.first { $0.id == 207 }?.cards
-            .filter { $0.type == 200 }
-            .compactMap { Int($0.id) } ?? []
-        let everyoneListening = await tracks(songIDs: Array(everyoneListeningIDs.prefix(16)))
-
-        // 4. 客户端首页下发的主题歌单货架（你的私荐歌单 / 你的歌单宝藏库等真实歌单楼层）
-        let dynamicPlaylistShelves = homeFeedPlaylists(in: feed, excludingShelfIDs: [301, 207])
+        // 4. 客户端首页下发的个性化歌单货架（排除 301/207/315 及 276 虚拟 AI 歌单）
+        let combinedFeed = feedPages.page1 + feedPages.page2
+        let dynamicPlaylistShelves = homeFeedPlaylists(
+            in: combinedFeed,
+            excludingShelfIDs: [301, 207, 315, 276]
+        )
 
         // 5. 为你推荐最新作品（新歌速递所属专辑 + 最新上架专辑）
         let songAlbums = newSongs.compactMap { track -> Album? in
@@ -496,11 +534,31 @@ final class QQAPI: MusicProvider {
         }
         let latestReleaseAlbums = (songAlbums + albums).dedupedByID()
 
+        let p1TracksTitle = (p1Shelf207?.title.isEmpty == false) ? p1Shelf207!.title : "大家都在听"
+        let p2TracksTitle = (p2Shelf207?.title.isEmpty == false) ? p2Shelf207!.title : "打破音乐舒适圈，惊喜不断"
+
+        let artistSlot: CatalogSlotResult
+        if let similarArtists {
+            artistSlot = similarArtists
+        } else {
+            let fallbackArtists = await artistSpotlights()
+            artistSlot = .init(items: .artists(fallbackArtists), title: "常听与相似歌手")
+        }
+
         var shelves: [CatalogShelf?] = [
             CatalogShelf.make(id: "top-picks", title: "专属精选推荐",
                               style: .poster, result: topPicksSlot),
             CatalogShelf.playlists(id: "made-for-you", title: "为你打造的歌单",
-                                   style: .poster, Array(entryMixes.prefix(8))),
+                                   style: .poster, madeForYouPlaylists),
+            CatalogShelf.tracks(id: "everyone-listening", title: p1TracksTitle,
+                                style: .trackColumns(rows: 4), showsChevron: true,
+                                Array(everyoneListening.prefix(16))),
+            CatalogShelf.tracks(id: "comfort-zone-tracks", title: p2TracksTitle,
+                                style: .trackColumns(rows: 4), showsChevron: true,
+                                Array(comfortZoneTracks.prefix(16))),
+            CatalogShelf.make(id: "more-like-tracks", title: similarTracksSlot.title,
+                              style: .trackColumns(rows: 4), showsChevron: true,
+                              result: similarTracksSlot),
         ]
         var seenFeedShelfIDs: [Int: Int] = [:]
         for shelf in dynamicPlaylistShelves {
@@ -514,24 +572,20 @@ final class QQAPI: MusicProvider {
                 Array(shelf.playlists.prefix(12))))
         }
         shelves.append(contentsOf: [
-            CatalogShelf.tracks(id: "everyone-listening", title: "大家都在听",
-                                style: .trackColumns(rows: 4), showsChevron: true,
-                                everyoneListening),
-            CatalogShelf.playlists(id: "recommended-playlists", title: "推荐歌单",
-                                   style: .squares(rows: 1), showsChevron: true,
-                                   Array(square.dropFirst(1).prefix(12))),
-            CatalogShelf.playlists(id: "mood-stations", title: "心情电台",
-                                   style: .stations, moodRadios),
-            CatalogShelf.albums(id: "latest-releases", title: "为你推荐最新作品",
-                                style: .squares(rows: 1), showsChevron: true,
-                                Array(latestReleaseAlbums.prefix(12))),
-            CatalogShelf.playlists(id: "recommended-banner", title: "编辑精选推荐",
-                                   style: .superHero, Array(square.prefix(1))),
             CatalogShelf.make(id: "more-like-1", title: similarSlot.title,
                               style: .squares(rows: 1), showsChevron: true,
                               result: similarSlot),
-            CatalogShelf.playlists(id: "stations", title: "热门电台",
-                                   style: .stations, Array(hotRadios.prefix(12))),
+            CatalogShelf.playlists(id: "mood-stations", title: "心情与场景电台",
+                                   style: .stations, Array((moodRadios + sceneRadios).dedupedByID().prefix(12))),
+            CatalogShelf.make(id: "similar-artists", title: artistSlot.title,
+                              style: .squares(rows: 1),
+                              result: artistSlot),
+            CatalogShelf.playlists(id: "official-curated", title: "官方精选歌单",
+                                   style: .squares(rows: 1), showsChevron: true,
+                                   Array(official.prefix(12))),
+            CatalogShelf.albums(id: "latest-releases", title: "为你推荐最新作品",
+                                style: .squares(rows: 1), showsChevron: true,
+                                Array(latestReleaseAlbums.prefix(12))),
         ])
         return shelves.compactMap { $0 }
     }
@@ -662,8 +716,10 @@ final class QQAPI: MusicProvider {
 
     // MARK: - 目录页辅助
 
-    /// 从 `homeFeed()` 的楼层里提取真实可打开的歌单（`type == 500` 且 `disstid >= 10_000_000`，
-    /// 排除 `id == "0"` 的匿名占位卡与 6 位数的 AI 虚拟卡）。
+    /// 从 `homeFeed()` 的楼层里提取真实可打开的歌单：
+    /// - `shelf.id == 301`（今日为你推荐）放行全部 `numericID > 0` 的 `type == 500` 官方定制 Mix
+    ///   （含 6 位数 `211207 新歌推荐`、`211111 百万收藏`、`211192 歌手漫游`，实测 `CgiGetDiss` 均返回 50 首定制曲目）；
+    /// - 其余楼层要求 `numericID >= 10_000_000`，排除匿名 `"0"` 占位卡与 `276` 楼层的 6 位数 AI 虚拟卡。
     private func homeFeedPlaylists(
         in shelves: [HomeFeedShelf],
         excludingShelfIDs: Set<Int>
@@ -672,11 +728,13 @@ final class QQAPI: MusicProvider {
         for shelf in shelves where !excludingShelfIDs.contains(shelf.id) {
             let playlists = shelf.cards.compactMap { card -> Playlist? in
                 guard card.type == 500,
-                      let numericID = Int(card.id), numericID >= 10_000_000,
+                      let numericID = Int(card.id),
+                      (shelf.id == 301 && numericID > 0) || numericID >= 10_000_000,
                       !card.title.isEmpty else { return nil }
+                let subtitle = card.rcmdTemplate ?? card.subtitle
                 return Playlist(id: "qq:\(card.id)", kind: .qq, name: card.title,
-                                coverURL: card.coverURL, description: card.subtitle,
-                                creatorName: shelf.id == 301 ? "QQ音乐" : (card.subtitle ?? "QQ音乐"))
+                                coverURL: card.coverURL, description: subtitle,
+                                creatorName: shelf.id == 301 ? "QQ音乐官方定制" : (subtitle ?? "QQ音乐"))
             }.dedupedByID()
             guard !playlists.isEmpty else { continue }
             if let existingIndex = result.firstIndex(where: { $0.id == shelf.id && $0.title == shelf.title }) {
@@ -701,6 +759,35 @@ final class QQAPI: MusicProvider {
             let list = data["tracks"] as? [[String: Any]] else { return nil }
             return list.compactMap { Self.parseTrack($0) }
         } ?? []
+    }
+
+    /// 「听过这首歌也会喜欢」单曲段：种子是你听过的一首歌，直接展示 `GetSimilarSongs` 相似单曲流。
+    private func moreLikeTracksSlot(seeds: [Track]) async -> CatalogSlotResult {
+        for seed in seeds {
+            let mid = seed.id.rawID
+            guard let songID = await songID(mid: mid),
+                  let data = try? await musicu(module: "music.recommend.TrackRelationServer",
+                                               method: "GetSimilarSongs",
+                                               param: ["songid": songID],
+                                               clientType: 11, clientVersion: 12060012),
+                  let list = data["vecSong"] as? [[String: Any]] else { continue }
+            let tracks = list.compactMap { item -> Track? in
+                guard let track = item["track"] as? [String: Any] else { return nil }
+                return Self.parseTrack(track)
+            }.dedupedByID()
+            if !tracks.isEmpty {
+                let seedAlbum = Album(
+                    id: seed.albumId ?? seed.id, kind: seed.kind,
+                    name: seed.albumName.isEmpty ? seed.title : seed.albumName,
+                    artistName: seed.artistName, artistId: seed.artistId,
+                    artworkURL: seed.artworkURL, publishDate: nil,
+                    trackCount: 0, description: nil)
+                return .init(items: .tracks(Array(tracks.prefix(16))), title: seed.title,
+                             headline: "听过这首歌也会喜欢", seedArtworkURL: seed.artworkURL,
+                             seedAlbum: seedAlbum)
+            }
+        }
+        return .empty
     }
 
     /// 「更多类似作品」段：种子是你听过的一首歌，段里装相似作品的专辑。
@@ -740,6 +827,30 @@ final class QQAPI: MusicProvider {
             }
         }
         return .empty
+    }
+
+    /// 基于最近常听艺人种子拉取相似歌手（`music.SimilarSingerSvr/GetSimilarSingerList`）。
+    private func similarArtistsSlot(seeds: [Track]) async -> CatalogSlotResult? {
+        var seenArtistIDs = Set<String>()
+        for seed in seeds {
+            guard let artistID = seed.artistId, !artistID.isEmpty,
+                  seenArtistIDs.insert(artistID).inserted else { continue }
+            let cleanArtistName = seed.artistName
+                .components(separatedBy: " / ").first?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? seed.artistName
+            let seedArtist = Artist(
+                id: artistID, kind: .qq, name: cleanArtistName,
+                avatarURL: nil, description: nil
+            )
+            let artists = await similarArtists(seedArtist)
+            if !artists.isEmpty {
+                return .init(
+                    items: .artists(Array(artists.prefix(12))),
+                    title: "与「\(cleanArtistName)」相似的歌手"
+                )
+            }
+        }
+        return nil
     }
 
     private func artistSpotlights() async -> [Artist] {

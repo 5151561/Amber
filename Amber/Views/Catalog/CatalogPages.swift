@@ -83,5 +83,18 @@ extension CatalogShelf {
         make(id: id, title: title, style: style, showsChevron: showsChevron,
              result: .init(items: .tagGroups(groups)))
     }
+
+    static func trackPacks(
+        id: String,
+        title: String? = nil,
+        style: CatalogStyle = .stations,
+        showsChevron: Bool = false,
+        _ packs: [CatalogTrackPack]
+    ) -> CatalogShelf? {
+        var eyebrows: [String: String] = [:]
+        for pack in packs { eyebrows[pack.id] = pack.eyebrow }
+        return make(id: id, title: title, style: style, showsChevron: showsChevron,
+                    result: .init(items: .mixed(packs.map(CatalogEntry.trackPack)), eyebrows: eyebrows))
+    }
 }
 

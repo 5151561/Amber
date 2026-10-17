@@ -54,7 +54,8 @@ extension QQAPI {
     /// 未登录时给的是大盘口味（跟私人 FM 匿名时一个道理），登录后才是「你的」雷达——
     /// 这一点决定了它只配摆在目录页的推荐段里，不能当「相似歌曲」用（见文件头）。
     func radarTracks(page: Int = 1) async -> [Track] {
-        await catalogCache.value(for: "qq:TrackRelationServer.GetRadarSong?page=\(page)") {
+        let uin = credential?.uin.filter(\.isNumber) ?? "0"
+        return await catalogCache.value(for: "qq:TrackRelationServer.GetRadarSong?page=\(page)&uin=\(uin)") {
             guard let data = try? await self.musicu(module: "music.recommend.TrackRelationServer",
                                                     method: "GetRadarSong",
                                                     param: ["Page": page, "ReqType": 0,
@@ -138,6 +139,7 @@ extension QQAPI {
         let id: String
         let title: String
         let subtitle: String?
+        let rcmdTemplate: String?
         let coverURL: String?
     }
 
@@ -145,34 +147,47 @@ extension QQAPI {
     struct HomeFeedShelf: Sendable {
         let id: Int
         /// 楼层标题。服务端把它拆成模板 + 内容两段（`title_template` 里可能有 `{String}`
-        /// 占位），这里取实际展示的那一段（`title_content`），空了才退回模板。
+        /// 占位，如 `"听「{String}」也会喜欢💗"` + `"仰望"`），合并还原成完整标题。
         let title: String
         let cards: [HomeFeedCard]
+    }
+
+    struct HomeFeedTwoPages: Sendable {
+        let page1: [HomeFeedShelf]
+        let page2: [HomeFeedShelf]
     }
 
     /// 客户端首页推荐流。`music.recommend.RecommendFeed/get_recommend_feed`
     /// （[QQMusicApi] `modules/recommend.py::get_home_feed`）。
     ///
-    /// [实测 2026-09-09 curl，带 Android comm ct=11/cv=12060012] **匿名就有数据**：
-    /// code=0，一屏回 7 层——301「hi 今日为你打造」（猜你喜欢/每日30首/雷达模式）、
-    /// 207「大家都在听」（35 张 type=200 的单曲卡）、302（运营位）、271「你的私荐歌单」、
-    /// 272「热门节目」、276「为你精选的AI歌单」、114「排行榜」。
-    /// 匿名时 301 里那张「每日30首」的 `id` 是 **0**（点不开），登录后才有真 tid——
-    /// `QQAPI.personalMixes()` 取的就是这一行，那条方法的注释里记的是登录态的观察。
-    ///
-    /// 翻页照参考实现：`direction=1`、`page+1`、`s_num` 累加已出的层数，
-    /// `v_cache` 装已经出过的层 id 防重复。这里只交出「取一页」的能力，
-    /// 游标由调用方自己攒（目录页现在只用第一页）。
+    /// [实测 2026-09-09 & 2026-10-18，带 Android comm ct=11/cv=12060012]
+    /// 第 1 页（`direction=0, page=1`）返回 301「Hi {昵称} 今日为你推荐」、207「听『{种子}』也会喜欢💗」、
+    /// 315、272、276、114 等楼层；
+    /// 第 2 页（`direction=1, page=2, s_num=page1.count, v_cache=page1.ids`）返回
+    /// 207「打破音乐舒适圈，惊喜不断」（36 首口味拓展单曲）与 315 个性化种子单曲流。
     func homeFeed(page: Int = 1, direction: Int = 0,
                   shelfCount: Int = 0, seenShelfIDs: [String] = []) async -> [HomeFeedShelf] {
+        let uin = credential?.uin.filter(\.isNumber) ?? "0"
         if page == 1, direction == 0, shelfCount == 0, seenShelfIDs.isEmpty {
-            return await catalogCache.value(for: "qq:RecommendFeed.get_recommend_feed") {
+            return await catalogCache.value(for: "qq:RecommendFeed.get_recommend_feed:p1:\(uin)") {
                 await self.loadHomeFeed(page: page, direction: direction,
                                         shelfCount: shelfCount, seenShelfIDs: seenShelfIDs)
             } ?? []
         }
         return await loadHomeFeed(page: page, direction: direction,
                                   shelfCount: shelfCount, seenShelfIDs: seenShelfIDs) ?? []
+    }
+
+    /// 一次性拉取首页推荐流前 2 页（第 2 页依赖第 1 页的 `s_num` 与 `v_cache` 游标）。
+    func homeFeedTwoPages() async -> HomeFeedTwoPages {
+        let uin = credential?.uin.filter(\.isNumber) ?? "0"
+        return await catalogCache.value(for: "qq:RecommendFeed.get_recommend_feed:p1+p2:\(uin)") {
+            guard let p1 = await self.loadHomeFeed(page: 1, direction: 0, shelfCount: 0, seenShelfIDs: []),
+                  !p1.isEmpty else { return nil }
+            let seen = p1.map { String($0.id) }
+            let p2 = await self.loadHomeFeed(page: 2, direction: 1, shelfCount: p1.count, seenShelfIDs: seen) ?? []
+            return HomeFeedTwoPages(page1: p1, page2: p2)
+        } ?? HomeFeedTwoPages(page1: [], page2: [])
     }
 
     private func loadHomeFeed(page: Int, direction: Int,
@@ -187,8 +202,20 @@ extension QQAPI {
               let shelves = data["v_shelf"] as? [[String: Any]] else { return nil }
         return shelves.compactMap { shelf -> HomeFeedShelf? in
             guard let id = shelf["id"] as? Int else { return nil }
-            let content = (shelf["title_content"] as? String) ?? ""
-            let template = (shelf["title_template"] as? String) ?? ""
+            let content = ((shelf["title_content"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let template = ((shelf["title_template"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedTitle: String
+            if template.contains("{String}") {
+                let replaced = template.replacingOccurrences(of: "{String}", with: content)
+                resolvedTitle = replaced
+                    .components(separatedBy: .whitespaces)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+            } else if !content.isEmpty {
+                resolvedTitle = content
+            } else {
+                resolvedTitle = template
+            }
             let cards = (shelf["v_niche"] as? [[String: Any]] ?? [])
                 .flatMap { ($0["v_card"] as? [[String: Any]]) ?? [] }
                 .compactMap { card -> HomeFeedCard? in
@@ -198,10 +225,11 @@ extension QQAPI {
                     return HomeFeedCard(
                         type: type, id: cardID, title: title,
                         subtitle: (card["subtitle"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                        rcmdTemplate: (card["rcmd_template"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                         coverURL: Self.httpsURL(card["cover"] as? String))
                 }
             guard !cards.isEmpty else { return nil }
-            return HomeFeedShelf(id: id, title: content.isEmpty ? template : content, cards: cards)
+            return HomeFeedShelf(id: id, title: resolvedTitle, cards: cards)
         }
     }
 }

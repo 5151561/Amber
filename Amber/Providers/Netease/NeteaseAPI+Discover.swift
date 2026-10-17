@@ -17,41 +17,94 @@ extension NeteaseAPI {
 
     // MARK: - 每日推荐
 
-    /// 每日推荐歌曲。`/api/v3/discovery/recommend/songs`，参数 `afresh`（换一批），走 eapi。
+    /// 每日推荐歌曲及推荐理由。`/api/v3/discovery/recommend/songs`，参数 `afresh`（换一批），走 eapi。
     /// [api-enhanced] `module/recommend_songs.js`（那边标的是 weapi）
     ///
-    /// [实测 2026-09-09 curl + eapi 探针] 匿名两条路都回 `code:200`，
-    /// `data.dailySongs` 是一整批歌（明文那次头一首是「删了吧」，eapi 那次是「你的背包」）
-    /// ——**匿名时它也给，只是给的是大盘热门而不是「你的口味」**，所以不能拿
-    /// 「有没有回数据」当登录判据。字段是 v3 那套缩写（`ar` / `al` / `dt`），
-    /// `parseTrack` 直接认。
-    ///
-    /// 另有 `data.recommendReasons`（每首歌的推荐语，形如「根据你喜欢的 xxx 推荐」），
-    /// 这轮没有地方摆，先不解——真要用时它是与 `dailySongs` 平级的一张 id → 文案表。
-    func dailyRecommendedTracks(refresh: Bool = false) async -> [Track] {
+    /// [实测 2026-09-09 & 2026-10-18] 匿名与登录态均回 `code:200`，
+    /// 登录态 `data.dailySongs` 返回 30 首个性化日推曲目，`data.recommendReasons` 返回曲目级推荐理由
+    /// （如「超65%人播放」「昨日十万播放」「你关注的歌手」）。
+    func dailyRecommendedTracksWithReasons(refresh: Bool = false) async -> (tracks: [Track], reasons: [String]) {
         var body: [(String, NeteaseJSON)] = []
         if refresh { body.append(("afresh", .string("true"))) }
         guard let resp = try? await eapi("/api/v3/discovery/recommend/songs", body),
-              let songs = (resp["data"] as? [String: Any])?["dailySongs"] as? [[String: Any]]
-        else { return [] }
-        return songs.compactMap { Self.parseTrack($0) }
+              let data = resp["data"] as? [String: Any],
+              let songs = data["dailySongs"] as? [[String: Any]]
+        else { return ([], []) }
+        let tracks = songs.compactMap { Self.parseTrack($0) }
+        let reasonItems = data["recommendReasons"] as? [[String: Any]] ?? []
+        var reasons: [String] = []
+        for item in reasonItems {
+            if let r = (item["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !r.isEmpty, !reasons.contains(r) {
+                reasons.append(r)
+            }
+        }
+        return (tracks, reasons)
+    }
+
+    func dailyRecommendedTracks(refresh: Bool = false) async -> [Track] {
+        await dailyRecommendedTracksWithReasons(refresh: refresh).tracks
     }
 
     /// 每日推荐歌单。`/api/v1/discovery/recommend/resource`，**无参数**，走 eapi。
     /// [api-enhanced] `module/recommend_resource.js`（那边标的是 weapi）
     ///
-    /// [实测 2026-09-09 curl + eapi 探针] 匿名两条路都回 `{"msg":null,"code":301}`
-    /// ——**必须登录**，跟上面那条日推歌曲不一样（那条匿名也给）。
-    /// **200 的响应形状未实机验证过**：按参考实现，歌单装在顶层 `recommend` 里；
-    /// 这里顺手也认一下 `data.recommend`，免得服务端哪天挪了一层就整段空掉。
-    ///
+    /// [实测 2026-09-09 & 2026-10-18] 匿名回 `code:301`，登录态 `recommend` 返回约 8 张个性化推荐歌单。
     /// 读接口取不到就返回空（`similarArtists` 的口径），不抛——首页少一段而已。
     func dailyRecommendedPlaylists() async -> [Playlist] {
         guard let resp = try? await eapi("/api/v1/discovery/recommend/resource") else { return [] }
         let list = (resp["recommend"] as? [[String: Any]])
             ?? ((resp["data"] as? [String: Any])?["recommend"] as? [[String: Any]])
             ?? []
-        return list.compactMap { Self.parsePlaylist($0) }
+        return list.compactMap { Self.parsePlaylist($0).map(Self.normalizedRadarPlaylist) }
+    }
+
+    /// 官方私人雷达歌单池（UID `1287293193`「网易云音乐私人雷达」）。
+    ///
+    /// [实测 2026-10-18 登录态] 移动端 9.0.90 登录态下 `/api/homepage/block/page` 不再下发
+    /// `HOMEPAGE_BLOCK_MGC_PLAYLIST`，导致雷达歌单块为空。官方雷达账号下固定维护全套用户定制雷达
+    /// （私人雷达、时光雷达、宝藏雷达、新歌雷达、乐迷雷达、神秘雷达、日系/欧美/华语私人订制等），
+    /// 拉取后可稳定补齐「专属与雷达歌单」货架。
+    func officialRadarPlaylists() async -> [Playlist] {
+        let uidKey = credential?.uid ?? 0
+        return await catalogCache.value(for: "ne:officialRadarPlaylists:\(uidKey)") {
+            var resp = try? await self.eapi("/api/user/playlist", [
+                ("uid", .string("1287293193")),
+                ("limit", 24),
+                ("offset", 0),
+            ])
+            if resp == nil {
+                resp = try? await self.get("/api/user/playlist", params: [
+                    "uid": "1287293193", "limit": "24", "offset": "0",
+                ])
+            }
+            guard let rawList = resp?["playlist"] as? [[String: Any]] else { return nil }
+            let playlists = rawList
+                .compactMap { Self.parsePlaylist($0).map(Self.normalizedRadarPlaylist) }
+                .filter { $0.name.contains("雷达") || $0.name.contains("私人订制") }
+            return playlists.isEmpty ? nil : Array(playlists.prefix(10))
+        } ?? []
+    }
+
+    private static func normalizedRadarPlaylist(_ p: Playlist) -> Playlist {
+        let parts = p.name.split(separator: "|", maxSplits: 1)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 2 else { return p }
+        // 形如「今天从《…》听起 | 私人雷达」或「每日推荐 | 今天从《…》听起」
+        let isSecondRadar = parts[1].contains("雷达") || parts[1].contains("订制")
+        let cleanName = isSecondRadar ? parts[1] : parts[0]
+        let sub = isSecondRadar ? parts[0] : parts[1]
+        let desc = (p.description?.isEmpty == false) ? p.description : sub
+        return Playlist(
+            id: p.id,
+            kind: p.kind,
+            name: cleanName,
+            coverURL: p.coverURL,
+            description: desc,
+            playCount: p.playCount,
+            trackCount: p.trackCount,
+            creatorName: p.creatorName ?? "网易云音乐"
+        )
     }
 
     /// 日推里的「不感兴趣」。`/api/v2/discovery/recommend/dislike`，
@@ -107,22 +160,95 @@ extension NeteaseAPI {
 
     // MARK: - 私人 FM（独立播放模式，⚠️ 不是自动连播的候选源）
 
-    /// 私人 FM 发的下一批歌。`/api/v1/radio/get`，**无参数**，走 eapi。
-    /// [api-enhanced] `module/personal_fm.js`（那边标的是 weapi）
+    /// 私人 FM 发的下一批歌。`/api/v1/radio/get`，支持多模式参数 `mode` / `subMode` / `limit`，走 eapi。
+    /// [api-enhanced] `module/personal_fm.js` & `module/personal_fm_mode.js`
     ///
-    /// [实测 2026-09-09 curl] 匿名（没有 `MUSIC_U`）照样回 `code:200`；
-    /// `data` 里**恒 1 条**，连打 6 条拿到 6 首互不相同的歌，6 条总共约 1.3 秒。
-    /// 未登录时发的是大盘热门而不是「你的口味」。
-    /// 曲目是明文接口那套字段（`artists` / `album` / `duration`），`parseTrack` 直接认；
-    /// 档位节点叫 `bMusic` / `hMusic`（**不是** `sq` / `hr`，所以 `losslessAvailable`
-    /// 是 nil＝未知），碟号那一格叫 `disc` 不是 `cd`（取不到就是 nil）。
-    ///
-    /// 一次只有一首不是缺陷，是 FM 这种模式本来的形状：播一首要一首。
-    /// 想预取就连打几条（各自独立，服务端不去重也不认 offset）。
-    func personalFMTracks() async -> [Track] {
-        guard let resp = try? await eapi("/api/v1/radio/get"),
+    /// [实测 2026-10-18 登录态] 传 `mode`（`DEFAULT` / `FAMILIAR` / `EXPLORE` / `SCENE_RCMD`）
+    /// 与 `subMode`（`EXERCISE` / `FOCUS` / `NIGHT_EMO`）、`limit=3` 时，单次即回 3 首对应模式下的私人漫游曲目。
+    func personalFMTracks(mode: String = "DEFAULT", subMode: String? = nil, limit: Int = 3) async -> [Track] {
+        var body: [(String, NeteaseJSON)] = [
+            ("mode", .string(mode)),
+            ("limit", .int(limit)),
+        ]
+        if let subMode, !subMode.isEmpty {
+            body.append(("subMode", .string(subMode)))
+        }
+        guard let resp = try? await eapi("/api/v1/radio/get", body),
               let data = resp["data"] as? [[String: Any]] else { return [] }
         return data.compactMap { Self.parseTrack($0) }
+    }
+
+    /// 连续拉取指定漫游模式的曲目并去重。
+    func personalFMBatch(mode: String, subMode: String? = nil, rounds: Int = 2) async -> [Track] {
+        var collected: [Track] = []
+        for _ in 0..<max(1, rounds) {
+            let batch = await personalFMTracks(mode: mode, subMode: subMode, limit: 3)
+            collected.append(contentsOf: batch)
+        }
+        return collected.dedupedByID()
+    }
+
+    /// 组装首页「私人漫游」头卡与多模式漫游曲目包（默认漫游、熟悉模式、探索模式、专注漫游、夜晚情绪、运动漫游）。
+    func roamingTrackPacks() async -> (defaultPack: CatalogTrackPack?, scenePacks: [CatalogTrackPack]) {
+        let uidKey = credential?.uid ?? 0
+        struct CachedRoaming: Sendable {
+            let defaultPack: CatalogTrackPack?
+            let scenePacks: [CatalogTrackPack]
+        }
+        let cached = await catalogCache.value(for: "ne:roamingPacks:\(uidKey)") { () -> CachedRoaming? in
+            async let defTask = self.personalFMBatch(mode: "DEFAULT", rounds: 3)
+            async let famTask = self.personalFMBatch(mode: "FAMILIAR", rounds: 2)
+            async let expTask = self.personalFMBatch(mode: "EXPLORE", rounds: 2)
+            async let focusTask = self.personalFMBatch(mode: "SCENE_RCMD", subMode: "FOCUS", rounds: 2)
+            async let nightTask = self.personalFMBatch(mode: "SCENE_RCMD", subMode: "NIGHT_EMO", rounds: 2)
+            async let exerciseTask = self.personalFMBatch(mode: "SCENE_RCMD", subMode: "EXERCISE", rounds: 2)
+
+            let (defTracks, famTracks, expTracks, focusTracks, nightTracks, exerciseTracks) = await (
+                defTask, famTask, expTask, focusTask, nightTask, exerciseTask
+            )
+
+            func makePack(id: String, title: String, eyebrow: String, subtitle: String, tracks: [Track]) -> CatalogTrackPack? {
+                guard !tracks.isEmpty else { return nil }
+                let preview = tracks.prefix(3).map(\.title).joined(separator: " · ")
+                return CatalogTrackPack(
+                    id: id,
+                    title: title,
+                    eyebrow: eyebrow,
+                    subtitle: subtitle,
+                    description: preview.isEmpty ? nil : preview,
+                    artworkURL: tracks.first?.artworkURL,
+                    tracks: tracks
+                )
+            }
+
+            let defaultPack = makePack(
+                id: "ne:fm:default",
+                title: "私人漫游",
+                eyebrow: "私人 FM",
+                subtitle: "根据你的听歌口味无限漫游",
+                tracks: defTracks
+            )
+
+            let specs: [(String, String, String, String, [Track])] = [
+                ("ne:fm:familiar", "熟悉漫游", "私人漫游 · 熟悉模式", "重温你偏爱的熟悉旋律", famTracks),
+                ("ne:fm:explore", "探索漫游", "私人漫游 · 探索模式", "发掘口味之外的新鲜好歌", expTracks),
+                ("ne:fm:focus", "专注漫游", "场景漫游 · FOCUS", "沉浸工作与学习的陪伴曲流", focusTracks),
+                ("ne:fm:night", "夜晚情绪", "场景漫游 · NIGHT EMO", "深夜独处时的情绪共鸣", nightTracks),
+                ("ne:fm:exercise", "运动漫游", "场景漫游 · EXERCISE", "保持律动与活力的节拍", exerciseTracks),
+            ]
+            var scenePacks: [CatalogTrackPack] = []
+            if let defaultPack {
+                scenePacks.append(defaultPack)
+            }
+            for (id, title, eyebrow, subtitle, tracks) in specs {
+                if let pack = makePack(id: id, title: title, eyebrow: eyebrow, subtitle: subtitle, tracks: tracks) {
+                    scenePacks.append(pack)
+                }
+            }
+            guard defaultPack != nil || !scenePacks.isEmpty else { return nil }
+            return CachedRoaming(defaultPack: defaultPack, scenePacks: scenePacks)
+        }
+        return (cached?.defaultPack, cached?.scenePacks ?? [])
     }
 
     /// FM 的垃圾桶（「不再播放」）。`/api/radio/trash/add`，
@@ -152,14 +278,8 @@ extension NeteaseAPI {
     /// 语义是「在**某张歌单里**按心动顺序往下播」，所以它天然绑着一张歌单——
     /// 没有 `playlistId` 这条接口就不成立，这也是它不能当「找相似」用的根本原因。
     ///
-    /// **要登录**，而且匿名时两条路回的码还不一样：
-    /// [实测 2026-09-09 curl] 明文 GET 回 `{"code":301}`（网易云的「未登录」码）；
-    /// [实测 2026-09-09 curl(eapi 探针)] eapi 回 `{"code":400,"message":"不支持该歌单类型","data":null}`
-    /// ——热歌榜（3778678）与随便一张精品 UGC 歌单（6666112560）都是这个码，
-    /// 所以「不支持该歌单类型」多半只是匿名态的说辞，不是真的挑歌单。
-    /// **200 的响应形状从未实机验证过**：参考实现里每项是 `{"id": …, "songInfo": {歌曲对象}}`，
-    /// 所以这里先剥 `songInfo`，剥不出来再把这一项本身当歌曲试一次。
-    /// 哪天扫码登录之后，第一件事是把这条的真实响应对一遍。
+    /// [实测 2026-10-18 登录态] 绑定用户的「我喜欢的音乐」歌单（`accountPlaylists().first`）与一首种子曲目，
+    /// 服务端直接返回 ~110 首将红心旧爱与新推荐交织在一起的心动曲流，每项包在 `songInfo` 中。
     func intelligenceTracks(seedTrackID: String, playlistID: String,
                             count: Int = 1) async -> [Track] {
         let seed = seedTrackID.rawID
@@ -171,6 +291,40 @@ extension NeteaseAPI {
         ]) else { return [] }
         let data = resp["data"] as? [[String: Any]] ?? []
         return data.compactMap { Self.parseTrack(($0["songInfo"] as? [String: Any]) ?? $0) }
+    }
+
+    /// 组装首页「心动模式」专属曲目包（仅登录态可用：基于用户「我喜欢的音乐」歌单 + 种子曲目触发智能心动列表）。
+    func heartbeatTrackPack(seedTracks: [Track]) async -> CatalogTrackPack? {
+        guard isLoggedIn, let uid = credential?.uid else { return nil }
+        return await catalogCache.value(for: "ne:heartbeatPack:\(uid)") {
+            let playlists = await self.accountPlaylists()
+            guard let likedPlaylist = playlists.first(where: { $0.isOwned == true }) ?? playlists.first else {
+                return nil
+            }
+            var seedID = seedTracks.first?.id
+            if seedID == nil {
+                let detail = try? await self.playlistDetail(likedPlaylist)
+                seedID = detail?.tracks.first?.id
+            }
+            guard let seedID else { return nil }
+            let tracks = await self.intelligenceTracks(
+                seedTrackID: seedID,
+                playlistID: likedPlaylist.id,
+                count: 30
+            )
+            let finalTracks = Array(tracks.prefix(40))
+            guard !finalTracks.isEmpty else { return nil }
+            let preview = finalTracks.prefix(3).map(\.title).joined(separator: " · ")
+            return CatalogTrackPack(
+                id: "ne:heartbeat-mode",
+                title: "心动模式",
+                eyebrow: "红心与新发现交织",
+                subtitle: "基于「\(likedPlaylist.name)」生成的智能心动曲流",
+                description: preview.isEmpty ? nil : preview,
+                artworkURL: finalTracks.first?.artworkURL ?? likedPlaylist.coverURL,
+                tracks: finalTracks
+            )
+        }
     }
 
     // MARK: - 推荐 MV 与独家放送

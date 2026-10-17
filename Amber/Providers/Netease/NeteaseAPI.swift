@@ -636,42 +636,69 @@ final class NeteaseAPI: MusicProvider {
     private func homeShelves(recentTracks: [Track]) async -> [CatalogShelf] {
         let loggedIn = isLoggedIn
         async let blocksTask = homepageBlocks()
-        async let dailySongsTask: [Track] = loggedIn ? cachedDailyRecommendedTracks() : []
+        async let dailySongsTask: (tracks: [Track], reasons: [String]) = loggedIn ? cachedDailyRecommendedTracksWithReasons() : ([], [])
         async let dailyListsTask: [Playlist] = loggedIn ? cachedDailyRecommendedPlaylists() : []
-        async let moreLikeTask = moreLikeThisResult(seeds: Array(recentTracks.prefix(5)))
+        async let officialRadarsTask: [Playlist] = loggedIn ? officialRadarPlaylists() : []
+        async let roamingTask = roamingTrackPacks()
+        async let prefStyleTask = preferredStyleTracksShelf()
         async let personalizedListsTask = personalized("/api/personalized/playlist", limit: 12)
+        async let hqListsTask = highqualityPlaylists(offset: 0, limit: 12)
         async let stylesTask = cachedStyleTags()
         async let radiosTask = cachedRecommendedRadios()
         async let hotRadiosTask = hotDJRadios(limit: 12)
         async let albumsTask = newAlbums(limit: 12, offset: 0)
         async let artistsTask = cachedTopArtists(limit: 12)
 
-        let (blocks, dailySongs, dailyLists, moreLike, personalizedLists,
-             styles, rcmdRadios, hotRadios, albums, artists) = await (
-            blocksTask, dailySongsTask, dailyListsTask, moreLikeTask, personalizedListsTask,
-            stylesTask, radiosTask, hotRadiosTask, albumsTask, artistsTask
+        let (blocks, dailySongsPack, dailyLists, officialRadars, roaming, prefStyle,
+             personalizedLists, hqLists, styles, rcmdRadios, hotRadios, albums, artists) = await (
+            blocksTask, dailySongsTask, dailyListsTask, officialRadarsTask, roamingTask, prefStyleTask,
+            personalizedListsTask, hqListsTask, stylesTask, radiosTask, hotRadiosTask, albumsTask, artistsTask
+        )
+
+        let dailySongs = dailySongsPack.tracks
+        let seedPool = recentTracks.isEmpty ? Array(dailySongs.prefix(3)) : Array(recentTracks.prefix(5))
+
+        async let heartbeatTask: CatalogTrackPack? = loggedIn ? heartbeatTrackPack(seedTracks: seedPool) : nil
+        async let moreLikeTracksTask = moreLikeTracksResult(seeds: seedPool)
+        async let moreLikeAlbumsTask = moreLikeThisResult(seeds: seedPool)
+        async let simiArtistsTask: CatalogSlotResult? = loggedIn ? similarArtistsSlot(seeds: seedPool) : nil
+
+        let (heartbeatPack, moreLikeTracks, moreLikeAlbums, simiArtists) = await (
+            heartbeatTask, moreLikeTracksTask, moreLikeAlbumsTask, simiArtistsTask
         )
 
         var shelves: [CatalogShelf] = []
 
-        // 1. 专属精选推荐（海报卡）：已登录时头卡摆「每日歌曲推荐」曲目包，随后穿插雷达歌单、新碟与场景歌单
+        // 1. 专属精选推荐（海报卡）：头卡汇聚「每日歌曲推荐」「私人漫游」「心动模式」三大个性化曲目包，随后穿插雷达歌单、新碟与官方场景歌单
         var leadPacks: [CatalogTrackPack] = []
         if !dailySongs.isEmpty {
             let previewNames = dailySongs.prefix(3).map(\.title).joined(separator: " · ")
+            let reasonSummary = dailySongsPack.reasons.prefix(2).joined(separator: " · ")
+            let subtitle = reasonSummary.isEmpty
+                ? "根据你的音乐口味生成 · 每日 6:00 更新"
+                : "\(reasonSummary) · 每日 6:00 更新"
             leadPacks.append(CatalogTrackPack(
                 id: "ne:daily-songs",
                 title: "每日歌曲推荐",
                 eyebrow: "每日推荐",
-                subtitle: "根据你的音乐口味生成 · 每日 6:00 更新",
+                subtitle: subtitle,
                 description: previewNames.isEmpty ? nil : previewNames,
                 artworkURL: dailySongs.first?.artworkURL,
                 tracks: dailySongs
             ))
         }
-        let allRadars = (dailyLists + blocks.radarPlaylists).dedupedByID()
+        if let defaultFM = roaming.defaultPack {
+            leadPacks.append(defaultFM)
+        }
+        if let heartbeatPack {
+            leadPacks.append(heartbeatPack)
+        }
+
+        let allRadars = (dailyLists + blocks.radarPlaylists + officialRadars).dedupedByID()
         let topRadios = Array(allRadars.prefix(3))
         let topRadioIDs = Set(topRadios.map(\.id))
-        let topMoods = Array((blocks.officialPlaylists + blocks.recommendedPlaylists).dedupedByID().prefix(4))
+        let cleanRecommended = blocks.recommendedPlaylists.filter { !Self.isLowQualityPlaylistTitle($0.name) }
+        let topMoods = Array((blocks.officialPlaylists + cleanRecommended).dedupedByID().prefix(4))
         let topMoodIDs = Set(topMoods.map(\.id))
         let mergedAlbums = (blocks.newAlbums + albums).dedupedByID()
         let topAlbums = Array(mergedAlbums.prefix(6))
@@ -686,26 +713,91 @@ final class NeteaseAPI: MusicProvider {
             shelves.append(shelf)
         }
 
-        // 2. 雷达歌单 / 为你定制（海报卡）：优先展示未在首屏用掉的日推歌单与雷达歌单
+        // 2. 专属与雷达歌单（海报卡）：优先展示未在首屏用掉的私人雷达与日推歌单
         let remainingRadars = allRadars.filter { !topRadioIDs.contains($0.id) }
-        let madePlaylists = remainingRadars.isEmpty ? blocks.radarPlaylists : remainingRadars
+        let madePlaylists = remainingRadars.isEmpty ? allRadars : remainingRadars
         if let shelf = CatalogShelf.playlists(
             id: "made-for-you",
             title: loggedIn ? "专属与雷达歌单" : "雷达歌单",
             style: .poster,
-            madePlaylists
+            Array(madePlaylists.prefix(8))
         ) {
             shelves.append(shelf)
         }
 
-        // 3. 更多类似作品（有最近播放种子时插入）
-        if let moreLike,
-           let shelf = CatalogShelf.make(id: "more-like-1", style: .squares(rows: 1),
-                                         showsChevron: true, result: moreLike) {
+        // 3. 私人漫游 · 场景与模式（多模式 FM 曲目包：熟悉 / 探索 / 专注 / 夜晚情绪 / 运动）
+        if roaming.scenePacks.count > 1,
+           let shelf = CatalogShelf.trackPacks(
+               id: "fm-modes",
+               title: "私人漫游 · 场景与模式",
+               style: .squares(rows: 1),
+               roaming.scenePacks
+           ) {
             shelves.append(shelf)
         }
 
-        // 4. 专属场景歌单（来自首页 HOMEPAGE_BLOCK_OFFICIAL_PLAYLIST）
+        // 4. 个性化风格曲目流（来自登录态 HOMEPAGE_BLOCK_STYLE_RCMD，如「根据『Play a Love Song』为你推荐」）
+        let homeTracks = !blocks.styleSongs.isEmpty ? blocks.styleSongs : blocks.newSongs
+        let homeTrackTitle = !blocks.styleSongs.isEmpty ? (blocks.styleTitle ?? "风格精选") : "新歌速递"
+        if let shelf = CatalogShelf.tracks(
+            id: "home-songs",
+            title: homeTrackTitle,
+            style: .trackColumns(rows: 4),
+            showsChevron: true,
+            Array(homeTracks.prefix(16))
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 5. 偏爱曲风专属曲目流（来自 /api/tag/my/preference/get + /api/style-tag/home/song）
+        if let prefStyle {
+            let homeTrackIDs = Set(homeTracks.prefix(16).map(\.id))
+            let filteredPrefTracks = prefStyle.tracks.filter { !homeTrackIDs.contains($0.id) }
+            if let shelf = CatalogShelf.tracks(
+                id: "preferred-style-songs",
+                title: prefStyle.title,
+                style: .trackColumns(rows: 4),
+                showsChevron: true,
+                Array(filteredPrefTracks.prefix(16))
+            ) {
+                shelves.append(shelf)
+            }
+        }
+
+        // 6. 单曲级相似推荐曲目流（基于最近播放或日推首曲的 /api/v1/discovery/simiSong）
+        if let moreLikeTracks,
+           let shelf = CatalogShelf.make(
+               id: "more-like-tracks",
+               style: .trackColumns(rows: 4),
+               showsChevron: true,
+               result: moreLikeTracks
+           ) {
+            shelves.append(shelf)
+        }
+
+        // 7. 更多类似作品（专辑级相似推荐）
+        if let moreLikeAlbums,
+           let shelf = CatalogShelf.make(
+               id: "more-like-1",
+               style: .squares(rows: 1),
+               showsChevron: true,
+               result: moreLikeAlbums
+           ) {
+            shelves.append(shelf)
+        }
+
+        // 8. 相似艺人推荐（登录态 /api/discovery/simiArtist）
+        if let simiArtists,
+           let shelf = CatalogShelf.make(
+               id: "similar-artists",
+               style: .squares(rows: 1),
+               showsChevron: true,
+               result: simiArtists
+           ) {
+            shelves.append(shelf)
+        }
+
+        // 9. 专属场景歌单（来自首页 HOMEPAGE_BLOCK_OFFICIAL_PLAYLIST 官方甄选）
         let officialLists = blocks.officialPlaylists.filter { !topMoodIDs.contains($0.id) }
         if let shelf = CatalogShelf.playlists(
             id: "official-playlists",
@@ -717,33 +809,33 @@ final class NeteaseAPI: MusicProvider {
             shelves.append(shelf)
         }
 
-        // 5. 推荐歌单（来自首页 HOMEPAGE_BLOCK_PLAYLIST_RCMD + personalized 兜底）
-        let rcmdLists = (blocks.recommendedPlaylists + personalizedLists).dedupedByID()
+        // 10. 推荐歌单（过滤营销号标题，结合精品歌单兜底）
+        let cleanPersonalized = personalizedLists.filter { !Self.isLowQualityPlaylistTitle($0.name) }
+        let rcmdLists = (cleanRecommended + cleanPersonalized + hqLists)
+            .filter { !topMoodIDs.contains($0.id) && !topRadioIDs.contains($0.id) }
+            .dedupedByID()
         if let shelf = CatalogShelf.playlists(
             id: "recommended-playlists",
-            title: "推荐歌单",
+            title: "甄选歌单",
             style: .squares(rows: 1),
             showsChevron: true,
-            rcmdLists
+            Array(rcmdLists.prefix(16))
         ) {
             shelves.append(shelf)
         }
 
-        // 6. 多元旋律之旅 / 新歌速递（来自首页 HOMEPAGE_BLOCK_STYLE_RCMD 或新歌块）
-        let homeTracks = !blocks.styleSongs.isEmpty ? blocks.styleSongs : blocks.newSongs
-        let homeTrackTitle = !blocks.styleSongs.isEmpty ? (blocks.styleTitle ?? "精选歌曲") : "新歌速递"
-        if let shelf = CatalogShelf.tracks(
-            id: "home-songs",
-            title: homeTrackTitle,
-            style: .trackColumns(rows: 4),
-            showsChevron: true,
-            Array(homeTracks.prefix(16))
-        ) {
-            shelves.append(shelf)
+        // 11. 曲风馆（视觉卡片，登录态下将用户偏好的曲风排在最前）
+        let preferredParentIDs = prefStyle?.preferredParentIDs ?? []
+        let orderedStyles: [NeteaseStyleTag]
+        if preferredParentIDs.isEmpty {
+            orderedStyles = styles
+        } else {
+            let prefSet = Set(preferredParentIDs)
+            let front = preferredParentIDs.compactMap { id in styles.first(where: { $0.id == id }) }
+            let rest = styles.filter { !prefSet.contains($0.id) }
+            orderedStyles = front + rest
         }
-
-        // 7. 曲风馆（视觉卡片，点进二级曲风胶囊房间）
-        let styleGroups = Self.visualStyleGroups(from: styles)
+        let styleGroups = Self.visualStyleGroups(from: orderedStyles)
         if let shelf = CatalogShelf.tagGroups(
             id: "style-tags",
             title: "曲风馆",
@@ -754,7 +846,7 @@ final class NeteaseAPI: MusicProvider {
             shelves.append(shelf)
         }
 
-        // 8. 热门播客
+        // 12. 热门播客
         let mergedRadios = (rcmdRadios.radios + hotRadios).dedupedByID()
         if let shelf = CatalogShelf.playlists(
             id: "hot-radios",
@@ -766,7 +858,7 @@ final class NeteaseAPI: MusicProvider {
             shelves.append(shelf)
         }
 
-        // 9. 最新上架
+        // 13. 最新上架
         if let shelf = CatalogShelf.albums(
             id: "latest-albums",
             title: "最新上架",
@@ -777,7 +869,7 @@ final class NeteaseAPI: MusicProvider {
             shelves.append(shelf)
         }
 
-        // 10. 热门歌手
+        // 14. 热门歌手
         if let shelf = CatalogShelf.artists(
             id: "hot-artists",
             title: "热门歌手",
@@ -1040,13 +1132,53 @@ final class NeteaseAPI: MusicProvider {
         }
     }
 
+    private func moreLikeTracksResult(seeds: [Track]) async -> CatalogSlotResult? {
+        for seed in seeds.prefix(3) {
+            var resp = try? await eapi("/api/v1/discovery/simiSong", [
+                ("songid", .string(seed.id.rawID)),
+                ("limit", 12),
+                ("offset", 0),
+            ])
+            if resp == nil {
+                resp = try? await get("/api/discovery/simiSong",
+                                      params: ["songid": seed.id.rawID, "limit": "12"])
+            }
+            guard let songs = resp?["songs"] as? [[String: Any]] else { continue }
+            let tracks = songs.compactMap { Self.parseTrack($0) }.dedupedByID()
+            if !tracks.isEmpty {
+                let seedAlbum = Album(
+                    id: seed.albumId ?? seed.id, kind: seed.kind,
+                    name: seed.albumName.isEmpty ? seed.title : seed.albumName,
+                    artistName: seed.artistName, artistId: seed.artistId,
+                    artworkURL: seed.artworkURL, publishDate: nil,
+                    trackCount: 0, description: nil
+                )
+                return .init(
+                    items: .tracks(Array(tracks.prefix(12))),
+                    title: seed.title,
+                    headline: "听过这首歌也会喜欢",
+                    seedArtworkURL: seed.artworkURL,
+                    seedAlbum: seedAlbum
+                )
+            }
+        }
+        return nil
+    }
+
     private func moreLikeThisResult(seeds: [Track]) async -> CatalogSlotResult? {
-        for seed in seeds {
-            guard let resp = try? await get("/api/discovery/simiSong",
-                                            params: ["songid": seed.id.rawID, "limit": "12"]),
-                  let songs = resp["songs"] as? [[String: Any]] else { continue }
+        for seed in seeds.prefix(3) {
+            var resp = try? await eapi("/api/v1/discovery/simiSong", [
+                ("songid", .string(seed.id.rawID)),
+                ("limit", 12),
+                ("offset", 0),
+            ])
+            if resp == nil {
+                resp = try? await get("/api/discovery/simiSong",
+                                      params: ["songid": seed.id.rawID, "limit": "12"])
+            }
+            guard let songs = resp?["songs"] as? [[String: Any]] else { continue }
             let albums = songs.compactMap { song -> Album? in
-                guard let album = song["album"] as? [String: Any] else { return nil }
+                guard let album = (song["album"] as? [String: Any]) ?? (song["al"] as? [String: Any]) else { return nil }
                 return Self.parseAlbum(album)
             }.dedupedByID()
             if !albums.isEmpty {
@@ -1067,6 +1199,71 @@ final class NeteaseAPI: MusicProvider {
             }
         }
         return nil
+    }
+
+    private func similarArtistsSlot(seeds: [Track]) async -> CatalogSlotResult? {
+        var seenArtistIDs = Set<String>()
+        for seed in seeds {
+            guard let artistID = seed.artistId, !artistID.isEmpty, !seed.artistName.isEmpty,
+                  seenArtistIDs.insert(artistID).inserted else { continue }
+            let cleanArtistName = seed.artistName.split(separator: "/").first
+                .map { $0.trimmingCharacters(in: .whitespaces) } ?? seed.artistName
+            let seedArtist = Artist(
+                id: artistID, kind: .netease, name: cleanArtistName,
+                avatarURL: nil, description: nil
+            )
+            let artists = await similarArtists(seedArtist)
+            if !artists.isEmpty {
+                return .init(
+                    items: .artists(Array(artists.prefix(12))),
+                    title: "与「\(cleanArtistName)」相似的歌手"
+                )
+            }
+        }
+        return nil
+    }
+
+    private struct PreferredStylePack: Sendable {
+        let title: String
+        let tracks: [Track]
+        let preferredParentIDs: [String]
+    }
+
+    /// 登录态下获取用户听歌偏好曲风（`/api/tag/my/preference/get`），并拉取排名第一的偏好子曲风下的精选曲目流。
+    private func preferredStyleTracksShelf() async -> PreferredStylePack? {
+        guard isLoggedIn else { return nil }
+        let uidKey = credential?.uid ?? 0
+        return await catalogCache.value(for: "ne:preferredStyleTracks:\(uidKey)") { () -> PreferredStylePack? in
+            let prefs = await self.stylePreferences()
+            guard let topParent = prefs.first else { return nil }
+            let parentIDs = prefs.map(\.id)
+            let chosenTag = topParent.children.first ?? topParent
+            let res = await self.styleTracks(tagID: chosenTag.id, cursor: 0, size: 20, sort: 0)
+            guard !res.tracks.isEmpty else { return nil }
+            return PreferredStylePack(
+                title: "为你精选 · \(chosenTag.name)",
+                tracks: res.tracks,
+                preferredParentIDs: parentIDs
+            )
+        }
+    }
+
+    /// 过滤混入 `HOMEPAGE_BLOCK_PLAYLIST_RCMD` 与 `/api/personalized/playlist` 的低质标题党 / 营销号 UGC 歌单。
+    static func isLowQualityPlaylistTitle(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        let spamKeywords = [
+            "抖音", "快手", "车载", "土嗨", "蹦迪", "夜店", "喊麦", "神曲", "网红",
+            "慢摇", "串烧", "0.8x", "0.9x", "1.2x", "降调", "倍速", "听前奏",
+            "百万红心", "999+", "删前", "不甜不要钱", "开口跪", "前方高能",
+            "建议收藏", "vip免费", "免费听", "游戏专用", "吃鸡", "王者",
+        ]
+        for kw in spamKeywords where lower.contains(kw) {
+            return true
+        }
+        // 含 2 个及以上「|」或「/」堆砌标签的标题党歌单
+        let pipeCount = title.filter { $0 == "|" || $0 == "｜" }.count
+        if pipeCount >= 2 { return true }
+        return false
     }
 
     // MARK: - 首页聚合与目录缓存
@@ -1236,12 +1433,23 @@ final class NeteaseAPI: MusicProvider {
         return albums.dedupedByID()
     }
 
-    private func cachedDailyRecommendedTracks() async -> [Track] {
+    private struct DailyTracksPack: Sendable {
+        let tracks: [Track]
+        let reasons: [String]
+    }
+
+    private func cachedDailyRecommendedTracksWithReasons() async -> (tracks: [Track], reasons: [String]) {
         let uidKey = credential?.uid ?? 0
-        return await catalogCache.value(for: "ne:dailyRecommendedTracks:\(uidKey)") {
-            let tracks = await self.dailyRecommendedTracks()
-            return tracks.isEmpty ? nil : tracks
-        } ?? []
+        let pack = await catalogCache.value(for: "ne:dailyRecommendedTracksPack:\(uidKey)") { () -> DailyTracksPack? in
+            let res = await self.dailyRecommendedTracksWithReasons()
+            guard !res.tracks.isEmpty else { return nil }
+            return DailyTracksPack(tracks: res.tracks, reasons: res.reasons)
+        }
+        return (pack?.tracks ?? [], pack?.reasons ?? [])
+    }
+
+    private func cachedDailyRecommendedTracks() async -> [Track] {
+        await cachedDailyRecommendedTracksWithReasons().tracks
     }
 
     private func cachedDailyRecommendedPlaylists() async -> [Playlist] {

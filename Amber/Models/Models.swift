@@ -542,8 +542,8 @@ extension CatalogSlotResult {
                          radios: [Playlist], moods: [Playlist],
                          albums: [Album]) -> CatalogSlotResult {
         enum Kind { case pack, radio, album, mood }
-        let recipe: [Kind] = [.pack, .radio, .radio, .album, .pack, .mood, .radio,
-                              .album, .mood, .radio, .album, .mood]
+        let recipe: [Kind] = [.pack, .pack, .radio, .pack, .album, .mood, .radio,
+                              .pack, .album, .mood, .radio, .album, .mood]
         var cursors: [Int] = [0, 0, 0, 0]
         var entries: [CatalogEntry] = []
         var eyebrows: [String: String] = [:]
