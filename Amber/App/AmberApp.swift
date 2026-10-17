@@ -333,8 +333,12 @@ extension AppDelegate {
                 if let keyword {
                     album = (try? await provider.searchAlbums(keyword: keyword, limit: 5, offset: 0))?.first
                 } else {
-                    if case .albums(let albums) = await provider.catalogItems(.newReleases(page: 0)).items {
-                        album = albums.first
+                    let feed = await provider.catalogFeed(for: .browse, recentTracks: [])
+                    for shelf in feed.shelves {
+                        if case .albums(let albums) = shelf.result.items, let first = albums.first {
+                            album = first
+                            break
+                        }
                     }
                     if album == nil {
                         album = (try? await provider.searchAlbums(keyword: "告五人", limit: 5, offset: 0))?.first

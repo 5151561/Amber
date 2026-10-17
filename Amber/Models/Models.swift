@@ -424,54 +424,32 @@ enum CatalogStyle: Sendable {
     case episodes(rows: Int)
 }
 
-/// Music 主页长尾货架的维度。实测那些货架里**装的主要是专辑**（夹少量编辑歌单），
-/// 段名就是维度本身（「國語流行樂」「日本流行樂」「2000 年代」）。
-/// 两家音源都能按地区取新碟，所以语种维度落到「该地区的专辑」；
-/// 年代维度只有网易云有（歌单标签 80后/90后/00后），QQ 交不出来，那两段会整段省掉。
-enum CatalogTag: Sendable {
-    /// 地区/语种 → 专辑
-    case mandopop, cantopop, jpop, kpop, western
-    /// 年代 → 歌单（音源没有按年代的专辑接口）
-    case noughties, tens
-    /// 曲风/场景 → 歌单
-    case alternative, electronic, cafe
+/// 顶层三个目录页。
+enum CatalogFeedPage: String, Sendable {
+    case home = "listen-now"
+    case browse = "browse"
+    case radio = "radio"
+
+    var title: String {
+        switch self {
+        case .home: return "主页"
+        case .browse: return "新发现"
+        case .radio: return "广播"
+        }
+    }
 }
 
-/// 目录页一段要什么内容。Music 的栏目结构是固定的（见 CatalogPages），
-/// 音源只按格子交数据，交不出来就返回空，页面把那一段整段省掉。
-enum CatalogSlot: Sendable {
-    // 主页
-    case topPicks           // 专属精选推荐
-    case madeForYou         // 为你制作的歌单
-    case moodStations       // 找到迎合心情的内容
-    case stations           // 为你精选的电台
-    case latestReleases     // 为你推荐最新作品
-    case recommendedPlaylist // 推荐歌单（整宽大横幅，一段只要一张）
-    case tagged(CatalogTag) // 曲风/年代/语种/场景货架
-    /// 「更多类似作品」：给一串候选种子（最近播放），音源挑第一个查得出东西的，
-    /// 段标题写成那首歌的名字、左边挂它的封面（Music 的种子头，见 CatalogPageViewController）。
-    case moreLikeThis([Track])
-    /// 最近播放，来自本地资料库而不是音源
-    case recentlyPlayed
-    /// 「音乐回忆：你的热门音乐」。Music 那张卡落点是服务端每月生成的歌单；
-    /// Amber 没有服务端，用本地资料库上个月的播放记录现拼，同样不走音源。
-    case musicMemories
-    // 新发现
-    case featured           // 顶部 hero 的编辑精选
-    case artistSpotlights   // 瞩目之星
-    case newSongs           // 新歌精选
-    case newReleases(page: Int) // 本周新发行 / 新近发布
-    case updatedPlaylists   // 歌单已更新
-    case trendingSongs      // 正在流行中
-    case popularSongs       // 大家都在听
-    case charts             // 每周热门 100 首
-    case cityCharts         // 城市排行榜
-    case radioEpisodes      // 最新电台节目
-    case artistShares       // 观看艺人分享（MV / 访谈）
-    case browseGroups       // 探索更多：音源的歌单分类分组
-    // 广播
-    case radioFeatured          // 顶部主打电台
-    case radioStations(page: Int) // 风格电台
+/// 一组直接带曲目的推荐包（如网易云「每日歌曲推荐」、QQ「猜你喜欢」「私人雷达」）。
+/// 音源接口直接回曲目数组、没有服务端歌单 id 可点，卡片点击进入 `.trackGrid` 房间页，
+/// 悬浮播放键直接起播整包曲目。
+struct CatalogTrackPack: Identifiable, Sendable {
+    let id: String
+    let title: String
+    var eyebrow: String = "专属推荐"
+    var subtitle: String? = nil
+    var description: String? = nil
+    var artworkURL: String? = nil
+    let tracks: [Track]
 }
 
 /// 一段里混排的条目。Music 的「专属精选推荐」就是电台/歌单/专辑混排，
@@ -480,12 +458,14 @@ enum CatalogEntry: Sendable {
     case playlist(Playlist)
     case album(Album)
     case artist(Artist)
+    case trackPack(CatalogTrackPack)
 
     var id: String {
         switch self {
         case .playlist(let v): return v.id
         case .album(let v): return v.id
         case .artist(let v): return v.id
+        case .trackPack(let v): return v.id
         }
     }
 }
@@ -515,38 +495,35 @@ enum CatalogItems: Sendable {
 }
 
 /// 音源歌单分类里的一个标签。id 是音源自己的键：网易云是标签名
-/// （`/api/playlist/list` 的 cat），QQ 是 categoryId。
+/// （`/api/playlist/list` 的 cat）或 `"style:<tagId>"`（曲风馆），QQ 是 categoryId。
 struct CatalogTagRef: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
 }
 
-/// 一组标签（网易云的语种/风格/场景/情感/主题，QQ 的语种/流派/主题/心情/场景）。
+/// 一组标签（网易云的语种/风格/场景/情感/主题或曲风馆大类，QQ 的语种/流派/主题/心情/场景）。
 /// Music 的「探索更多」是 5 条编辑链接（按风格浏览/年代之声/…），落点是 Apple 的
 /// `/room/` 分类页；Amber 没有编辑内容，链接组落成音源自己的分类分组，
-/// 点进去是同构的分类浏览页（`CatalogRoomViewController` 的`.tagGroup` 形态）。
+/// 点进去是同构的分类浏览页（`CatalogRoomViewController` 的 `.tagGroup` 形态）。
 struct CatalogTagGroup: Identifiable, Hashable, Sendable {
     let id: String
     let kind: ProviderKind
     let name: String
+    var subtitle: String? = nil
+    var coverURL: String? = nil
     let tags: [CatalogTagRef]
 }
 
-/// 音源交给一个格子的东西
+/// 音源交给一个货架的数据载荷。
 struct CatalogSlotResult: Sendable {
     var items: CatalogItems = .none
     /// 这一格**取不到**（连接类错误、服务端拒绝），与「音源本来就没这一格」分开。
-    ///
-    /// 为什么是加字段而不是把 `MusicProvider.catalogItems` / `playlists(tag:)` 改成
-    /// `throws`（审查单 §8「留给下一轮」第 1 条）：`.empty` 对这两条是**有意义的返回值**
-    /// ——很多格子音源本来就不供，改 `throws` 会把「没这一格」与「取不到」混成一件事；
-    /// 而带默认值的加法是源码兼容的，现存构造点一行不动。
     var failure: URLError? = nil
     /// 段标题「查看全部」的落点；有才显示 ›
     var seeAll: Playlist? = nil
     /// 卡片眉行（Music 的 eyebrow），按条目 id 索引
     var eyebrows: [String: String] = [:]
-    /// 段标题由内容决定时用它盖掉 CatalogPages 里的占位（种子货架 = 种子名）
+    /// 段标题由内容决定时用它盖掉外层标题（种子货架 = 种子名）
     var title: String? = nil
     /// 种子头的小字与缩略图（「更多类似作品」+ 种子封面）
     var headline: String? = nil
@@ -559,42 +536,44 @@ struct CatalogSlotResult: Sendable {
 
 extension CatalogSlotResult {
     /// 「专属精选推荐」的混排。Music 实测这一段是**逐张换类型**的：
-    /// 电台 → 电台 → 专辑 → 心情电台 → 歌单 → 专辑 → 电台 → 歌单，
-    /// 每张卡的 eyebrow 说明它为什么在这（專屬推薦 / 最新發行 / 心情歌單推薦）。
-    /// 不能按类型分组一堆一堆地摆——那是 Amber 之前的样子，跟 Music 一眼就不一样。
-    /// 两家音源交上来的东西不同名但落位一样，所以摆位这件事在这里做、两边共用。
-    ///
-    /// **不收音源的推荐流歌单**（QQ 的 PlaylistSquare、网易云的 personalized/playlist）：
-    /// 那批是「不听绝对后悔！抖音近期洗脑热歌」这类 UGC 标题，跟 Music 这一段的编辑气质不搭
-    /// （用户 2026-09-03 定的）。腾出来的格子按电台/专辑/心情继续交替补——
-    /// Music 那一段本来也是电台占一半。它们照旧出现在「为你制作的歌单」等段里。
-    static func topPicks(radios: [Playlist], moods: [Playlist],
+    /// 个性曲目包 / 电台 → 专辑 → 心情/风格 → 电台 → 专辑，
+    /// 每张卡的 eyebrow 说明它为什么在这（每日推荐 / 专属推荐 / 最新发行 / 风格精选）。
+    static func topPicks(leadPacks: [CatalogTrackPack] = [],
+                         radios: [Playlist], moods: [Playlist],
                          albums: [Album]) -> CatalogSlotResult {
-        enum Kind { case radio, album, mood }
-        let recipe: [Kind] = [.radio, .radio, .album, .mood, .radio,
+        enum Kind { case pack, radio, album, mood }
+        let recipe: [Kind] = [.pack, .radio, .radio, .album, .pack, .mood, .radio,
                               .album, .mood, .radio, .album, .mood]
-        var cursors: [Int] = [0, 0, 0]
+        var cursors: [Int] = [0, 0, 0, 0]
         var entries: [CatalogEntry] = []
         var eyebrows: [String: String] = [:]
         var used = Set<String>()
 
         func take(_ kind: Kind) {
-            let (index, eyebrow): (Int, String)
+            guard entries.count < 10 else { return }
+            let (index, defaultEyebrow): (Int, String)
             switch kind {
-            case .radio: (index, eyebrow) = (0, "专属推荐")
-            case .album: (index, eyebrow) = (1, "最新发行")
-            case .mood: (index, eyebrow) = (2, "心情歌单推荐")
+            case .pack:  (index, defaultEyebrow) = (0, "专属推荐")
+            case .radio: (index, defaultEyebrow) = (1, "专属推荐")
+            case .album: (index, defaultEyebrow) = (2, "最新发行")
+            case .mood:  (index, defaultEyebrow) = (3, "心情歌单推荐")
             }
             // 同一格子里可能有重复（心情台也在热门台里），撞了就往后顺延
             while true {
                 let entry: CatalogEntry
+                var eyebrow = defaultEyebrow
                 switch kind {
-                case .album:
-                    guard cursors[index] < albums.count else { return }
-                    entry = .album(albums[cursors[index]])
+                case .pack:
+                    guard cursors[index] < leadPacks.count else { return }
+                    let pack = leadPacks[cursors[index]]
+                    entry = .trackPack(pack)
+                    eyebrow = pack.eyebrow
                 case .radio:
                     guard cursors[index] < radios.count else { return }
                     entry = .playlist(radios[cursors[index]])
+                case .album:
+                    guard cursors[index] < albums.count else { return }
+                    entry = .album(albums[cursors[index]])
                 case .mood:
                     guard cursors[index] < moods.count else { return }
                     entry = .playlist(moods[cursors[index]])
@@ -612,14 +591,22 @@ extension CatalogSlotResult {
     }
 }
 
-/// 目录页的一段：**栏目名与卡型照 Apple Music 写死**，数据由音源按 slot 填。
-struct CatalogPageSection: Sendable, Identifiable {
+/// 目录页的一条货架：由各音源按自己的原生内容结构组装，直接落到 `CatalogStyle` 视觉规格上。
+struct CatalogShelf: Sendable, Identifiable {
     let id: String
-    /// nil = 无标题段（Music 的 hero 货架、广播顶部）
+    /// nil = 无标题段（探新顶部 hero、广播顶部主打）
     var title: String? = nil
     var style: CatalogStyle
-    var slot: CatalogSlot
     var showsChevron: Bool = false
+    var result: CatalogSlotResult
+}
+
+/// 音源交出一整页目录的结果：空货架在出口已过滤；整页因连接错误落空时填 `failure`。
+struct CatalogFeedResult: Sendable {
+    var shelves: [CatalogShelf] = []
+    var failure: URLError? = nil
+
+    static let empty = CatalogFeedResult()
 }
 
 struct PlaylistDetail: Sendable {

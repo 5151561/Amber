@@ -30,9 +30,18 @@ final class QQAPI: MusicProvider {
     private let injected = OSAllocatedUnfairLock(initialState: Injected())
 
     /// 当前登录凭证（可能为 nil）。AppState 订阅 store 的 `credential` 推进来。
+    /// 换号或退出登录时顺手清空目录页缓存，保证推荐段立即切换登录/匿名态。
     var credential: QQCredential? {
         get { injected.withLock { $0.credential } }
-        set { injected.withLock { $0.credential = newValue } }
+        set {
+            let changed = injected.withLock { state -> Bool in
+                defer { state.credential = newValue }
+                return state.credential != newValue
+            }
+            if changed {
+                Task { await catalogCache.invalidateAll() }
+            }
+        }
     }
 
     /// 全局流播放档位，已过设置窗的夹取（无损开关 / 杜比全景声）。
@@ -404,221 +413,347 @@ final class QQAPI: MusicProvider {
 
     // MARK: - 目录页取数
 
-    /// 页面结构由 CatalogPages 定死（照 Apple Music），这里只按格子交数据。
-    ///
-    /// 外面这一层只做一件事：把这一格底下所有请求里的连接类失败收上来，
-    /// 一格都没交出内容时填进 `CatalogSlotResult.failure`，让目录页分得开
-    /// 「断网」与「音源没这一格」（§2.6-8）。机理见 `CatalogFailureSink`。
-    func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult {
-        await CatalogFailureSink.attach { await self.catalogSlot(slot) }
+    /// 按页组织本源的货架。聚合接口（`homeFeed` / `toplistCatalog` / `radioGroups` /
+    /// `officialEditorPlaylists`）都带 `catalogCache`，单页一次并发装完。
+    func catalogFeed(for page: CatalogFeedPage, recentTracks: [Track]) async -> CatalogFeedResult {
+        await CatalogFailureSink.attachFeed {
+            switch page {
+            case .home: return await self.homeShelves(recentTracks: recentTracks)
+            case .browse: return await self.browseShelves()
+            case .radio: return await self.radioShelves()
+            }
+        }
     }
 
-    private func catalogSlot(_ slot: CatalogSlot) async -> CatalogSlotResult {
-        switch slot {
-        case .recentlyPlayed, .musicMemories:
-            return .empty   // 本地资料库来的，页面自己填
+    // MARK: 主页（Listen Now）
 
-        case .topPicks:
-            // 电台/专辑/心情/歌单**交替**摆，配方在 CatalogSlotResult.topPicks。
-            // QQ 的个人电台是「猜你喜欢」「随心听」（个性电台「热门」组的头两条），
-            // 正对 Music 那两张个人电台卡；其余热门台排在后面备用。
-            async let albums = newAlbums(from: 0, count: 4)
-            async let groups = radioGroups()
-            let (al, gr) = await (albums, groups)
-            let hot = gr.first { $0.title == "热门" }?.stations ?? []
-            let personalNames = ["猜你喜欢", "随心听"]
-            let radios = hot.filter { personalNames.contains($0.name) }
-                + hot.filter { !personalNames.contains($0.name) }
-            let moods = gr.first { $0.title == "心情" }?.stations ?? []
-            return .topPicks(radios: radios, moods: moods, albums: al)
+    private func homeShelves(recentTracks: [Track]) async -> [CatalogShelf] {
+        async let feedTask = homeFeed()
+        async let radarTask = radarTracks(page: 1)
+        async let guessTask = guessYouLikeTracks(count: 30)
+        async let newAlbumsTask = newAlbums(from: 0, count: 12)
+        async let radiosTask = radioGroups()
+        async let squareTask = recommendedPlaylists(from: 0, size: 18)
+        async let newSongsTask = recommendedNewSongs(channel: .latest)
+        async let similarTask = moreLikeThisSlot(seeds: Array(recentTracks.prefix(3)))
 
-        case .madeForYou:
-            // Music 这一段是 Apple 自动生成的**个人混音歌单**（pl.pm-，醒神节拍/放松歌单/
-            // 音乐新发现），只有 3 张。QQ 的对应物在客户端推荐流的功能入口行（shelf 301）里：
-            // 「每日30首」「百万收藏」「新歌推荐」都是 type=500 的真歌单，带真 tid 和封面。
-            // 不拿歌单广场的推荐流顶——那批是 UGC 标题，跟这一段不是一回事。
-            return .init(items: .playlists(await personalMixes()))
+        let (feed, radar, guess, albums, radioGroups, square, newSongs, similarSlot) = await (
+            feedTask, radarTask, guessTask, newAlbumsTask, radiosTask,
+            squareTask, newSongsTask, similarTask
+        )
 
-        case .moodStations:
-            let groups = await radioGroups()
-            return .init(items: .playlists(groups.first { $0.title == "心情" }?.stations ?? []))
-        case .stations:
-            let groups = await radioGroups()
-            return .init(items: .playlists(Array((groups.first { $0.title == "热门" }?.stations ?? [])
-                .prefix(12))))
+        // 1. 专属精选推荐（Top Picks 海报流）：猜你喜欢（登录态）+ 私人雷达 + 个性电台 + 新碟
+        var leadPacks: [CatalogTrackPack] = []
+        if !guess.isEmpty {
+            leadPacks.append(CatalogTrackPack(
+                id: "qq:pack:guess-you-like",
+                title: "猜你喜欢",
+                eyebrow: "为你推荐",
+                subtitle: "根据你的听歌口味实时更新",
+                description: guess.prefix(3).map(\.title).joined(separator: " · "),
+                artworkURL: guess.first?.artworkURL,
+                tracks: guess))
+        }
+        if !radar.isEmpty {
+            leadPacks.append(CatalogTrackPack(
+                id: "qq:pack:radar",
+                title: "私人雷达",
+                eyebrow: "宝藏雷达",
+                subtitle: isLoggedIn ? "深度挖掘你的音乐口味" : "探索热门宝藏曲目",
+                description: radar.prefix(3).map(\.title).joined(separator: " · "),
+                artworkURL: radar.first?.artworkURL,
+                tracks: radar))
+        }
+        let hotRadios = radioGroups.first { $0.title == "热门" }?.stations ?? []
+        let personalNames = ["猜你喜欢", "随心听"]
+        let sortedRadios = hotRadios.filter { personalNames.contains($0.name) }
+            + hotRadios.filter { !personalNames.contains($0.name) }
+        let moodRadios = radioGroups.first { $0.title == "心情" }?.stations ?? []
+        let topPicksSlot = CatalogSlotResult.topPicks(
+            leadPacks: leadPacks, radios: sortedRadios,
+            moods: moodRadios, albums: Array(albums.prefix(4)))
 
-        case .latestReleases:
-            // 「为你推荐最新作品」：新歌速递所属的专辑
-            let albums = await newSongTracks().compactMap { track -> Album? in
-                guard let albumId = track.albumId, !track.albumName.isEmpty else { return nil }
-                return Album(id: albumId, kind: .qq, name: track.albumName,
-                             artistName: track.artistName, artistId: track.artistId,
-                             artworkURL: track.artworkURL, publishDate: nil,
-                             trackCount: 0, description: nil)
-            }
-            return .init(items: .albums(albums.dedupedByID()))
+        // 2. 为你打造的歌单（客户端首页 shelf 301 的功能歌单卡：每日30首 / 百万收藏 / 新歌推荐）
+        let entryMixes = homeFeedPlaylists(in: feed.filter { $0.id == 301 }, excludingShelfIDs: [])
+            .flatMap(\.playlists)
 
-        case .recommendedPlaylist:
-            // 整宽大横幅，只要一张编辑歌单。推荐流 6..13 给「为你制作的歌单」、
-            // 14..19 给探新 hero、24 起给「歌单已更新」，这里取最前面那张。
-            return .init(items: .playlists(await recommendFeed(from: 0, size: 1)))
+        // 3. 大家都在听（客户端首页 shelf 207 的单曲卡，用 CgiGetTrackInfo 一次换回完整曲目）
+        let everyoneListeningIDs = feed.first { $0.id == 207 }?.cards
+            .filter { $0.type == 200 }
+            .compactMap { Int($0.id) } ?? []
+        let everyoneListening = await tracks(songIDs: Array(everyoneListeningIDs.prefix(16)))
 
-        case .tagged(let tag):
-            // Music 长尾货架里主要是专辑：语种维度直接取该地区的新碟（area 参数）；
-            // 曲风/场景没有按维度取专辑的接口，退回标签歌单；年代 QQ 没有，整段省掉。
-            if let area = Self.albumArea(tag) {
-                return .init(items: .albums(await newAlbums(from: 0, count: 12, area: area)))
-            }
-            guard let categoryID = Self.tagCategoryID(tag) else { return .empty }
-            return .init(items: .playlists(await taggedPlaylists(categoryID, limit: 12)))
+        // 4. 客户端首页下发的主题歌单货架（你的私荐歌单 / 你的歌单宝藏库等真实歌单楼层）
+        let dynamicPlaylistShelves = homeFeedPlaylists(in: feed, excludingShelfIDs: [301, 207])
 
-        case .moreLikeThis(let seeds):
-            // Music 的「更多类似作品」段：种子是你听过的一首歌，段里装相似作品的**专辑**。
-            // GetSimilarSongs 要数字 songid，而 Amber 的 QQ 曲目 id 是 mid，先换一次。
-            for seed in seeds {
-                let mid = seed.id.rawID
-                guard let songID = await songID(mid: mid),
-                      let data = try? await musicu(module: "music.recommend.TrackRelationServer",
-                                                    method: "GetSimilarSongs",
-                                                    param: ["songid": songID],
-                                                    clientType: 11, clientVersion: 12060012),
-                      let list = data["vecSong"] as? [[String: Any]] else { continue }
-                let albums = list.compactMap { item -> Album? in
-                    guard let track = item["track"] as? [String: Any],
-                          let album = track["album"] as? [String: Any],
-                          let albumMid = album["mid"] as? String, !albumMid.isEmpty,
-                          let name = album["name"] as? String else { return nil }
-                    let singers = track["singer"] as? [[String: Any]] ?? []
-                    return Album(id: "qq:\(albumMid)", kind: .qq, name: name,
-                                 artistName: singers.compactMap { $0["name"] as? String }
-                                    .filter { !$0.isEmpty }.joined(separator: " / "),
-                                 artistId: (singers.first?["mid"] as? String).map { "qq:\($0)" },
-                                 artworkURL: Self.albumArtwork(albumMid),
-                                 publishDate: nil, trackCount: 0, description: nil)
-                }
-                let deduped = albums.dedupedByID()
-                if !deduped.isEmpty {
-                    let seedAlbum: Album = Album(
-                        id: seed.albumId ?? seed.id, kind: seed.kind,
-                        name: seed.albumName.isEmpty ? seed.title : seed.albumName,
-                        artistName: seed.artistName, artistId: seed.artistId,
-                        artworkURL: seed.artworkURL, publishDate: nil,
-                        trackCount: 0, description: nil)
-                    return .init(items: .albums(deduped), title: seed.title,
-                                 headline: "更多类似作品", seedArtworkURL: seed.artworkURL,
-                                 seedAlbum: seedAlbum)
-                }
-            }
-            return .empty
+        // 5. 为你推荐最新作品（新歌速递所属专辑 + 最新上架专辑）
+        let songAlbums = newSongs.compactMap { track -> Album? in
+            guard let albumId = track.albumId, !track.albumName.isEmpty else { return nil }
+            return Album(id: albumId, kind: .qq, name: track.albumName,
+                         artistName: track.artistName, artistId: track.artistId,
+                         artworkURL: track.artworkURL, publishDate: nil,
+                         trackCount: 0, description: nil)
+        }
+        let latestReleaseAlbums = (songAlbums + albums).dedupedByID()
 
-        case .cityCharts:
-            // QQ 巅峰榜里的地区榜（内地/港台/欧美/日本/韩国），落在同一格
-            return .init(items: .playlists(Array(await toplists().dropFirst(6).prefix(12))))
+        var shelves: [CatalogShelf?] = [
+            CatalogShelf.make(id: "top-picks", title: "专属精选推荐",
+                              style: .poster, result: topPicksSlot),
+            CatalogShelf.playlists(id: "made-for-you", title: "为你打造的歌单",
+                                   style: .poster, Array(entryMixes.prefix(8))),
+        ]
+        for shelf in dynamicPlaylistShelves {
+            shelves.append(CatalogShelf.playlists(
+                id: "feed-shelf-\(shelf.id)",
+                title: shelf.title.isEmpty ? "为你推荐歌单" : shelf.title,
+                style: .squares(rows: 1), showsChevron: shelf.playlists.count > 6,
+                Array(shelf.playlists.prefix(12))))
+        }
+        shelves.append(contentsOf: [
+            CatalogShelf.tracks(id: "everyone-listening", title: "大家都在听",
+                                style: .trackColumns(rows: 4), showsChevron: true,
+                                everyoneListening),
+            CatalogShelf.playlists(id: "recommended-playlists", title: "推荐歌单",
+                                   style: .squares(rows: 1), showsChevron: true,
+                                   Array(square.dropFirst(1).prefix(12))),
+            CatalogShelf.playlists(id: "mood-stations", title: "心情电台",
+                                   style: .stations, moodRadios),
+            CatalogShelf.albums(id: "latest-releases", title: "为你推荐最新作品",
+                                style: .squares(rows: 1), showsChevron: true,
+                                Array(latestReleaseAlbums.prefix(12))),
+            CatalogShelf.playlists(id: "recommended-banner", title: "编辑精选推荐",
+                                   style: .superHero, Array(square.prefix(1))),
+            CatalogShelf.make(id: "more-like-1", title: similarSlot.title,
+                              style: .squares(rows: 1), showsChevron: true,
+                              result: similarSlot),
+            CatalogShelf.playlists(id: "stations", title: "热门电台",
+                                   style: .stations, Array(hotRadios.prefix(12))),
+        ])
+        return shelves.compactMap { $0 }
+    }
 
-        case .featured:
-            // 探新顶部：官方出品歌单。GetRecommendFeed 是清一色 UGC（is_official 全 false），
-            // 「抖音最火」那类标题上不得编辑位（同 topPicks 不收推荐流歌单的规矩）。
-            let picked = await officialEditorPlaylists()
-            guard picked.count >= 6 else {
-                return .init(items: .playlists(Array(await recommendFeed(from: 14, size: 6))))
-            }
-            let featured = await heroDescriptions(for: Array(picked.prefix(6)))
+    // MARK: 新发现（Browse）
+
+    private func browseShelves() async -> [CatalogShelf] {
+        async let officialTask = officialEditorPlaylists()
+        async let hotPlaylistsTask = taggedPlaylists(10000000, limit: 24)
+        async let toplistGroupsTask = toplistCatalog()
+        async let latestSongsTask = recommendedNewSongs(channel: .latest)
+        async let mainlandSongsTask = recommendedNewSongs(channel: .mainland)
+        async let hktwSongsTask = recommendedNewSongs(channel: .hongKongTaiwan)
+        async let westernSongsTask = recommendedNewSongs(channel: .western)
+        async let krjpSongsTask = recommendedNewSongs(channel: .korean)
+        async let newAlbumsTask = newAlbums(from: 0, count: 24, area: 0)
+        async let mainlandAlbumsTask = newAlbums(from: 0, count: 12, area: 1)
+        async let westernAlbumsTask = newAlbums(from: 0, count: 12, area: 3)
+        async let krAlbumsTask = newAlbums(from: 0, count: 12, area: 4)
+        async let jpAlbumsTask = newAlbums(from: 0, count: 12, area: 5)
+        async let artistsTask = artistSpotlights()
+        async let mvsTask = latestMVs()
+        async let tagsTask = tagGroups()
+
+        let (official, hotPlaylists, toplistGroups, latestSongs, mainlandSongs,
+             hktwSongs, westernSongs, krjpSongs) = await (
+            officialTask, hotPlaylistsTask, toplistGroupsTask, latestSongsTask,
+            mainlandSongsTask, hktwSongsTask, westernSongsTask, krjpSongsTask
+        )
+        let (allNewAlbums, mainlandAlbums, westernAlbums, krAlbums, jpAlbums,
+             artists, mvs, tags) = await (
+            newAlbumsTask, mainlandAlbumsTask, westernAlbumsTask, krAlbumsTask,
+            jpAlbumsTask, artistsTask, mvsTask, tagsTask
+        )
+
+        // 1. 顶部 Hero：官方出品歌单（带轻量歌单简介）
+        let heroCandidates = official.count >= 6
+            ? Array(official.prefix(6))
+            : Array((official + hotPlaylists).dedupedByID().prefix(6))
+        let heroList = await heroDescriptions(for: heroCandidates)
+        var heroEyebrows: [String: String] = [:]
+        for p in heroList { heroEyebrows[p.id] = "官方歌单" }
+
+        // 2. 官方歌单更新 + 全部分类热门歌单
+        let officialRest = Array(official.dropFirst(6).prefix(18))
+
+        // 3. 巅峰榜四组（巅峰榜 / 地区榜 / 特色榜 / 全球榜）全量透出
+        let peakCharts = toplistGroups.first { $0.name.contains("巅峰") }?.toplists.map(\.playlist)
+            ?? toplistGroups.first?.toplists.map(\.playlist) ?? []
+        let regionalCharts = toplistGroups.first { $0.name.contains("地区") }?.toplists.map(\.playlist) ?? []
+        let specialCharts = toplistGroups
+            .filter { !$0.name.contains("巅峰") && !$0.name.contains("地区") }
+            .flatMap { $0.toplists.map(\.playlist) }
+
+        let newSongSeeAll = ChartCatalog.charts(for: .qq).first { $0.name == "新歌榜" }
+            .map { ChartCatalog.playlist(for: $0, kind: .qq) }
+
+        let shelves: [CatalogShelf?] = [
+            CatalogShelf.playlists(id: "featured", title: nil,
+                                   style: .hero, eyebrows: heroEyebrows, heroList),
+            CatalogShelf.tracks(id: "new-songs-latest", title: "最新音乐",
+                                style: .trackColumns(rows: 4), showsChevron: true,
+                                seeAll: newSongSeeAll, Array(latestSongs.prefix(20))),
+            CatalogShelf.albums(id: "new-releases", title: "新碟上架",
+                                style: .squares(rows: 2), showsChevron: true, allNewAlbums),
+            CatalogShelf.playlists(id: "official-playlists", title: "官方歌单精选",
+                                   style: .squares(rows: 1), showsChevron: true, officialRest),
+            CatalogShelf.playlists(id: "hot-playlists", title: "热门歌单精选",
+                                   style: .squares(rows: 1), showsChevron: true, hotPlaylists),
+            CatalogShelf.playlists(id: "peak-charts", title: "巅峰榜",
+                                   style: .squares(rows: 1), showsChevron: true, peakCharts),
+            CatalogShelf.playlists(id: "regional-charts", title: "地区榜",
+                                   style: .squares(rows: 1), showsChevron: true, regionalCharts),
+            CatalogShelf.playlists(id: "special-charts", title: "特色与全球榜",
+                                   style: .squares(rows: 1), showsChevron: true, specialCharts),
+            CatalogShelf.tracks(id: "new-songs-mainland", title: "华语新歌速递",
+                                style: .trackColumns(rows: 4), showsChevron: true,
+                                Array((mainlandSongs + hktwSongs).dedupedByID().prefix(16))),
+            CatalogShelf.tracks(id: "new-songs-global", title: "欧美日韩新歌",
+                                style: .trackColumns(rows: 4), showsChevron: true,
+                                Array((westernSongs + krjpSongs).dedupedByID().prefix(16))),
+            CatalogShelf.artists(id: "artist-spotlights", title: "热门歌手",
+                                 style: .squares(rows: 1), artists),
+            CatalogShelf.albums(id: "albums-mainland", title: "内地新碟",
+                                style: .squares(rows: 1), showsChevron: true, mainlandAlbums),
+            CatalogShelf.albums(id: "albums-western", title: "欧美新碟",
+                                style: .squares(rows: 1), showsChevron: true, westernAlbums),
+            CatalogShelf.albums(id: "albums-krjp", title: "日韩新碟",
+                                style: .squares(rows: 1), showsChevron: true,
+                                Array((krAlbums + jpAlbums).dedupedByID().prefix(12))),
+            CatalogShelf.mvs(id: "latest-mvs", title: "最新 MV",
+                             style: .videos, mvs),
+            CatalogShelf.tagGroups(id: "browse-groups", title: "探索更多",
+                                   style: .links, tags),
+        ]
+        return shelves.compactMap { $0 }
+    }
+
+    // MARK: 广播（Radio）
+
+    private func radioShelves() async -> [CatalogShelf] {
+        let groups = await radioGroups()
+        guard !groups.isEmpty else { return [] }
+
+        var shelves: [CatalogShelf?] = []
+        if let hot = groups.first(where: { $0.title == "热门" }) ?? groups.first {
             var eyebrows: [String: String] = [:]
-            featured.forEach { eyebrows[$0.id] = "官方歌单" }
-            return .init(items: .playlists(featured), eyebrows: eyebrows)
+            for station in hot.stations.prefix(6) { eyebrows[station.id] = "热门电台" }
+            shelves.append(CatalogShelf.playlists(
+                id: "radio-featured", title: nil,
+                style: .hero, eyebrows: eyebrows, Array(hot.stations.prefix(6))))
+        }
 
-        case .artistSpotlights:
-            guard let data = try? await musicu(module: "music.musichallSinger.SingerList",
-                                               method: "GetSingerListIndex",
-                                               param: ["area": -100, "sex": -100, "genre": -100,
-                                                       "index": -100, "sin": 0, "cur_page": 1],
+        // `GetRadiolist` 一次返回全部电台分组（热门 / 心情 / 主题 / 场景 / 曲风 / 语言 / 人群 / 乐器），
+        // 全量铺成电台货架，不再丢弃后半部分分组。
+        for group in groups {
+            shelves.append(CatalogShelf.playlists(
+                id: "radio-\(group.id)", title: "\(group.title)电台",
+                style: .stations, showsChevron: group.stations.count > 6,
+                group.stations))
+        }
+        return shelves.compactMap { $0 }
+    }
+
+    // MARK: - 目录页辅助
+
+    /// 从 `homeFeed()` 的楼层里提取真实可打开的歌单（`type == 500` 且 `disstid >= 10_000_000`，
+    /// 排除 `id == "0"` 的匿名占位卡与 6 位数的 AI 虚拟卡）。
+    private func homeFeedPlaylists(
+        in shelves: [HomeFeedShelf],
+        excludingShelfIDs: Set<Int>
+    ) -> [(id: Int, title: String, playlists: [Playlist])] {
+        shelves.compactMap { shelf in
+            guard !excludingShelfIDs.contains(shelf.id) else { return nil }
+            let playlists = shelf.cards.compactMap { card -> Playlist? in
+                guard card.type == 500,
+                      let numericID = Int(card.id), numericID >= 10_000_000,
+                      !card.title.isEmpty else { return nil }
+                return Playlist(id: "qq:\(card.id)", kind: .qq, name: card.title,
+                                coverURL: card.coverURL, description: card.subtitle,
+                                creatorName: shelf.id == 301 ? "QQ音乐" : (card.subtitle ?? "QQ音乐"))
+            }.dedupedByID()
+            guard !playlists.isEmpty else { return nil }
+            return (shelf.id, shelf.title, playlists)
+        }
+    }
+
+    /// 数字 `songid` 批量换完整 `Track`（首页「大家都在听」给的是 `type=200` 数字 id 卡）。
+    private func tracks(songIDs: [Int]) async -> [Track] {
+        guard !songIDs.isEmpty else { return [] }
+        let key = "qq:CgiGetTrackInfo?ids=\(songIDs.map(String.init).joined(separator: ","))"
+        return await catalogCache.value(for: key) {
+            guard let data = try? await self.musicu(
+                module: "music.trackInfo.UniformRuleCtrl",
+                method: "CgiGetTrackInfo",
+                param: ["ids": songIDs, "types": Array(repeating: 0, count: songIDs.count)]
+            ),
+            let list = data["tracks"] as? [[String: Any]] else { return nil }
+            return list.compactMap { Self.parseTrack($0) }
+        } ?? []
+    }
+
+    /// 「更多类似作品」段：种子是你听过的一首歌，段里装相似作品的专辑。
+    private func moreLikeThisSlot(seeds: [Track]) async -> CatalogSlotResult {
+        for seed in seeds {
+            let mid = seed.id.rawID
+            guard let songID = await songID(mid: mid),
+                  let data = try? await musicu(module: "music.recommend.TrackRelationServer",
+                                               method: "GetSimilarSongs",
+                                               param: ["songid": songID],
                                                clientType: 11, clientVersion: 12060012),
-                  let list = data["singerlist"] as? [[String: Any]] else { return .empty }
-            return .init(items: .artists(list.prefix(12).compactMap { Self.parseSingerListItem($0) }))
-
-        case .newSongs:
-            let tracks = await newSongTracks()
-            return .init(items: .tracks(Array(tracks.prefix(20))),
-                         seeAll: ChartCatalog.charts(for: .qq).first { $0.name == "新歌榜" }
-                            .map { ChartCatalog.playlist(for: $0, kind: .qq) })
-        case .trendingSongs:
-            return await chartSlot(playlistID: "qq:top:62")   // 飙升榜
-        case .popularSongs:
-            return await chartSlot(playlistID: "qq:top:26")   // 热歌榜
-
-        case .newReleases(let page):
-            return .init(items: .albums(await newAlbums(from: page * 24, count: 24)))
-
-        case .updatedPlaylists:
-            // 与顶部 hero 共用官方打捞流：hero 取头 6 条，这里往后取。
-            // 打捞不足（官方条目太少）就退回推荐流补差额，别让货架塌掉。
-            let official = await officialEditorPlaylists()
-            let rest = Array(official.dropFirst(6).prefix(24))
-            guard rest.count >= 12 else {
-                let pad = await recommendFeed(from: 24, size: max(1, 24 - rest.count))
-                return .init(items: .playlists(rest + pad))
+                  let list = data["vecSong"] as? [[String: Any]] else { continue }
+            let albums = list.compactMap { item -> Album? in
+                guard let track = item["track"] as? [String: Any],
+                      let album = track["album"] as? [String: Any],
+                      let albumMid = album["mid"] as? String, !albumMid.isEmpty,
+                      let name = album["name"] as? String else { return nil }
+                let singers = track["singer"] as? [[String: Any]] ?? []
+                return Album(id: "qq:\(albumMid)", kind: .qq, name: name,
+                             artistName: singers.compactMap { $0["name"] as? String }
+                                .filter { !$0.isEmpty }.joined(separator: " / "),
+                             artistId: (singers.first?["mid"] as? String).map { "qq:\($0)" },
+                             artworkURL: Self.albumArtwork(albumMid),
+                             publishDate: nil, trackCount: 0, description: nil)
             }
-            return .init(items: .playlists(rest))
-
-        case .charts:
-            return .init(items: .playlists(await toplists()))
-
-        case .browseGroups:
-            return .init(items: .tagGroups(await tagGroups()))
-
-        case .artistShares:
-            // Music 这一段是 MV + 访谈；QQ 没有访谈，用 MV 列表顶（条目类型一致）。
-            // area 实测是个摆设：-1..100 挨个试过，返回的都是同一批 total=1000 的表，
-            // 分不了地区；order=1 取最新。
-            guard let data = try? await musicu(module: "MvService.MvInfoProServer",
-                                               method: "GetAllocMvInfo",
-                                               param: ["area": 15, "version": 0, "order": 1,
-                                                       "start": 0, "size": 12],
-                                               clientType: 11, clientVersion: 12060012),
-                  let list = data["list"] as? [[String: Any]] else { return .empty }
-            return .init(items: .mvs(list.compactMap { Self.parseMvListItem($0) }))
-
-        case .radioEpisodes:
-            // QQ 的长音频是广播剧/有声书，跟 Music 的电台单集不是一回事，不拿来顶
-            return .empty
-
-        case .radioFeatured:
-            let groups = await radioGroups()
-            return .init(items: .playlists(Array((groups.first { $0.title == "热门" }?.stations ?? [])
-                .prefix(4))))
-        case .radioStations(let page):
-            // Music 中国区两条都叫「风格电台」，这里用 QQ 的曲风组与主题组各填一条
-            let wanted = ["曲风", "主题"]
-            guard page < wanted.count else { return .empty }
-            let groups = await radioGroups()
-            return .init(items: .playlists(groups.first { $0.title == wanted[page] }?.stations ?? []))
+            let deduped = albums.dedupedByID()
+            if !deduped.isEmpty {
+                let seedAlbum = Album(
+                    id: seed.albumId ?? seed.id, kind: seed.kind,
+                    name: seed.albumName.isEmpty ? seed.title : seed.albumName,
+                    artistName: seed.artistName, artistId: seed.artistId,
+                    artworkURL: seed.artworkURL, publishDate: nil,
+                    trackCount: 0, description: nil)
+                return .init(items: .albums(deduped), title: seed.title,
+                             headline: "更多类似作品", seedArtworkURL: seed.artworkURL,
+                             seedAlbum: seedAlbum)
+            }
         }
+        return .empty
     }
 
-    /// Music 的曲风/年代/语种/场景段 → QQ 歌单标签 categoryId
-    /// （`fcg_get_diss_tag_conf`）。QQ 没有年代标签，那两段整段省掉。
-    /// 语种维度 → 新碟接口的 area。实测 1 内地 / 2 港台 / 3 欧美 / **4 韩国 / 5 日本**
-    /// （4、5 跟常见文档里写的反了，按实际返回的歌手对的）。
-    private static func albumArea(_ tag: CatalogTag) -> Int? {
-        switch tag {
-        case .mandopop: return 1
-        case .cantopop: return 2
-        case .western: return 3
-        case .kpop: return 4
-        case .jpop: return 5
-        default: return nil
-        }
+    private func artistSpotlights() async -> [Artist] {
+        await catalogCache.value(for: "qq:SingerList.GetSingerListIndex") {
+            guard let data = try? await self.musicu(
+                module: "music.musichallSinger.SingerList",
+                method: "GetSingerListIndex",
+                param: ["area": -100, "sex": -100, "genre": -100,
+                        "index": -100, "sin": 0, "cur_page": 1],
+                clientType: 11, clientVersion: 12060012
+            ),
+            let list = data["singerlist"] as? [[String: Any]] else { return nil }
+            return list.prefix(12).compactMap { Self.parseSingerListItem($0) }
+        } ?? []
     }
 
-    /// 曲风/场景维度 → 歌单标签 categoryId（`fcg_get_diss_tag_conf`）。
-    /// QQ 没有年代标签，那两段整段省掉。
-    private static func tagCategoryID(_ tag: CatalogTag) -> Int? {
-        switch tag {
-        case .alternative: return 218 // 后摇
-        case .electronic: return 24
-        case .cafe: return 223        // 咖啡馆
-        default: return nil
-        }
+    private func latestMVs() async -> [MV] {
+        await catalogCache.value(for: "qq:MvInfoProServer.GetAllocMvInfo") {
+            guard let data = try? await self.musicu(
+                module: "MvService.MvInfoProServer",
+                method: "GetAllocMvInfo",
+                param: ["area": 15, "version": 0, "order": 1, "start": 0, "size": 12],
+                clientType: 11, clientVersion: 12060012
+            ),
+            let list = data["list"] as? [[String: Any]] else { return nil }
+            return list.compactMap { Self.parseMvListItem($0) }
+        } ?? []
     }
 
     /// 按标签取歌单走老版 fcg（musicu 的 PlaylistSquare 不认标签参数）
@@ -700,31 +835,19 @@ final class QQAPI: MusicProvider {
         return list.compactMap { Self.parseSearchPlaylist($0) }
     }
 
-    /// 歌单广场的推荐流。`From` 是游标（服务端 FromLimit 400），各段各取一截，
-    /// 免得同一页出现同一批歌单。
-    private func recommendFeed(from: Int, size: Int) async -> [Playlist] {
-        await catalogCache.value(for: "qq:PlaylistSquare.GetRecommendFeed?from=\(from)&size=\(size)") {
-            guard let data = try? await self.musicu(module: "music.playlist.PlaylistSquare",
-                                                    method: "GetRecommendFeed",
-                                                    param: ["From": from, "Size": size]),
-                  let list = data["List"] as? [[String: Any]] else { return nil }
-            return list.compactMap { Self.parseFeedPlaylist($0) }
+    /// 官方出品（QQ音乐官方歌单）的高密度打捞名单：只取产出密度最高的前 4 个分类
+    /// （嘻哈 153 / 影视 133 / 爵士 21 / 流行 6，实测共约 20 张官方歌单），避免 14 路扇出。
+    private static let officialFishingCategories = [153, 133, 21, 6]
+
+    /// 官方出品歌单流。按分类轮转合成并缓存在 `catalogCache`。
+    private func officialEditorPlaylists() async -> [Playlist] {
+        await catalogCache.value(for: "qq:officialEditorPlaylists") {
+            let list = await self.loadOfficialEditorPlaylists()
+            return list.isEmpty ? nil : list
         } ?? []
     }
 
-    /// 官方出品（QQ音乐官方歌单）的打捞名单：分类 categoryId 按产出密度排
-    /// （2026-09-06 各分类热榜 top30 实测：嘻哈 6 / 影视 5 / 爵士 5 / 流行 4 / 古典 4 …，
-    /// 全部、古风、情歌等一批是 0 条，不进名单）。
-    private static let officialFishingCategories = [
-        153, 133, 21, 6, 27, 167, 116, 168, 166, 15, 28, 24, 223, 165,
-    ]
-
-    /// 官方出品歌单流。官方没有独立的列表接口（servedDiss / GetCreator 一类都 500003），
-    /// 只在各分类热榜里零散露头，所以并发出各分类 30 条再过滤、去重、合成一条流，
-    /// 新发现顶部 hero（头 6 条）与「歌单已更新」（后 24 条）共用。
-    /// 合成按分类**轮转**取（嘻哈一条→影视一条→爵士一条…），不是串完一桶再下一桶——
-    /// 密度高的分类会灌满头部，顶栏清一色说唱就没编辑气质了。
-    private func officialEditorPlaylists() async -> [Playlist] {
+    private func loadOfficialEditorPlaylists() async -> [Playlist] {
         await withTaskGroup(of: (Int, [Playlist]).self) { group in
             for id in Self.officialFishingCategories {
                 group.addTask { (id, await self.taggedPlaylists(id, limit: 30)) }
@@ -785,33 +908,8 @@ final class QQAPI: MusicProvider {
         }
     }
 
-    /// QQ 版的「为你制作的歌单」：客户端首页推荐流（`get_recommend_feed`）的**功能入口行**里
-    /// 那几张 type=500 的歌单卡（每日30首 / 百万收藏 / 新歌推荐）。
-    /// 要 Android comm（ct=11 / cv=12060012）+ 登录态；卡上带真 tid 与封面，能点开。
-    /// 入口行里还有 type=700（电台「猜你喜欢」）与 type=900（雷达模式这类功能页），这里只取歌单。
-    private func personalMixes() async -> [Playlist] {
-        guard let data = try? await musicu(module: "music.recommend.RecommendFeed",
-                                           method: "get_recommend_feed",
-                                           param: ["From": 0, "Size": 10],
-                                           clientType: 11, clientVersion: 12060012),
-              let shelves = data["v_shelf"] as? [[String: Any]] else { return [] }
-        let cards = shelves.flatMap { shelf in
-            (shelf["v_niche"] as? [[String: Any]] ?? [])
-                .flatMap { ($0["v_card"] as? [[String: Any]]) ?? [] }
-        }
-        return cards.compactMap { card -> Playlist? in
-            guard (card["type"] as? Int) == 500,
-                  let id = card["id"] as? String, id != "0", !id.isEmpty,
-                  let title = card["title"] as? String, !title.isEmpty else { return nil }
-            let cover = (card["cover"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            return Playlist(id: "qq:\(id)", kind: .qq, name: title,
-                            coverURL: cover, creatorName: "QQ音乐")
-        }.dedupedByID()
-    }
-
     /// 个性电台分组（热门/心情/主题/场景/曲风/语言/人群/乐器…），一次请求全拿。
     private func radioGroups() async -> [(id: String, title: String, stations: [Playlist])] {
-        // 「专属精选推荐 / 心情电台 / 电台 / 广播精选 / 风格电台」五个格子要的是同一张表。
         await catalogCache.value(for: "qq:pf.radiosvr.GetRadiolist") {
             await self.loadRadioGroups()
         } ?? []
@@ -851,8 +949,8 @@ final class QQAPI: MusicProvider {
     /// mid → 数字 songid（相似歌曲这类接口只认数字 id）
     func songID(mid: String) async -> Int? {
         guard let data = try? await musicu(module: "music.trackInfo.UniformRuleCtrl",
-                                            method: "CgiGetTrackInfo",
-                                            param: ["mids": [mid], "types": [0]]),
+                                           method: "CgiGetTrackInfo",
+                                           param: ["mids": [mid], "types": [0]]),
               let track = (data["tracks"] as? [[String: Any]])?.first else { return nil }
         return track["id"] as? Int
     }
@@ -870,7 +968,7 @@ final class QQAPI: MusicProvider {
             creatorName: "电台")
     }
 
-    /// 新碟上架（`area` 1=内地/2=港台/3=欧美/4=日本/5=韩国，0 是全部；翻页用 `start`——
+    /// 新碟上架（`area` 1=内地/2=港台/3=欧美/4=韩国/5=日本，0 是全部；翻页用 `start`——
     /// 接口也认 `sin`，但那个键是摆设，传什么都回第一页）。
     private func newAlbums(from: Int, count: Int, area: Int = 0) async -> [Album] {
         await catalogCache.value(for: "qq:get_new_album_info?area=\(area)&start=\(from)&num=\(count)") {
@@ -898,43 +996,6 @@ final class QQAPI: MusicProvider {
             publishDate: a["release_time"] as? String,
             trackCount: (a["ex"] as? [String: Any])?["track_nums"] as? Int ?? 0,
             description: nil)
-    }
-
-    /// 新歌速递。这里固定要**内地**那一档（`type: 1`）。
-    ///
-    /// 频道号别照旧注释记：那份写的是「1=内地/2=港台/3=欧美/4=韩国/5=日本」，与接口自己
-    /// 回的频道表对不上。[实测 2026-09-09 curl] 响应里的 `lanlist` 是权威表——
-    /// **5=最新 / 1=内地 / 6=港台 / 2=欧美 / 4=韩国 / 3=日本**。枚举写在
-    /// `QQAPI+Recommend.NewSongChannel`，要换档从那儿取。
-    private func newSongTracks() async -> [Track] {
-        // 「为你推荐最新作品」与「新歌」两个格子共用这一条。
-        await catalogCache.value(for: "qq:get_new_song_info?type=1") {
-            guard let data = try? await self.musicu(module: "newsong.NewSongServer",
-                                                    method: "get_new_song_info",
-                                                    param: ["type": 1]),
-                  let list = data["songlist"] as? [[String: Any]] else { return nil }
-            return list.compactMap { Self.parseTrack($0) }
-        } ?? []
-    }
-
-    /// 巅峰榜目录
-    private func toplists() async -> [Playlist] {
-        // 「排行榜」与「城市榜」两个格子共用这一条。
-        await catalogCache.value(for: "qq:musicToplist.GetAll") { await self.loadToplists() } ?? []
-    }
-
-    private func loadToplists() async -> [Playlist]? {
-        guard let data = try? await musicu(module: "music.musicToplist.Toplist",
-                                           method: "GetAll", param: [:]),
-              let groups = data["group"] as? [[String: Any]] else { return nil }
-        return groups.flatMap { $0["toplist"] as? [[String: Any]] ?? [] }.prefix(12).compactMap { t in
-            guard let topId = t["topId"] as? Int else { return nil }
-            let rawCover = (t["headPicUrl"] as? String) ?? (t["frontPicUrl"] as? String)
-            return Playlist(id: "qq:top:\(topId)", kind: .qq,
-                            name: t["title"] as? String ?? "排行榜",
-                            coverURL: Self.httpsURL(rawCover),
-                            creatorName: "排行榜")
-        }
     }
 
     // MARK: - 账号歌单

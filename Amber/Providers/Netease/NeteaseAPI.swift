@@ -47,7 +47,17 @@ final class NeteaseAPI: MusicProvider {
     /// 当前登录凭证（可能为 nil）。AppState 订阅 store 的 `credential` 推进来。
     var credential: NeteaseCredential? {
         get { injected.withLock { $0.credential } }
-        set { injected.withLock { $0.credential = newValue } }
+        set {
+            let changed = injected.withLock { state -> Bool in
+                let changed = state.credential != newValue
+                state.credential = newValue
+                return changed
+            }
+            if changed {
+                let cache = catalogCache
+                Task { await cache.invalidateAll() }
+            }
+        }
     }
 
     /// 全局流播放档位，已过设置窗的夹取（无损开关 / 杜比全景声）。
@@ -607,139 +617,692 @@ final class NeteaseAPI: MusicProvider {
 
     // MARK: - 目录页取数
 
-    /// 页面结构由 CatalogPages 定死（照 Apple Music），这里只按格子交数据。
+    /// 按页面（主页 / 新发现 / 广播）与当前登录态组织原生货架。
     ///
-    /// 外面这一层与 QQ 那边同形：收连接类失败、填 `CatalogSlotResult.failure`，
-    /// 让目录页分得开「断网」与「音源没这一格」（§2.6-8）。见 `CatalogFailureSink`。
-    func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult {
-        await CatalogFailureSink.attach { await self.catalogSlot(slot) }
+    /// 外层套 `CatalogFailureSink.attachFeed`：收集连接类失败，仅在整页全空时填 `failure`。
+    func catalogFeed(for page: CatalogFeedPage, recentTracks: [Track]) async -> CatalogFeedResult {
+        await CatalogFailureSink.attachFeed {
+            switch page {
+            case .home:
+                return await self.homeShelves(recentTracks: recentTracks)
+            case .browse:
+                return await self.browseShelves()
+            case .radio:
+                return await self.radioShelves()
+            }
+        }
     }
 
-    private func catalogSlot(_ slot: CatalogSlot) async -> CatalogSlotResult {
-        switch slot {
-        case .recentlyPlayed, .musicMemories:
-            return .empty   // 本地资料库来的，页面自己填
+    private func homeShelves(recentTracks: [Track]) async -> [CatalogShelf] {
+        let loggedIn = isLoggedIn
+        async let blocksTask = homepageBlocks()
+        async let dailySongsTask: [Track] = loggedIn ? cachedDailyRecommendedTracks() : []
+        async let dailyListsTask: [Playlist] = loggedIn ? cachedDailyRecommendedPlaylists() : []
+        async let moreLikeTask = moreLikeThisResult(seeds: Array(recentTracks.prefix(5)))
+        async let personalizedListsTask = personalized("/api/personalized/playlist", limit: 12)
+        async let stylesTask = cachedStyleTags()
+        async let radiosTask = cachedRecommendedRadios()
+        async let hotRadiosTask = hotDJRadios(limit: 12)
+        async let albumsTask = newAlbums(limit: 12, offset: 0)
+        async let artistsTask = cachedTopArtists(limit: 12)
 
-        case .topPicks:
-            // 电台/专辑/心情/歌单**交替**摆，配方在 CatalogSlotResult.topPicks。
-            // 网易云没有「个人电台」这种实体，最接近的是首页的**雷达歌单**
-            //（私人雷达/时光雷达/乐迷雷达/新歌雷达），摆在 Music 那两张电台卡的位置上。
-            async let radars = radarPlaylists()
-            async let albums = newAlbums(limit: 6, offset: 0)
-            async let moods = moodPlaylists()
-            let (rd, al, md) = await (radars, albums, moods)
-            // 雷达前 3 张摆在电台位，剩下的留给「为你制作的歌单」，一页里不重样
-            return .topPicks(radios: Array(rd.prefix(3)), moods: md, albums: al)
-        case .madeForYou:
-            // Music 这一段是 Apple 自动生成的**个人混音歌单**（pl.pm-），只有 3 张。
-            // 网易云的对应物就是雷达歌单（私人/时光/乐迷/新歌雷达）；前 3 张给了
-            // 「专属精选推荐」的电台位，这里取后面的。不拿个性推荐歌单顶——那批是 UGC 标题。
-            let radars = await radarPlaylists()
-            return .init(items: .playlists(radars.count > 3 ? Array(radars.dropFirst(3)) : radars))
+        let (blocks, dailySongs, dailyLists, moreLike, personalizedLists,
+             styles, rcmdRadios, hotRadios, albums, artists) = await (
+            blocksTask, dailySongsTask, dailyListsTask, moreLikeTask, personalizedListsTask,
+            stylesTask, radiosTask, hotRadiosTask, albumsTask, artistsTask
+        )
 
-        case .moodStations:
-            return .init(items: .playlists(await moodPlaylists()))
-        case .stations:
-            return .init(items: .playlists(await hotDJRadios(limit: 12)))
+        var shelves: [CatalogShelf] = []
 
-        case .latestReleases:
-            // 「为你推荐最新作品」：推荐新音乐所属的专辑
-            guard let resp = try? await get("/api/personalized/newsong", params: ["limit": "30"]),
-                  let result = resp["result"] as? [[String: Any]] else { return .empty }
-            let albums = result.compactMap { item -> Album? in
-                guard let song = item["song"] as? [String: Any],
-                      let album = song["album"] as? [String: Any] else { return nil }
+        // 1. 专属精选推荐（海报卡）：已登录时头卡摆「每日歌曲推荐」曲目包，随后穿插雷达歌单、新碟与场景歌单
+        var leadPacks: [CatalogTrackPack] = []
+        if !dailySongs.isEmpty {
+            let previewNames = dailySongs.prefix(3).map(\.title).joined(separator: " · ")
+            leadPacks.append(CatalogTrackPack(
+                id: "ne:daily-songs",
+                title: "每日歌曲推荐",
+                eyebrow: "每日推荐",
+                subtitle: "根据你的音乐口味生成 · 每日 6:00 更新",
+                description: previewNames.isEmpty ? nil : previewNames,
+                artworkURL: dailySongs.first?.artworkURL,
+                tracks: dailySongs
+            ))
+        }
+        let allRadars = (dailyLists + blocks.radarPlaylists).dedupedByID()
+        let topRadios = Array(allRadars.prefix(3))
+        let topRadioIDs = Set(topRadios.map(\.id))
+        let topMoods = Array((blocks.officialPlaylists + blocks.recommendedPlaylists).dedupedByID().prefix(4))
+        let topMoodIDs = Set(topMoods.map(\.id))
+        let mergedAlbums = (blocks.newAlbums + albums).dedupedByID()
+        let topAlbums = Array(mergedAlbums.prefix(6))
+
+        let topPicks = CatalogSlotResult.topPicks(
+            leadPacks: leadPacks,
+            radios: topRadios,
+            moods: topMoods,
+            albums: topAlbums
+        )
+        if let shelf = CatalogShelf.make(id: "top-picks", title: "专属精选推荐", style: .poster, result: topPicks) {
+            shelves.append(shelf)
+        }
+
+        // 2. 雷达歌单 / 为你定制（海报卡）：优先展示未在首屏用掉的日推歌单与雷达歌单
+        let remainingRadars = allRadars.filter { !topRadioIDs.contains($0.id) }
+        let madePlaylists = remainingRadars.isEmpty ? blocks.radarPlaylists : remainingRadars
+        if let shelf = CatalogShelf.playlists(
+            id: "made-for-you",
+            title: loggedIn ? "专属与雷达歌单" : "雷达歌单",
+            style: .poster,
+            madePlaylists
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 3. 更多类似作品（有最近播放种子时插入）
+        if let moreLike,
+           let shelf = CatalogShelf.make(id: "more-like-1", style: .squares(rows: 1),
+                                         showsChevron: true, result: moreLike) {
+            shelves.append(shelf)
+        }
+
+        // 4. 专属场景歌单（来自首页 HOMEPAGE_BLOCK_OFFICIAL_PLAYLIST）
+        let officialLists = blocks.officialPlaylists.filter { !topMoodIDs.contains($0.id) }
+        if let shelf = CatalogShelf.playlists(
+            id: "official-playlists",
+            title: "专属场景歌单",
+            style: .squares(rows: 1),
+            showsChevron: true,
+            officialLists.isEmpty ? blocks.officialPlaylists : officialLists
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 5. 推荐歌单（来自首页 HOMEPAGE_BLOCK_PLAYLIST_RCMD + personalized 兜底）
+        let rcmdLists = (blocks.recommendedPlaylists + personalizedLists).dedupedByID()
+        if let shelf = CatalogShelf.playlists(
+            id: "recommended-playlists",
+            title: "推荐歌单",
+            style: .squares(rows: 1),
+            showsChevron: true,
+            rcmdLists
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 6. 多元旋律之旅 / 新歌速递（来自首页 HOMEPAGE_BLOCK_STYLE_RCMD 或新歌块）
+        let homeTracks = !blocks.styleSongs.isEmpty ? blocks.styleSongs : blocks.newSongs
+        let homeTrackTitle = !blocks.styleSongs.isEmpty ? (blocks.styleTitle ?? "精选歌曲") : "新歌速递"
+        if let shelf = CatalogShelf.tracks(
+            id: "home-songs",
+            title: homeTrackTitle,
+            style: .trackColumns(rows: 4),
+            showsChevron: true,
+            Array(homeTracks.prefix(16))
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 7. 曲风馆（视觉卡片，点进二级曲风胶囊房间）
+        let styleGroups = Self.visualStyleGroups(from: styles)
+        if let shelf = CatalogShelf.tagGroups(
+            id: "style-tags",
+            title: "曲风馆",
+            style: .stations,
+            showsChevron: true,
+            styleGroups
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 8. 热门播客
+        let mergedRadios = (rcmdRadios.radios + hotRadios).dedupedByID()
+        if let shelf = CatalogShelf.playlists(
+            id: "hot-radios",
+            title: "热门播客",
+            style: .stations,
+            showsChevron: true,
+            mergedRadios
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 9. 最新上架
+        if let shelf = CatalogShelf.albums(
+            id: "latest-albums",
+            title: "最新上架",
+            style: .squares(rows: 1),
+            showsChevron: true,
+            mergedAlbums
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 10. 热门歌手
+        if let shelf = CatalogShelf.artists(
+            id: "hot-artists",
+            title: "热门歌手",
+            style: .squares(rows: 1),
+            showsChevron: true,
+            artists
+        ) {
+            shelves.append(shelf)
+        }
+
+        return shelves
+    }
+
+    private func browseShelves() async -> [CatalogShelf] {
+        async let hqHeroTask = highqualityPlaylists(offset: 0, limit: 6)
+        async let hqMoreTask = highqualityPlaylists(offset: 6, limit: 24)
+        async let newSongsTask = cachedNewSongs(area: .all)
+        async let areaAlbumsTask = cachedNewAlbumsByArea()
+        async let fallbackAlbumsTask = newAlbums(limit: 24, offset: 0)
+        async let toplistsTask = cachedToplistGroups()
+        async let mvsTask = cachedLatestMVs(limit: 12)
+        async let catalogueTask = cachedPlaylistCatalogue()
+        async let stylesTask = cachedStyleTags()
+
+        let (hqHero, hqMore, newSongsList, areaAlbums, fallbackAlbums,
+             toplistGroups, mvs, catalogue, styles) = await (
+            hqHeroTask, hqMoreTask, newSongsTask, areaAlbumsTask, fallbackAlbumsTask,
+            toplistsTask, mvsTask, catalogueTask, stylesTask
+        )
+
+        var shelves: [CatalogShelf] = []
+
+        // 1. 顶部 Hero：精品歌单前 6 张
+        if !hqHero.isEmpty {
+            var eyebrows: [String: String] = [:]
+            for item in hqHero { eyebrows[item.id] = "精品歌单" }
+            if let shelf = CatalogShelf.make(
+                id: "hero",
+                style: .hero,
+                result: .init(items: .playlists(hqHero), eyebrows: eyebrows)
+            ) {
+                shelves.append(shelf)
+            }
+        }
+
+        // 2. 新歌速递（/api/v1/discovery/new/songs）
+        let newSongChart = Playlist(id: "ne:3779629", kind: .netease, name: "新歌榜")
+        if let shelf = CatalogShelf.tracks(
+            id: "new-songs",
+            title: "新歌速递",
+            style: .trackColumns(rows: 4),
+            showsChevron: true,
+            seeAll: newSongChart,
+            Array(newSongsList.prefix(20))
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 3. 本周新碟 & 本月新碟（/api/discovery/new/albums/area）
+        let weekAlbums = !areaAlbums.week.isEmpty ? Array(areaAlbums.week.prefix(24)) : fallbackAlbums
+        if let shelf = CatalogShelf.albums(
+            id: "new-albums-week",
+            title: "本周新碟",
+            style: .squares(rows: 1),
+            showsChevron: true,
+            weekAlbums
+        ) {
+            shelves.append(shelf)
+        }
+
+        let weekIDs = Set(weekAlbums.map(\.id))
+        let monthAlbums = Array(areaAlbums.month.filter { !weekIDs.contains($0.id) }.prefix(24))
+        if let shelf = CatalogShelf.albums(
+            id: "new-albums-month",
+            title: "本月新碟",
+            style: .squares(rows: 1),
+            showsChevron: true,
+            monthAlbums
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 4. 精品歌单（双行方卡）
+        if let shelf = CatalogShelf.playlists(
+            id: "highquality-playlists",
+            title: "精品歌单",
+            style: .squares(rows: 2),
+            showsChevron: true,
+            hqMore
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 5. 排行榜全分组（/api/toplist/detail/v2 原生 7 组：榜单推荐/官方榜/精选榜/曲风榜/全球榜/语种榜/特色榜）
+        for group in toplistGroups {
+            let charts = group.charts.map { entry in
+                Playlist(
+                    id: entry.playlistID,
+                    kind: .netease,
+                    name: entry.name,
+                    coverURL: entry.coverURL,
+                    description: entry.updateFrequency,
+                    creatorName: group.name
+                )
+            }
+            if let shelf = CatalogShelf.playlists(
+                id: "toplist-\(group.id)",
+                title: group.name,
+                style: .squares(rows: 1),
+                showsChevron: true,
+                charts
+            ) {
+                shelves.append(shelf)
+            }
+        }
+
+        // 6. 最新 MV
+        if let shelf = CatalogShelf.mvs(
+            id: "mv-first",
+            title: "最新 MV",
+            style: .videos,
+            showsChevron: true,
+            mvs
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 7. 歌单与曲风分类（探索更多）
+        var exploreGroups = catalogue
+        if !styles.isEmpty {
+            let styleRefs = styles.map { CatalogTagRef(id: "style:\($0.id)", name: $0.name) }
+            exploreGroups.append(CatalogTagGroup(
+                id: "ne-style-all",
+                kind: .netease,
+                name: "曲风分类",
+                tags: styleRefs
+            ))
+        }
+        if let shelf = CatalogShelf.tagGroups(
+            id: "explore",
+            title: "歌单分类",
+            style: .links,
+            exploreGroups
+        ) {
+            shelves.append(shelf)
+        }
+
+        return shelves
+    }
+
+    private func radioShelves() async -> [CatalogShelf] {
+        async let rcmdTask = cachedRecommendedRadios()
+        async let personalTask = cachedPersonalizedRadios()
+        async let hourlyProgramsTask = cachedProgramToplistHourly(limit: 24)
+        async let hotToplistTask = cachedRadioToplist(hot: true, limit: 16)
+        async let newToplistTask = cachedRadioToplist(hot: false, limit: 16)
+        async let categoriesTask = cachedDJCategoryRecommendations()
+
+        let (rcmd, personal, hourlyPrograms, hotToplist, newToplist, categories) = await (
+            rcmdTask, personalTask, hourlyProgramsTask, hotToplistTask, newToplistTask, categoriesTask
+        )
+
+        var shelves: [CatalogShelf] = []
+
+        // 1. 广播顶部 Hero：精选电台 + 个性化推荐电台
+        let heroRadios = Array((rcmd.radios + personal).dedupedByID().prefix(6))
+        if !heroRadios.isEmpty {
+            var eyebrows: [String: String] = [:]
+            let badge = rcmd.title ?? "精选播客"
+            for radio in heroRadios { eyebrows[radio.id] = badge }
+            if let shelf = CatalogShelf.make(
+                id: "radio-hero",
+                style: .hero,
+                result: .init(items: .playlists(heroRadios), eyebrows: eyebrows)
+            ) {
+                shelves.append(shelf)
+            }
+        }
+
+        // 2. 24 小时节目热榜（/api/djprogram/toplist/hours）
+        if let shelf = CatalogShelf.tracks(
+            id: "program-toplist",
+            title: "24 小时节目榜",
+            style: .episodes(rows: 3),
+            showsChevron: true,
+            hourlyPrograms
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 3. 热门电台榜 & 新晋电台榜（/api/djradio/toplist）
+        if let shelf = CatalogShelf.playlists(
+            id: "radio-hot",
+            title: "热门电台榜",
+            style: .stations,
+            showsChevron: true,
+            hotToplist
+        ) {
+            shelves.append(shelf)
+        }
+        if let shelf = CatalogShelf.playlists(
+            id: "radio-new",
+            title: "新晋电台榜",
+            style: .stations,
+            showsChevron: true,
+            newToplist
+        ) {
+            shelves.append(shelf)
+        }
+
+        // 4. 分类推荐电台全矩阵（/api/djradio/home/category/recommend 一次返回全部 12 组）
+        for category in categories {
+            if let shelf = CatalogShelf.playlists(
+                id: "dj-cat-\(category.id)",
+                title: category.categoryName,
+                style: .stations,
+                showsChevron: true,
+                category.radios
+            ) {
+                shelves.append(shelf)
+            }
+        }
+
+        return shelves
+    }
+
+    /// 分类浏览页：支持曲风标签（`style:<tagId>` 走 `stylePlaylists`）与传统歌单分类（`/api/playlist/list`）。
+    func playlists(tag: CatalogTagRef) async -> [Playlist] {
+        if tag.id.hasPrefix("style:") {
+            let tagID = String(tag.id.dropFirst("style:".count))
+            return await catalogCache.value(for: "ne:style/playlist:\(tagID)") {
+                let list = await self.stylePlaylists(tagID: tagID, size: 36).playlists
+                return list.isEmpty ? nil : list
+            } ?? []
+        }
+        return await taggedPlaylists(tag.id, limit: 36)
+    }
+
+    /// 一级曲风列表转为带封面与二级胶囊的 `CatalogTagGroup`。
+    private static func visualStyleGroups(from tags: [NeteaseStyleTag]) -> [CatalogTagGroup] {
+        tags.compactMap { tag in
+            let allRef = CatalogTagRef(id: "style:\(tag.id)", name: "全部")
+            let childRefs = tag.children.map { CatalogTagRef(id: "style:\($0.id)", name: $0.name) }
+            return CatalogTagGroup(
+                id: "ne-style-\(tag.id)",
+                kind: .netease,
+                name: tag.name,
+                subtitle: tag.englishName,
+                coverURL: tag.picURL,
+                tags: [allRef] + childRefs
+            )
+        }
+    }
+
+    private func moreLikeThisResult(seeds: [Track]) async -> CatalogSlotResult? {
+        for seed in seeds {
+            guard let resp = try? await get("/api/discovery/simiSong",
+                                            params: ["songid": seed.id.rawID, "limit": "12"]),
+                  let songs = resp["songs"] as? [[String: Any]] else { continue }
+            let albums = songs.compactMap { song -> Album? in
+                guard let album = song["album"] as? [String: Any] else { return nil }
                 return Self.parseAlbum(album)
+            }.dedupedByID()
+            if !albums.isEmpty {
+                let seedAlbum = Album(
+                    id: seed.albumId ?? seed.id, kind: seed.kind,
+                    name: seed.albumName.isEmpty ? seed.title : seed.albumName,
+                    artistName: seed.artistName, artistId: seed.artistId,
+                    artworkURL: seed.artworkURL, publishDate: nil,
+                    trackCount: 0, description: nil
+                )
+                return .init(
+                    items: .albums(albums),
+                    title: seed.title,
+                    headline: "更多类似作品",
+                    seedArtworkURL: seed.artworkURL,
+                    seedAlbum: seedAlbum
+                )
             }
-            return .init(items: .albums(albums.dedupedByID()))
+        }
+        return nil
+    }
 
-        case .recommendedPlaylist:
-            // 整宽大横幅，只要一张编辑歌单。个性歌单 8..15 给了「为你制作的歌单」，
-            // 这里取头一张，同一页里不重样。
-            let playlists = await personalized("/api/personalized/playlist", limit: 8)
-            guard let pick = playlists.first else { return .empty }
-            return .init(items: .playlists([pick]))
+    // MARK: - 首页聚合与目录缓存
 
-        case .tagged(let tag):
-            // Music 长尾货架里主要是专辑：语种维度直接取该地区的新碟；
-            // 年代/曲风没有按维度取专辑的接口，退回歌单。
-            if let area = Self.albumArea(tag) {
-                return .init(items: .albums(await newAlbums(limit: 12, offset: 0, area: area)))
+    private struct HomepageBlocks: Sendable {
+        var radarPlaylists: [Playlist] = []
+        var officialPlaylists: [Playlist] = []
+        var recommendedPlaylists: [Playlist] = []
+        var styleTitle: String?
+        var styleSongs: [Track] = []
+        var newSongs: [Track] = []
+        var newAlbums: [Album] = []
+    }
+
+    private func homepageBlocks() async -> HomepageBlocks {
+        let uidKey = credential?.uid ?? 0
+        return await catalogCache.value(for: "ne:/api/homepage/block/page:\(uidKey)") {
+            await self.loadHomepageBlocks()
+        } ?? HomepageBlocks()
+    }
+
+    private func loadHomepageBlocks() async -> HomepageBlocks? {
+        var resp = try? await eapi("/api/homepage/block/page")
+        if resp == nil {
+            resp = try? await get("/api/homepage/block/page")
+        }
+        guard let blocks = (resp?["data"] as? [String: Any])?["blocks"] as? [[String: Any]] else {
+            return nil
+        }
+        var out = HomepageBlocks()
+        for block in blocks {
+            guard let code = block["blockCode"] as? String else { continue }
+            let creatives = block["creatives"] as? [[String: Any]] ?? []
+            switch code {
+            case "HOMEPAGE_BLOCK_MGC_PLAYLIST":
+                out.radarPlaylists = Self.parseBlockPlaylists(
+                    creatives: creatives,
+                    splitRadarTitle: true,
+                    defaultCreator: "网易云音乐"
+                )
+            case "HOMEPAGE_BLOCK_OFFICIAL_PLAYLIST":
+                out.officialPlaylists = Self.parseBlockPlaylists(
+                    creatives: creatives,
+                    splitRadarTitle: false,
+                    defaultCreator: "官方甄选"
+                )
+            case "HOMEPAGE_BLOCK_PLAYLIST_RCMD":
+                out.recommendedPlaylists = Self.parseBlockPlaylists(
+                    creatives: creatives,
+                    splitRadarTitle: false,
+                    defaultCreator: nil
+                )
+            case "HOMEPAGE_BLOCK_STYLE_RCMD":
+                let ui = block["uiElement"] as? [String: Any]
+                out.styleTitle = ((ui?["subTitle"] as? [String: Any])?["title"] as? String)
+                    ?? ((ui?["mainTitle"] as? [String: Any])?["title"] as? String)
+                out.styleSongs = Self.parseBlockTracks(creatives: creatives)
+            case "HOMEPAGE_BLOCK_NEW_ALBUM_NEW_SONG":
+                let songCreatives = creatives.filter { ($0["creativeType"] as? String) == "NEW_SONG_HOMEPAGE" }
+                let albumCreatives = creatives.filter {
+                    let type = $0["creativeType"] as? String
+                    return type == "NEW_ALBUM_HOMEPAGE" || type == "DIGITAL_ALBUM_HOMEPAGE"
+                }
+                out.newSongs = Self.parseBlockTracks(creatives: songCreatives)
+                out.newAlbums = Self.parseBlockAlbums(creatives: albumCreatives)
+            default:
+                break
             }
-            guard let name = Self.tagName(tag) else { return .empty }
-            return .init(items: .playlists(await taggedPlaylists(name, limit: 12)))
+        }
+        return out
+    }
 
-        case .moreLikeThis(let seeds):
-            // Music 的「更多类似作品」段：种子是你听过的一首歌，段里装相似作品的**专辑**。
-            // 电台节目这类种子查不出东西，按最近播放顺序往后试。
-            for seed in seeds {
-                guard let resp = try? await get("/api/discovery/simiSong",
-                                                params: ["songid": seed.id.rawID, "limit": "12"]),
-                      let songs = resp["songs"] as? [[String: Any]] else { continue }
-                let albums = songs.compactMap { song -> Album? in
-                    guard let album = song["album"] as? [String: Any] else { return nil }
-                    return Self.parseAlbum(album)
-                }.dedupedByID()
-                if !albums.isEmpty {
-                    let seedAlbum: Album = Album(
-                        id: seed.albumId ?? seed.id, kind: seed.kind,
-                        name: seed.albumName.isEmpty ? seed.title : seed.albumName,
-                        artistName: seed.artistName, artistId: seed.artistId,
-                        artworkURL: seed.artworkURL, publishDate: nil,
-                        trackCount: 0, description: nil)
-                    return .init(items: .albums(albums), title: seed.title,
-                                 headline: "更多类似作品", seedArtworkURL: seed.artworkURL,
-                                 seedAlbum: seedAlbum)
+    private static func parseBlockPlaylists(
+        creatives: [[String: Any]],
+        splitRadarTitle: Bool,
+        defaultCreator: String?
+    ) -> [Playlist] {
+        var playlists: [Playlist] = []
+        for creative in creatives {
+            let resources = (creative["resources"] as? [[String: Any]]) ?? []
+            let nodes = resources.isEmpty ? [creative] : resources
+            for node in nodes {
+                let id = (node["resourceId"] as? String)
+                    ?? (node["creativeId"] as? String)
+                    ?? (creative["creativeId"] as? String)
+                guard let id, !id.isEmpty, Int(id) != nil else { continue }
+                let ui = (node["uiElement"] as? [String: Any]) ?? (creative["uiElement"] as? [String: Any])
+                guard let rawTitle = ((ui?["mainTitle"] as? [String: Any])?["title"]) as? String,
+                      !rawTitle.isEmpty else { continue }
+                let cover = ((ui?["image"] as? [String: Any])?["imageUrl"]) as? String ?? ""
+                let subTitle = ((ui?["subTitle"] as? [String: Any])?["title"] as? String)
+                    .flatMap { $0.isEmpty ? nil : $0 }
+                let ext = node["resourceExtInfo"] as? [String: Any]
+                let playCount = ext?["playCount"] as? Int ?? 0
+
+                let parts = rawTitle.split(separator: "|", maxSplits: 1)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                let name: String
+                let desc: String?
+                if parts.count > 1 {
+                    name = splitRadarTitle ? parts[1] : parts[0]
+                    desc = splitRadarTitle ? parts[0] : parts[1]
+                } else {
+                    name = rawTitle
+                    desc = subTitle
+                }
+                playlists.append(Playlist(
+                    id: "ne:\(id)",
+                    kind: .netease,
+                    name: name,
+                    coverURL: artworkURL(cover),
+                    description: desc,
+                    playCount: playCount,
+                    creatorName: defaultCreator
+                ))
+            }
+        }
+        return playlists.dedupedByID()
+    }
+
+    private static func parseBlockTracks(creatives: [[String: Any]]) -> [Track] {
+        var tracks: [Track] = []
+        for creative in creatives {
+            let resources = (creative["resources"] as? [[String: Any]]) ?? []
+            for resource in resources {
+                let ext = resource["resourceExtInfo"] as? [String: Any]
+                if let songData = (ext?["songData"] as? [String: Any]) ?? (ext?["song"] as? [String: Any]),
+                   let track = parseTrack(songData) {
+                    tracks.append(track)
                 }
             }
-            return .empty
+        }
+        return tracks.dedupedByID()
+    }
 
-        case .featured:
-            // 探新顶部：精品歌单（网易云编辑过审入库的那批，标题/推荐语是正经话）。
-            // 「全部·最热」是 UGC 热榜，全是「抖音最火」「回忆杀」那类标题，
-            // 跟 Music 探新顶部那排编辑位的气质不搭（同 topPicks 不收推荐流歌单的规矩）。
-            let featured = Array(await highqualityPlaylists(offset: 0, limit: 6).prefix(6))
-            var eyebrows: [String: String] = [:]
-            featured.forEach { eyebrows[$0.id] = "精品歌单" }
-            return .init(items: .playlists(featured), eyebrows: eyebrows)
+    private static func parseBlockAlbums(creatives: [[String: Any]]) -> [Album] {
+        var albums: [Album] = []
+        for creative in creatives {
+            let resources = (creative["resources"] as? [[String: Any]]) ?? []
+            for resource in resources {
+                guard let id = resource["resourceId"] as? String, !id.isEmpty else { continue }
+                let ui = resource["uiElement"] as? [String: Any]
+                guard let name = ((ui?["mainTitle"] as? [String: Any])?["title"]) as? String,
+                      !name.isEmpty else { continue }
+                let cover = ((ui?["image"] as? [String: Any])?["imageUrl"]) as? String ?? ""
+                let ext = resource["resourceExtInfo"] as? [String: Any]
+                let artists = ext?["artists"] as? [[String: Any]] ?? []
+                let artistName = artists.compactMap { $0["name"] as? String }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " / ")
+                let artistId = (artists.first?["id"] as? Int).map { "ne:\($0)" }
+                let subTitle = ((ui?["subTitle"] as? [String: Any])?["title"] as? String)
+                    .flatMap { $0.isEmpty ? nil : $0 }
+                albums.append(Album(
+                    id: "ne:\(id)",
+                    kind: .netease,
+                    name: name,
+                    artistName: artistName.isEmpty ? "未知歌手" : artistName,
+                    artistId: artistId,
+                    artworkURL: artworkURL(cover),
+                    publishDate: nil,
+                    trackCount: 0,
+                    description: subTitle
+                ))
+            }
+        }
+        return albums.dedupedByID()
+    }
 
-        case .artistSpotlights:
-            guard let resp = try? await get("/api/toplist/artist", params: ["type": "1"]),
+    private func cachedDailyRecommendedTracks() async -> [Track] {
+        let uidKey = credential?.uid ?? 0
+        return await catalogCache.value(for: "ne:dailyRecommendedTracks:\(uidKey)") {
+            let tracks = await self.dailyRecommendedTracks()
+            return tracks.isEmpty ? nil : tracks
+        } ?? []
+    }
+
+    private func cachedDailyRecommendedPlaylists() async -> [Playlist] {
+        let uidKey = credential?.uid ?? 0
+        return await catalogCache.value(for: "ne:dailyRecommendedPlaylists:\(uidKey)") {
+            let lists = await self.dailyRecommendedPlaylists()
+            return lists.isEmpty ? nil : lists
+        } ?? []
+    }
+
+    private func cachedStyleTags() async -> [NeteaseStyleTag] {
+        await catalogCache.value(for: "ne:/api/tag/list/get") {
+            let tags = await self.styleTags()
+            return tags.isEmpty ? nil : tags
+        } ?? []
+    }
+
+    private func cachedToplistGroups() async -> [NeteaseToplistGroup] {
+        await catalogCache.value(for: "ne:/api/toplist/detail/v2") {
+            let groups = await self.toplistGroups()
+            return groups.isEmpty ? nil : groups
+        } ?? []
+    }
+
+    private func cachedNewSongs(area: NeteaseArtistArea) async -> [Track] {
+        await catalogCache.value(for: "ne:/api/v1/discovery/new/songs:\(area.rawValue)") {
+            let songs = await self.newSongs(area: area)
+            return songs.isEmpty ? nil : songs
+        } ?? []
+    }
+
+    private struct AreaAlbumsPair: Sendable {
+        let week: [Album]
+        let month: [Album]
+    }
+
+    private func cachedNewAlbumsByArea() async -> AreaAlbumsPair {
+        await catalogCache.value(for: "ne:/api/discovery/new/albums/area:ALL") {
+            let pair = await self.newAlbumsByArea(area: "ALL", type: "new", limit: 30)
+            guard !pair.week.isEmpty || !pair.month.isEmpty else { return nil }
+            return AreaAlbumsPair(week: pair.week, month: pair.month)
+        } ?? AreaAlbumsPair(week: [], month: [])
+    }
+
+    private func cachedTopArtists(limit: Int) async -> [Artist] {
+        await catalogCache.value(for: "ne:/api/artist/top?limit=\(limit)") {
+            let list = await self.topArtists(limit: limit, offset: 0)
+            if !list.isEmpty { return list }
+            guard let resp = try? await self.get("/api/toplist/artist", params: ["type": "1"]),
                   let artists = ((resp["list"] as? [String: Any])?["artists"]) as? [[String: Any]]
-            else { return .empty }
-            return .init(items: .artists(artists.prefix(12).compactMap { Self.parseArtist($0) }))
+            else { return nil }
+            return Array(artists.prefix(limit)).compactMap { Self.parseArtist($0) }
+        } ?? []
+    }
 
-        case .newSongs:
-            return await chartSlot(playlistID: "ne:3779629")     // 新歌榜
-        case .trendingSongs:
-            return await chartSlot(playlistID: "ne:19723756")    // 飙升榜
-        case .popularSongs:
-            return await chartSlot(playlistID: "ne:3778678")     // 热歌榜
+    private func cachedLatestMVs(limit: Int) async -> [MV] {
+        await catalogCache.value(for: "ne:/api/mv/first?limit=\(limit)") {
+            guard let resp = try? await self.get("/api/mv/first", params: ["limit": "\(limit)"]),
+                  let data = resp["data"] as? [[String: Any]] else { return nil }
+            let mvs = data.compactMap { Self.parseMV($0) }
+            return mvs.isEmpty ? nil : mvs
+        } ?? []
+    }
 
-        case .newReleases(let page):
-            return .init(items: .albums(await newAlbums(limit: 24, offset: page * 24)))
-
-        case .updatedPlaylists:
-            // 与顶部 hero 共用精品歌单一条流：hero 取头 6 条，这里往后取，不重不漏
-            return .init(items: .playlists(await highqualityPlaylists(offset: 6, limit: 24)))
-
-        case .charts:
-            guard let list = await toplist()?.rows else { return .empty }
-            return .init(items: .playlists(list.prefix(12).compactMap { Self.parsePlaylist($0) }))
-
-        case .cityCharts:
-            // 网易云没有城市榜，只有地区榜（美/英/日/韩…），落在同一格
-            guard let list = await toplist()?.rows else { return .empty }
-            let regional = list.filter { (($0["name"] as? String) ?? "").contains("榜") }
-            return .init(items: .playlists(Array(regional.dropFirst(12).prefix(12))
-                .compactMap { Self.parsePlaylist($0) }))
-
-        case .browseGroups:
-            // 歌单分类：categories 是 {"0":"语种","1":"风格",…}，
-            // sub 里每个标签用 category 指回组号
-            guard let resp = try? await get("/api/playlist/catalogue"),
+    private func cachedPlaylistCatalogue() async -> [CatalogTagGroup] {
+        await catalogCache.value(for: "ne:/api/playlist/catalogue") {
+            guard let resp = try? await self.get("/api/playlist/catalogue"),
                   let categories = resp["categories"] as? [String: Any],
-                  let sub = resp["sub"] as? [[String: Any]] else { return .empty }
+                  let sub = resp["sub"] as? [[String: Any]] else { return nil }
             let groups = categories.keys.compactMap(Int.init).sorted().compactMap { index -> CatalogTagGroup? in
                 guard let name = categories["\(index)"] as? String else { return nil }
                 let tags = sub
@@ -749,93 +1312,53 @@ final class NeteaseAPI: MusicProvider {
                 guard !tags.isEmpty else { return nil }
                 return CatalogTagGroup(id: "ne-\(index)", kind: .netease, name: name, tags: tags)
             }
-            return .init(items: .tagGroups(groups))
-
-        case .artistShares:
-            // Music 这一段是 MV + 访谈；网易云没有访谈，用最新 MV 顶（条目类型一致）
-            guard let resp = try? await get("/api/mv/first", params: ["limit": "12"]),
-                  let data = resp["data"] as? [[String: Any]] else { return .empty }
-            return .init(items: .mvs(data.compactMap { Self.parseMV($0) }))
-
-        case .radioEpisodes:
-            guard let resp = try? await get("/api/personalized/djprogram"),
-                  let result = resp["result"] as? [[String: Any]] else { return .empty }
-            return .init(items: .tracks(result.compactMap { Self.parseDJProgram($0) }))
-
-        case .radioFeatured:
-            return .init(items: .playlists(Array(await hotDJRadios(limit: 6).prefix(4))))
-        case .radioStations(let page):
-            let categories = [(2001, "创作翻唱"), (2, "音乐播客"), (10002, "电音")]
-            guard page < categories.count else { return .empty }
-            guard let resp = try? await get("/api/djradio/hot", params: [
-                "cateId": "\(categories[page].0)", "limit": "12",
-            ]), let radios = resp["djRadios"] as? [[String: Any]] else { return .empty }
-            return .init(items: .playlists(radios.compactMap { Self.parseDJRadio($0) }))
-        }
+            return groups.isEmpty ? nil : groups
+        } ?? []
     }
 
-    /// Music 的曲风/年代/语种/场景段 → 网易云歌单分类标签（`/api/playlist/catalogue`）。
-    /// 没有对应标签的返回 nil，那一段整段省掉。
-    /// 语种维度 → 新碟接口的 area。网易云只有 ZH/EA/KR/JP 四个区，
-    /// 没有单独的港台区，所以粤语那条走标签歌单（见 tagName）。
-    private static func albumArea(_ tag: CatalogTag) -> String? {
-        switch tag {
-        case .mandopop: return "ZH"
-        case .jpop: return "JP"
-        case .kpop: return "KR"
-        case .western: return "EA"
-        default: return nil
-        }
+    private struct RecommendedRadioPack: Sendable {
+        let title: String?
+        let radios: [Playlist]
     }
 
-    /// 曲风/年代/场景维度 → 歌单分类标签（`/api/playlist/catalogue`）。
-    /// 「2010 年代」网易云没有对应标签（主题组只有 70/80/90/00 后，指的是听众年龄段，
-    /// 90后 那条实际给的是 1990s 的歌），硬套会驴唇不对马嘴，整段省掉。
-    private static func tagName(_ tag: CatalogTag) -> String? {
-        switch tag {
-        case .cantopop: return "粤语"
-        case .alternative: return "后摇"
-        case .electronic: return "电子"
-        case .noughties: return "00后"
-        case .cafe: return "下午茶"
-        case .tens: return nil
-        default: return nil
-        }
+    private func cachedRecommendedRadios() async -> RecommendedRadioPack {
+        await catalogCache.value(for: "ne:/api/djradio/recommend/v1") {
+            let res = await self.recommendedRadios()
+            guard !res.radios.isEmpty else { return nil }
+            return RecommendedRadioPack(title: res.title, radios: res.radios)
+        } ?? RecommendedRadioPack(title: nil, radios: [])
     }
 
-    /// 分类浏览页：标签 id 就是 `/api/playlist/list` 的 cat
-    func playlists(tag: CatalogTagRef) async -> [Playlist] {
-        await taggedPlaylists(tag.id, limit: 30)
+    private func cachedPersonalizedRadios() async -> [Playlist] {
+        let uidKey = credential?.uid ?? 0
+        return await catalogCache.value(for: "ne:/api/djradio/personalize/rcmd:\(uidKey)") {
+            let list = await self.personalizedRadios(limit: 6)
+            return list.isEmpty ? nil : list
+        } ?? []
     }
 
-    /// 网易云版的「个人电台」：首页的**雷达歌单**（`HOMEPAGE_BLOCK_MGC_PLAYLIST`，匿名可用）。
-    /// 标题形如「听你爱的遗憾|华语私人雷达」，竖线右边才是电台名，左边是这次推荐的由头，
-    /// 正好落成海报卡的标题行与描述行。
-    private func radarPlaylists() async -> [Playlist] {
-        await catalogCache.value(for: "ne:/api/homepage/block/page") { await self.loadRadars() } ?? []
+    private func cachedProgramToplistHourly(limit: Int) async -> [Track] {
+        await catalogCache.value(for: "ne:/api/djprogram/toplist/hours?limit=\(limit)") {
+            var tracks = await self.djProgramToplistHourly(limit: limit)
+            if tracks.isEmpty {
+                tracks = await self.djProgramToplist(limit: limit, offset: 0)
+            }
+            return tracks.isEmpty ? nil : tracks
+        } ?? []
     }
 
-    private func loadRadars() async -> [Playlist]? {
-        guard let resp = try? await get("/api/homepage/block/page"),
-              let blocks = (resp["data"] as? [String: Any])?["blocks"] as? [[String: Any]]
-        else { return nil }
-        let creatives = blocks
-            .filter { ($0["blockCode"] as? String) == "HOMEPAGE_BLOCK_MGC_PLAYLIST" }
-            .flatMap { ($0["creatives"] as? [[String: Any]]) ?? [] }
-        return creatives.compactMap { creative -> Playlist? in
-            guard let id = creative["creativeId"] as? String, !id.isEmpty,
-                  let ui = creative["uiElement"] as? [String: Any],
-                  let raw = ((ui["mainTitle"] as? [String: Any])?["title"]) as? String
-            else { return nil }
-            let parts = raw.split(separator: "|", maxSplits: 1)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            let cover = ((ui["image"] as? [String: Any])?["imageUrl"]) as? String ?? ""
-            return Playlist(id: "ne:\(id)", kind: .netease,
-                            name: parts.count > 1 ? parts[1] : raw,
-                            coverURL: Self.artworkURL(cover),
-                            description: parts.count > 1 ? parts[0] : nil,
-                            creatorName: "网易云音乐")
-        }
+    private func cachedRadioToplist(hot: Bool, limit: Int) async -> [Playlist] {
+        await catalogCache.value(for: "ne:/api/djradio/toplist?hot=\(hot)&limit=\(limit)") {
+            let list = await self.djRadioToplist(hot: hot, limit: limit, offset: 0)
+            return list.isEmpty ? nil : list
+        } ?? []
+    }
+
+    private func cachedDJCategoryRecommendations() async -> [NeteaseDJCategoryRadios] {
+        await catalogCache.value(for: "ne:/api/djradio/home/category/recommend") {
+            let groups = await self.djCategoryRecommendations()
+            return groups.isEmpty ? nil : groups
+        } ?? []
     }
 
     private func taggedPlaylists(_ tag: String, limit: Int) async -> [Playlist] {
@@ -849,7 +1372,7 @@ final class NeteaseAPI: MusicProvider {
 
     /// 精品歌单：网易云编辑从全站歌单里人工过审入库的池子
     /// （`/api/playlist/highquality/list`，匿名可读，2026-09-06 实测 total 400+）。
-    /// 新发现顶部 hero 与「歌单已更新」共用这一条流，靠 offset 分段不重不漏。
+    /// 新发现顶部 hero 与「精品歌单」共用这一条流，靠 offset 分段不重不漏。
     private func highqualityPlaylists(offset: Int, limit: Int) async -> [Playlist] {
         await catalogCache.value(for: "ne:/api/playlist/highquality/list?limit=\(limit)&offset=\(offset)") {
             guard let resp = try? await self.get("/api/playlist/highquality/list", params: [
@@ -857,27 +1380,6 @@ final class NeteaseAPI: MusicProvider {
             ]), let playlists = resp["playlists"] as? [[String: Any]] else { return nil }
             return playlists.compactMap { Self.parsePlaylist($0) }
         } ?? []
-    }
-
-    /// 榜单目录：「排行榜」与「城市榜」两格要的是同一条，交上来的原始表也一样。
-    ///
-    /// 缓存里存的是**原始表**而不是解析好的 `[Playlist]`：城市榜那一格要先按名字筛、
-    /// 再 `dropFirst(12)`，筛与切都发生在原始表的下标上。先解析会让解析失败的条目
-    /// 把窗口整体挪位——那种错很安静，不值得为消一条警告去冒。
-    private func toplist() async -> RawRows? {
-        await catalogCache.value(for: "ne:/api/toplist") {
-            guard let resp = try? await self.get("/api/toplist"),
-                  let list = resp["list"] as? [[String: Any]] else { return nil }
-            return RawRows(rows: list)
-        }
-    }
-
-    /// 一份只读的原始 JSON 行表，只为能进 `RequestCache`（那里要求 Sendable）。
-    ///
-    /// `@unchecked` 的依据是只读：`JSONSerialization` 吐出来的是不可变的 Foundation
-    /// 对象，这份表在缓存闭包里造出来之后再没有人改过它。别拿它装会被改的东西。
-    struct RawRows: @unchecked Sendable {
-        let rows: [[String: Any]]
     }
 
     private func personalized(_ path: String, limit: Int) async -> [Playlist] {
@@ -888,37 +1390,6 @@ final class NeteaseAPI: MusicProvider {
         } ?? []
     }
 
-    /// 「找到迎合心情的內容」：Music 那一排是心情电台，网易云没有电台化的心情入口，
-    /// 用歌单分类「情感」组各标签的头名歌单顶替，卡片标题写心情词（同 Music 的呈现）。
-    private func moodPlaylists() async -> [Playlist] {
-        // 自身就是 7 条并发请求，又被「专属精选推荐」和「找到迎合心情的內容」各要一遍。
-        await catalogCache.value(for: "ne:moodPlaylists") { await self.loadMoods() } ?? []
-    }
-
-    private func loadMoods() async -> [Playlist]? {
-        let moods = ["伤感", "快乐", "治愈", "放松", "兴奋", "浪漫", "安静"]
-        return await withTaskGroup(of: (Int, Playlist?).self) { group in
-            for (index, mood) in moods.enumerated() {
-                group.addTask {
-                    let resp = try? await self.get("/api/playlist/list", params: [
-                        "cat": mood, "order": "hot", "limit": "1",
-                    ])
-                    let first = (resp?["playlists"] as? [[String: Any]])?.first
-                    guard let playlist = first.flatMap(Self.parsePlaylist) else { return (index, nil) }
-                    return (index, Playlist(id: playlist.id, kind: .netease, name: mood,
-                                            coverURL: playlist.coverURL,
-                                            description: playlist.name,
-                                            playCount: playlist.playCount,
-                                            trackCount: playlist.trackCount,
-                                            creatorName: "心情电台"))
-                }
-            }
-            var slots = [Playlist?](repeating: nil, count: moods.count)
-            for await (index, playlist) in group { slots[index] = playlist }
-            return slots.compactMap { $0 }
-        }
-    }
-
     private func hotDJRadios(limit: Int) async -> [Playlist] {
         await catalogCache.value(for: "ne:/api/djradio/hot/v1?limit=\(limit)") {
             guard let resp = try? await self.get("/api/djradio/hot/v1", params: ["limit": "\(limit)"]),
@@ -927,8 +1398,7 @@ final class NeteaseAPI: MusicProvider {
         } ?? []
     }
 
-    /// 新碟。`area` = ALL / ZH 华语 / EA 欧美 / KR 韩国 / JP 日本——
-    /// Music 主页那几条语种货架就靠它拿专辑。
+    /// 新碟。`area` = ALL / ZH 华语 / EA 欧美 / KR 韩国 / JP 日本。
     private func newAlbums(limit: Int, offset: Int, area: String = "ALL") async -> [Album] {
         await catalogCache.value(
             for: "ne:/api/album/new?area=\(area)&limit=\(limit)&offset=\(offset)"

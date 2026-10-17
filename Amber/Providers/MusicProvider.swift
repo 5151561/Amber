@@ -131,15 +131,16 @@ enum CatalogFailureSink {
         return (value, box.error.withLock { $0 })
     }
 
-    /// provider 的 `catalogItems` 在出口处套这一层。
+    /// provider 的 `catalogFeed` 在出口处套这一层。
     ///
-    /// 只在**这一格什么都没交出来**时才贴 `failure`：格子里有内容就说明该拿的拿到了，
-    /// 某条支线超时不该让整页被判成「网络不可用」。这也正是 `failure` 那个字段
-    /// 写着的语义——「这一格取不到」，不是「这一格里出过错」。
-    static func attach(_ body: () async -> CatalogSlotResult) async -> CatalogSlotResult {
-        var (result, failure) = await collect(body)
-        if result.items.isEmpty { result.failure = failure }
-        return result
+    /// 只在**整页什么都没交出来**时才贴 `failure`：页面上有货架就说明该拿的拿到了，
+    /// 某条支线超时不该让整页被判成「网络不可用」。
+    static func attachFeed(_ body: () async -> [CatalogShelf]) async -> CatalogFeedResult {
+        let (shelves, failure) = await collect(body)
+        return CatalogFeedResult(
+            shelves: shelves.filter { !$0.result.items.isEmpty },
+            failure: shelves.isEmpty ? failure : nil
+        )
     }
 }
 
@@ -148,7 +149,7 @@ enum CatalogFailureSink {
 /// 每个 async 要求都标了 `@concurrent`：SE-0461 之后非隔离 async 函数默认**继承调用方的
 /// 隔离域**，而这一层的调用方几乎都是 `@MainActor` 的状态对象（`CatalogFeedModel`、
 /// `ArtistPageModel`、`AppState`…），不标的话取回来的 JSON 解析与整表映射就全都落在
-/// 主线程上——目录页一次并发十来个请求，那是要掉帧的。标上等于把这一层钉回协作线程池，
+/// 主线程上——目录页一次并发数个聚合请求，那是要掉帧的。标上等于把这一层钉回协作线程池，
 /// 也就是 Swift 5 时代本来的跑法，只不过现在是写出来的而不是靠默认值。
 protocol MusicProvider: Sendable {
     var kind: ProviderKind { get }
@@ -164,18 +165,14 @@ protocol MusicProvider: Sendable {
     @concurrent
     func searchMVs(keyword: String, limit: Int, offset: Int) async throws -> [MV]
 
-    /// 目录页（主页/新发现/广播）的一个格子。**栏目结构照 Apple Music 写死在
-    /// `CatalogPages` 里**，音源只按 slot 交数据；交不出来就返回`.empty`，
-    /// 页面会把那一段整段省掉，不要为了填满而拿别的内容顶。
+    /// 目录页（主页/新发现/广播）的整页货架列表。
     ///
-    /// 这一条**不抛错**是有意的：`.empty` 对它是有意义的返回值（很多格子音源本来就不供）。
-    /// 「没这一格」与「取不到」靠 `CatalogSlotResult.failure` 分开，两家实现都把整个
-    /// 函数体套进 `CatalogFailureSink.attach`，别漏。
+    /// 音源按照自身原生接口与登录态组织并返回该页的 `[CatalogShelf]`；
+    /// 交不出来的货架直接省掉，整页全空且遇连接失败时在 `CatalogFeedResult.failure` 带回错误。
     @concurrent
-    func catalogItems(_ slot: CatalogSlot) async -> CatalogSlotResult
+    func catalogFeed(for page: CatalogFeedPage, recentTracks: [Track]) async -> CatalogFeedResult
 
-    /// 分类浏览页（「探索更多」的落点）：某个歌单分类标签下的歌单。
-    /// 标签本身来自 `catalogItems(.browseGroups)`，id 是音源自己的键。
+    /// 分类浏览页（「歌单分类」/「曲风馆」的落点）：某个歌单分类或曲风标签下的歌单。
     @concurrent
     func playlists(tag: CatalogTagRef) async -> [Playlist]
 

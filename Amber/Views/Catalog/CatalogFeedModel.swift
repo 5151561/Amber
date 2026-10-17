@@ -23,8 +23,7 @@ final class CatalogFeedModel {
     let pageKey: String
     let emptyMessage: String
     let emptyImage: String
-    /// 页面结构；用最近播放当种子的段（「<歌名> ›」）要看资料库，所以是个函数
-    let sections: (AppState) -> [CatalogPageSection]
+    let page: CatalogFeedPage
 
     private let appState: AppState
     private var player: PlayerController { appState.player }
@@ -32,14 +31,13 @@ final class CatalogFeedModel {
     private var reloadTask: Task<Void, Never>?
 
     init(appState: AppState, title: String, pageKey: String,
-         emptyMessage: String, emptyImage: String,
-         sections: @escaping (AppState) -> [CatalogPageSection]) {
+         emptyMessage: String, emptyImage: String, page: CatalogFeedPage) {
         self.appState = appState
         self.title = title
         self.pageKey = pageKey
         self.emptyMessage = emptyMessage
         self.emptyImage = emptyImage
-        self.sections = sections
+        self.page = page
     }
 
     // MARK: - 三页入口
@@ -47,26 +45,19 @@ final class CatalogFeedModel {
     static func home(appState: AppState) -> CatalogFeedModel {
         CatalogFeedModel(appState: appState, title: "主页", pageKey: "listen-now",
                          emptyMessage: "当前音乐源暂无推荐内容。",
-                         emptyImage: "house",
-                         // 种子货架要拿当前音源的曲目去查相似，别的源的 id 查不出东西
-                         sections: { state in
-                             CatalogPages.listenNow(recent: state.library.recentTracks
-                                 .filter { $0.kind == state.selectedProvider })
-                         })
+                         emptyImage: "house", page: .home)
     }
 
     static func discover(appState: AppState) -> CatalogFeedModel {
         CatalogFeedModel(appState: appState, title: "新发现", pageKey: "browse",
                          emptyMessage: "当前音乐源暂无新发现内容。",
-                         emptyImage: "square.grid.2x2",
-                         sections: { _ in CatalogPages.browse })
+                         emptyImage: "square.grid.2x2", page: .browse)
     }
 
     static func radio(appState: AppState) -> CatalogFeedModel {
         CatalogFeedModel(appState: appState, title: "广播", pageKey: "radio",
                          emptyMessage: "当前音乐源暂未提供广播内容。",
-                         emptyImage: "dot.radiowaves.left.and.right",
-                         sections: { _ in CatalogPages.radio })
+                         emptyImage: "dot.radiowaves.left.and.right", page: .radio)
     }
 
     // MARK: - 取数
@@ -75,83 +66,43 @@ final class CatalogFeedModel {
     /// 与原来 `.task(id: appState.selectedProvider)` 的语义相同。
     ///
     /// **本地那两段先上屏**（审查单 §2.6-1）：「最近播放」与「音乐回忆」由
-    /// `LibraryStore` **同步**算出，一条音源请求都不发（下面`pending` 把它们排除在外），
-    /// 从前却要等那个并发上限 4、十几段的 `withTaskGroup` 整个排干才跟着网络段一起发布，
-    /// 断网时更是等完还落到空态。所以这里**同步**先发一份只有本地段的`.content`，
+    /// `LibraryStore` **同步**算出，一条音源请求都不发，
+    /// 所以这里**同步**先发一份只有本地段的 `.content`，
     /// 网络段到货再整份补上。本地一段都交不出来（新装、台账还是空的）才照旧打菊花。
-    ///
-    /// 同步发而不是放进下面那个 `Task`：`reload()` 的调用点（`viewDidLoad`、换音源、
-    /// 重试）都在主 actor 上，同步赋值意味着**这一轮 runloop 里**页面就拿到了本地段，
-    /// 中间不会闪一下加载态。
     func reload() {
         reloadTask?.cancel()
-        let plan = sections(appState)
-        let local = localSections(in: plan)
+        let local = localSections()
         state = local.isEmpty ? .loading : .content(title: title, sections: local)
-        reloadTask = Task { [weak self] in await self?.performReload(plan) }
+        reloadTask = Task { [weak self] in await self?.performReload() }
     }
 
-    /// 计划里由本地资料库现算的那几段，按计划里的次序。整段交不出来（台账是空的、
-    /// 上个月没听够 5 首）的省掉，与网络段「交不出来就整段省掉」同一条规矩。
-    private func localSections(in plan: [CatalogPageSection]) -> [CatalogSection] {
-        plan.compactMap { plan in
-            switch plan.slot {
-            case .recentlyPlayed: return recentlyPlayedSection(plan)
-            case .musicMemories: return musicMemoriesSection(plan)
-            default: return nil
-            }
-        }
+    /// 主页里由本地资料库现算的那两段（「最近播放」「音乐回忆」）。整段交不出来
+    /// （台账是空的、上个月没听够 5 首）的省掉，与网络段「交不出来就整段省掉」同一条规矩。
+    private func localSections() -> [CatalogSection] {
+        guard page == .home else { return [] }
+        return [recentlyPlayedSection(), musicMemoriesSection()].compactMap { $0 }
     }
 
-    private func performReload(_ plan: [CatalogPageSection]) async {
+    private func performReload() async {
         let provider = appState.provider(appState.selectedProvider)
-
-        // 各段互不依赖，并发拉；但一页十几段、有的段自己还要并发好几条请求，
-        // 全放出去会被音源限流（网易云实测会静默丢几条），所以限到 4 条同时在跑。
-        let pending = plan.enumerated().filter {
-            switch $0.element.slot {
-            case .recentlyPlayed, .musicMemories: return false   // 本地资料库来的，不问音源
-            default: return true
-            }
-        }
-        let results: [Int: CatalogSlotResult] = await withTaskGroup(
-            of: (Int, CatalogSlotResult).self
-        ) { group in
-            var next = pending.startIndex
-            var running = 0
-            var out: [Int: CatalogSlotResult] = [:]
-            while next < pending.endIndex, running < 4 {
-                let (index, section) = pending[next]
-                group.addTask { (index, await provider.catalogItems(section.slot)) }
-                next += 1; running += 1
-            }
-            while let (index, result) = await group.next() {
-                out[index] = result
-                if next < pending.endIndex {
-                    let (nextIndex, section) = pending[next]
-                    group.addTask { (nextIndex, await provider.catalogItems(section.slot)) }
-                    next += 1
-                }
-            }
-            return out
-        }
-
-        var rendered: [CatalogSection] = []
-        for (index, plan) in plan.enumerated() {
-            switch plan.slot {
-            case .recentlyPlayed:
-                if let local = recentlyPlayedSection(plan) { rendered.append(local) }
-                continue
-            case .musicMemories:
-                if let local = musicMemoriesSection(plan) { rendered.append(local) }
-                continue
-            default:
-                break
-            }
-            guard let result = results[index], !result.items.isEmpty else { continue }
-            rendered.append(section(plan, result))
-        }
+        let recent = library.recentTracks.filter { $0.kind == appState.selectedProvider }
+        let feed = await provider.catalogFeed(for: page, recentTracks: recent)
         guard !Task.isCancelled else { return }
+
+        var rendered = feed.shelves
+            .filter { !$0.result.items.isEmpty }
+            .map { section($0) }
+
+        if page == .home {
+            if let recentSection = recentlyPlayedSection() {
+                let insertIndex = rendered.isEmpty ? 0 : 1
+                rendered.insert(recentSection, at: insertIndex)
+            }
+            if let memoriesSection = musicMemoriesSection() {
+                rendered.append(memoriesSection)
+            }
+        }
+
         guard rendered.isEmpty else {
             // 本地段先上屏那一份与这一份形状相同时，页面那边是零差异 diff、
             // 版式指纹也不变，一次 `invalidateLayout()` 都不会发生（见
@@ -160,15 +111,7 @@ final class CatalogFeedModel {
             return
         }
         // 一段都摆不出来：断网与「音源真的没有内容」在界面上必须分得开（§2.6-8）。
-        //
-        // 判据是**错误码**，不再问系统的连通性：任何一格带回了连接类 `URLError`
-        // （`CatalogSlotResult.failure`，由音源层的 `CatalogFailureSink` 填）就是断网。
-        // 这比问 `NWPathMonitor` 准——「网卡连着、但这家音源的域名解析不了 / 连不上」
-        // 在系统看来路径是 satisfied 的，而对用户来说页面确实是空的，
-        // 该说的仍旧是「网络不可用」而不是「音源暂无内容」。
-        //
-        // 这一支只在已经确定一件都摆不出来时才走到；正常那条路连 `failure` 都不读。
-        let offline = results.values.contains { $0.failure != nil }
+        let offline = feed.failure != nil
         state = offline ? .error(Self.offlineMessage) : .content(title: title, sections: [])
     }
 
@@ -177,42 +120,29 @@ final class CatalogFeedModel {
     static let offlineMessage = "网络不可用"
 
     /// 只重算**本地资料库来的那两段**（最近播放 / 音乐回忆），一条音源请求都不发。
-    ///
-    /// 目录页三页的根页是缓存的（切走只 `isHidden`，见`ContentNavigationController`），
-    /// `reload()` 只在首次上屏与换音源时跑——听完一首歌货架不会自己变。
-    /// 走 `reload()` 重拉整页太贵：它先把页面退回「只有本地那两段」（网络段整批撤掉、
-    /// 回来时再整批插回，横向货架的 cell 因此重建两遍），再把十几段全向音源要一遍，
-    /// 而变的只有本地那一段。
-    ///
-    /// 这一段原先整段不在（第一次听歌，台账还是空的）时交给 `reload()`：
-    /// 该插在第几段是 `sections(_:)` 那份计划说了算，只有整页重排才排得准，
-    /// 而那是每位用户一辈子只会遇上一次的时刻。
     func refreshLocalSections() {
-        // 出错态（断网且一段都摆不出来）下台账刚有了第一条：重跑一次 `reload()`。
-        // 它会**同步**把本地段发上屏（见那边的注释），网络那半照旧在后台再试一遍。
-        // 不接这一条的话，断网 + 空资料库的用户听完第一首歌，货架要等到下次重启才出现。
+        guard page == .home else { return }
         if case .error = state {
-            if !localSections(in: sections(appState)).isEmpty { reload() }
+            if !localSections().isEmpty { reload() }
             return
         }
         guard case .content(let title, var rendered) = state else { return }
-        for plan in sections(appState) {
-            let fresh: CatalogSection?
-            switch plan.slot {
-            case .recentlyPlayed: fresh = recentlyPlayedSection(plan)
-            case .musicMemories: fresh = musicMemoriesSection(plan)
-            default: continue
-            }
-            switch (rendered.firstIndex { $0.id == plan.id }, fresh) {
+        let updates: [(String, CatalogSection?)] = [
+            ("recently-played", recentlyPlayedSection()),
+            ("music-memories", musicMemoriesSection()),
+        ]
+        for (id, fresh) in updates {
+            switch (rendered.firstIndex { $0.id == id }, fresh) {
             case (let index?, let fresh?):
-                // 卡还是原来那几张（顺序也没变）就**什么都不做**：重灌一遍快照会让
-                // 组合布局重解，横向货架里的 cell 整批重建、封面重新异步取，
-                // 切回主页时看得见一次闪动。同一份歌单接着听最常落在这一支。
                 guard rendered[index].items.map(\.id) != fresh.items.map(\.id) else { continue }
                 rendered[index] = fresh
-            case (let index?, nil): rendered.remove(at: index)
-            case (nil, .some): reload(); return
-            case (nil, nil): break
+            case (let index?, nil):
+                rendered.remove(at: index)
+            case (nil, .some):
+                reload()
+                return
+            case (nil, nil):
+                break
             }
         }
         state = .content(title: title, sections: rendered)
@@ -221,18 +151,14 @@ final class CatalogFeedModel {
     // MARK: 段 → 卡片
 
     /// 「查看全部」那三条路由的身份（见 `RouteCargo`）。
-    ///
-    /// **`plan.id` 单独用不得**：它只在一页之内唯一（`CatalogPages` 三张表各自不重），
-    /// 而三页共用这一台引擎、换音源前后也是同一串。载荷退出身份之后，
-    /// 「主页的『为你推荐最新作品 ›』」与「新发现的『本周新发行 ›』」这类两两之间
-    /// 只剩 key 能分开，所以把音源与页名一起作用域化进来。
-    private func sectionKey(_ plan: CatalogPageSection) -> String {
-        "\(appState.selectedProvider.rawValue)/\(pageKey)/\(plan.id)"
+    private func sectionKey(_ shelfID: String) -> String {
+        "\(appState.selectedProvider.rawValue)/\(pageKey)/\(shelfID)"
     }
 
-    private func section(_ plan: CatalogPageSection, _ result: CatalogSlotResult) -> CatalogSection {
-        var section = CatalogSection(id: plan.id, layout: layout(plan.style),
-                                     title: result.title ?? plan.title,
+    private func section(_ shelf: CatalogShelf) -> CatalogSection {
+        let result = shelf.result
+        var section = CatalogSection(id: shelf.id, layout: layout(shelf.style),
+                                     title: result.title ?? shelf.title,
                                      headline: result.headline,
                                      seedArtworkURL: result.seedArtworkURL)
         if let seeAll = result.seeAll {
@@ -241,9 +167,9 @@ final class CatalogFeedModel {
         } else if let seedAlbum = result.seedAlbum {
             section.destination = .album(seedAlbum)
             section.showsChevron = true
-        } else if plan.showsChevron {
-            let title = section.title ?? plan.title ?? ""
-            let key = sectionKey(plan)
+        } else if shelf.showsChevron {
+            let title = section.title ?? shelf.title ?? ""
+            let key = sectionKey(shelf.id)
             switch result.items {
             case .albums(let albums):
                 if !albums.isEmpty {
@@ -281,25 +207,26 @@ final class CatalogFeedModel {
         case .none:
             break
         case .playlists(let playlists):
-            section.items = playlists.map { item($0, plan.style, result.eyebrows[$0.id]) }
+            section.items = playlists.map { item($0, shelf.style, result.eyebrows[$0.id]) }
         case .albums(let albums):
-            section.items = albums.map { item($0, plan.style, result.eyebrows[$0.id]) }
+            section.items = albums.map { item($0, shelf.style, result.eyebrows[$0.id]) }
         case .artists(let artists):
-            section.items = artists.map { item($0, plan.style) }
+            section.items = artists.map { item($0, shelf.style) }
         case .mvs(let mvs):
             section.items = mvs.map(videoItem)
         case .tagGroups(let groups):
-            section.items = groups.map(linkItem)
+            section.items = groups.map { groupItem($0, shelf.style) }
         case .mixed(let entries):
             section.items = entries.map { entry in
                 switch entry {
-                case .playlist(let p): return item(p, plan.style, result.eyebrows[p.id])
-                case .album(let a): return item(a, plan.style, result.eyebrows[a.id])
-                case .artist(let a): return item(a, plan.style)
+                case .trackPack(let pack): return item(pack, shelf.style)
+                case .playlist(let p): return item(p, shelf.style, result.eyebrows[p.id])
+                case .album(let a): return item(a, shelf.style, result.eyebrows[a.id])
+                case .artist(let a): return item(a, shelf.style)
                 }
             }
         case .tracks(let tracks):
-            if case .trackColumns = plan.style {
+            if case .trackColumns = shelf.style {
                 section.tracks = tracks
             } else {
                 section.items = tracks.map(episodeItem)
@@ -333,6 +260,26 @@ final class CatalogFeedModel {
         case .links: return .link
         case .squares, .trackColumns: return .square
         }
+    }
+
+    /// 曲目包卡片（日推 / 私人雷达 / 猜你喜欢）：点开进入完整曲目列表页，点播放键直接开播。
+    private func item(_ pack: CatalogTrackPack, _ style: CatalogStyle) -> CatalogItem {
+        let route = Route.trackGrid(
+            key: "\(appState.selectedProvider.rawValue)/\(pageKey)/\(pack.id)",
+            title: pack.title,
+            tracks: RouteCargo(pack.tracks))
+        return CatalogItem(
+            id: pack.id, kind: kind(style),
+            title: pack.title,
+            artworkURL: pack.artworkURL,
+            eyebrow: pack.eyebrow,
+            subtitle: pack.subtitle,
+            description: pack.description,
+            fallbackColors: Self.fallbackColors(pack.id),
+            route: route,
+            onPlay: { [player] in
+                player.play(pack.tracks, source: .init(title: pack.title, route: route))
+            })
     }
 
     /// 身份只取 `playlist.id`：**标题不进身份**。音源的每日/每周歌单标题常带日期
@@ -374,12 +321,19 @@ final class CatalogFeedModel {
                     onPlay: { [appState] in Task { await appState.playArtistHotTracks(artist) } })
     }
 
-    /// 「探索更多」的一条链接。Music 那 5 条落到 Apple 的编辑分类页（`/room/`），
-    /// Amber 落到音源分类分组的浏览页。
-    private func linkItem(_ group: CatalogTagGroup) -> CatalogItem {
-        CatalogItem(id: "group-\(group.id)", kind: .link,
-                    title: group.name,
-                    route: .tagGroup(group))
+    /// 分类分组项：`.links` 样式画成「探索更多」胶囊链接，其余样式（曲风馆等带图分组）画成图文方卡。
+    private func groupItem(_ group: CatalogTagGroup, _ style: CatalogStyle) -> CatalogItem {
+        if case .links = style {
+            return CatalogItem(id: "group-\(group.id)", kind: .link,
+                               title: group.name,
+                               route: .tagGroup(group))
+        }
+        return CatalogItem(id: "group-\(group.id)", kind: kind(style),
+                           title: group.name,
+                           artworkURL: group.coverURL,
+                           subtitle: group.subtitle,
+                           fallbackColors: Self.fallbackColors(group.id),
+                           route: .tagGroup(group))
     }
 
     /// MV / 访谈卡。点击在 App 内开视频窗播（同搜索里的 MV 卡）；
@@ -417,11 +371,11 @@ final class CatalogFeedModel {
     /// 「最近播放」在 Music 里也是服务端下发的一段，Amber 的最近播放记在本地资料库。
     /// 读的是**容器台账**而不是逐曲历史：分哪个格子在记账那一刻就定了（见`RecentContainer`），
     /// 这一层只负责把格子画成卡。
-    private func recentlyPlayedSection(_ plan: CatalogPageSection) -> CatalogSection? {
+    private func recentlyPlayedSection() -> CatalogSection? {
         let containers = library.recentContainers
         guard !containers.isEmpty else { return nil }
         return CatalogSection(
-            id: plan.id, layout: layout(plan.style), title: plan.title,
+            id: "recently-played", layout: .squares(rows: 1), title: "最近播放",
             destination: .recentlyPlayed,
             showsChevron: true,
             items: Self.recentItems(Array(containers.prefix(12)), appState: appState))
@@ -505,18 +459,18 @@ final class CatalogFeedModel {
     /// 「每月音乐回忆」+ 描述 11/400「重温上个月陪伴你的艺人、歌曲和专辑」，没有 eyebrow。
     /// Amber 没有服务端，用本地资料库上个月的播放记录现拼一张本地列表；
     /// 上个月没听够 5 首就整段省掉（同「交不出来就不显示」的规矩）。
-    private func musicMemoriesSection(_ plan: CatalogPageSection) -> CatalogSection? {
+    private func musicMemoriesSection() -> CatalogSection? {
         let tracks = library.topTracksLastMonth()
         guard tracks.count >= 5 else { return nil }
         let list = LocalTrackList(id: "memories", title: "上个月的热门音乐", tracks: tracks)
         let card = CatalogItem(
-            id: "memories", kind: kind(plan.style),
+            id: "memories", kind: .poster,
             title: "每月音乐回忆",
             artworkURL: tracks.first?.artworkURL,
             description: "重温上个月陪伴你的艺人、歌曲和专辑",
             route: .localTracks(list),
             onPlay: { [player] in player.play(tracks) })
-        return CatalogSection(id: plan.id, layout: layout(plan.style), title: plan.title,
+        return CatalogSection(id: "music-memories", layout: .posters, title: "音乐回忆：你的热门音乐",
                               items: [card])
     }
 

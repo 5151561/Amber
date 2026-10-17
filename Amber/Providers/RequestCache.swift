@@ -63,4 +63,9 @@ actor RequestCache {
             .prefix(entries.count - Self.capacity)
         for (key, _) in doomed { entries.removeValue(forKey: key) }
     }
+
+    /// 登录态切换时清空已缓存的目录响应，避免匿名与登录态的数据串味。
+    func invalidateAll() {
+        entries.removeAll()
+    }
 }

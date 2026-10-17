@@ -165,12 +165,24 @@ extension QQAPI {
     /// 游标由调用方自己攒（目录页现在只用第一页）。
     func homeFeed(page: Int = 1, direction: Int = 0,
                   shelfCount: Int = 0, seenShelfIDs: [String] = []) async -> [HomeFeedShelf] {
+        if page == 1, direction == 0, shelfCount == 0, seenShelfIDs.isEmpty {
+            return await catalogCache.value(for: "qq:RecommendFeed.get_recommend_feed") {
+                await self.loadHomeFeed(page: page, direction: direction,
+                                        shelfCount: shelfCount, seenShelfIDs: seenShelfIDs)
+            } ?? []
+        }
+        return await loadHomeFeed(page: page, direction: direction,
+                                  shelfCount: shelfCount, seenShelfIDs: seenShelfIDs) ?? []
+    }
+
+    private func loadHomeFeed(page: Int, direction: Int,
+                              shelfCount: Int, seenShelfIDs: [String]) async -> [HomeFeedShelf]? {
         guard let data = try? await musicu(module: "music.recommend.RecommendFeed",
                                            method: "get_recommend_feed",
                                            param: ["direction": direction, "page": page,
                                                    "s_num": shelfCount, "v_cache": seenShelfIDs],
                                            clientType: 11, clientVersion: 12060012),
-              let shelves = data["v_shelf"] as? [[String: Any]] else { return [] }
+              let shelves = data["v_shelf"] as? [[String: Any]] else { return nil }
         return shelves.compactMap { shelf -> HomeFeedShelf? in
             guard let id = shelf["id"] as? Int else { return nil }
             let content = (shelf["title_content"] as? String) ?? ""
