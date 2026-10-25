@@ -852,6 +852,43 @@ final class LyricParserTests: XCTestCase {
     [01:56.30]난 불을 질러
     """
 
+    /// QQ《FIRESTARTER》(`003zPqcA21yTZW`) 原文片段 [实测]：
+    /// 歌手提示行与和声行的左右圆括号跨音节切开（如 `Ahri ((53551,185)Miyeon)：(53736,164)`、
+    /// `Eve (+(162790,298)group)：(163088,453)`、`불어도 ((33008,294)후후) `）。
+    /// 逐字正则不能禁圆括号，否则括号两侧文字被吞成单独一个 `：` 排上屏幕且无法换边。
+    func testParenthesizedQRCSyllablesInSpeakerCuesAndBackingVocals() {
+        let qrc = """
+        [29713,341]Group：(29713,341)
+        [30054,916]Ayo(30054,916)
+        [30970,356]Akali ((30970,197)Soyeon)：(31167,159)
+        [32783,1479]바람 (32783,225)불어도 ((33008,294)후후) (33302,241)I'm (33543,225)the (33768,191)lighter(33959,303)
+        [53551,349]Ahri ((53551,185)Miyeon)：(53736,164)
+        [53900,1320]Hands (53900,485)up (54385,221)높이(54606,614)
+        [162790,751]Eve (+(162790,298)group)：(163088,453)
+        [163541,1658]Set (163541,288)the (163829,215)world (164044,327)on (164371,367)fire(164738,461)
+        [165199,442]Ahri (+(165199,246)group)：(165445,196)
+        [165641,1285]Watch (165641,303)it (165944,173)burn (166117,395)all (166512,216)night(166728,198)
+        """
+        let lines = lyricLines(LyricParser.parse(qrc))
+        XCTAssertEqual(lines.map(\.text), [
+            "Ayo",
+            "바람 불어도 (후후) I'm the lighter",
+            "Hands up 높이",
+            "Set the world on fire",
+            "Watch it burn all night",
+        ], "提示行全部摘除、不残留独立冒号，和声括号内外文字完整保留")
+        XCTAssertEqual(lines[1].syllables.map(\.text),
+                       ["바람 ", "불어도 (", "후후) ", "I'm ", "the ", "lighter"])
+        XCTAssertEqual(lines.map { $0.vocalist?.name }, [
+            "Group",
+            "Akali (Soyeon)",
+            "Ahri (Miyeon)",
+            "Eve (+group)",
+            "Ahri (+group)",
+        ])
+        XCTAssertEqual(lines.map { $0.vocalist?.index }, [0, 1, 2, 3, 4])
+    }
+
     // MARK: - 无时间戳
     //
     // 整份词一条时间戳都没有（纯文本歌词）：静态整页，全部 `.plain`。

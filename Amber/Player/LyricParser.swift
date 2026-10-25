@@ -107,11 +107,14 @@ enum LyricParser {
     private static let qrcHeader = try! NSRegularExpression(
         pattern: "^\\[(\\d+),(\\d+)\\]")
     /// QRC 音节 `字(起点ms,时长ms)`
+    /// 文字段用惰性 `.*?` 而不是 `[^()]*`：音节文字本身常含圆括号（和声 `불어도 ((33008,294)후후)`、
+    /// 角色提示 `Ahri ((53551,185)Miyeon)：(53736,164)`，`[实测]` QQ《FIRESTARTER》`003zPqcA21yTZW`），
+    /// 禁括号会把 `(` 前与 `)` 前的词全吞掉，提示行只剩 `：` 排上屏且不再换边。
     private static let qrcSyllable = try! NSRegularExpression(
-        pattern: "([^()]*)\\((\\d+),(\\d+)\\)")
+        pattern: "(.*?)\\((\\d+),(\\d+)\\)")
     /// YRC 音节 `(起点ms,时长ms,0)字`。第三个数是网易自己的标记位，一直是 0，只做占位。
     private static let yrcSyllable = try! NSRegularExpression(
-        pattern: "\\((\\d+),(\\d+),(-?\\d+)\\)([^()]*)")
+        pattern: "\\((\\d+),(\\d+),(-?\\d+)\\)(.*?)(?=\\(\\d+,\\d+,-?\\d+\\)|$)")
 
     private static func parseTimedLines(_ text: String) -> [RawLine] {
         var items: [RawLine] = []
