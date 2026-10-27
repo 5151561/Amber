@@ -112,12 +112,14 @@ extension SBS_TextContentLayer {
                     unit.glyphs = [glyph]
                     word.syllables.append(unit)
 
-                    row.syllables.append(makeSyllableLayers(
+                    appendSyllableLayers(
                         text: syllable.text,
                         frame: CGRect(x: entry.x + syllable.minX, y: 0,
                                       width: syllable.width, height: layout.textHeight),
+                        startTime: syllable.startTime,
+                        endTime: syllable.endTime,
                         base: baseColor,
-                        emphasis: word.emphasis, row: row))
+                        emphasis: word.emphasis, row: row)
                 }
                 layoutLine.words.append(word)
 

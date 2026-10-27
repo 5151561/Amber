@@ -60,6 +60,11 @@ final class SyncedLyricsVisualExperienceManager {
     /// 再把 `filters.gaussianBlur.inputRadius` 动到 3.0。判据是二值的「是不是当前聚焦行」，
     /// 不是按距离的梯度——和实测的 σ≈3.1、不单调一致。
     ///
+    /// **调用链已在 分析工具 里闭合**（2026-10-27）：`（略）` 直接传
+    /// `0x4008000000000000`（= 3.0）进 `（略）`，后者算
+    /// `min(radius, 4.0)` 再落到 `（略）`（KVC `filters.gaussianBlur.inputRadius`）。
+    /// 所以 **3.0 与 4.0 上限都是确证值**，本仓的 4.0 上限对、半径不对。
+    ///
     /// **Amber 取 2.0，不是 3.0**（`[实机]`，2026-09-07 用户逐档判读定在 1.5，
     /// 2026-09-17 上调到 2.0）：3.0 在 Amber 上
     /// 把非聚焦行的副行（翻译/发音，侧栏 12pt）
@@ -68,6 +73,9 @@ final class SyncedLyricsVisualExperienceManager {
     /// `CIGaussianBlur.inputRadius` 在 Music 那边按背衬像素算、在 Amber 这边按点算
     /// （Retina 上正好差一倍），但没有证据，没敢照这个假设去写 `/ backingScaleFactor`。
     /// 量清楚之前先按实机判读取值，`-lyricsblur <值>` 可以现场调。
+    ///
+    /// 本轮仍保持 2.0：链路闭合了，但「为什么同一个 3.0 在 Amber 上更糊」还没闭合，
+    /// 直接把数改回去等于拿已知的观感回退换一个未证的一致性。留到像素 A/B 那一轮定。
     static var deselectedBlurRadius: CGFloat { LyricsDebugFlags.blurRadius ?? 2.0 }
 
     /// 松手后多久交还控制权。

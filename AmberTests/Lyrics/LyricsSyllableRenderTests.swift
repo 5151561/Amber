@@ -53,7 +53,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let width = LineProgressGradientGeometry.finishedWidth(
             lastWordMinX: 120, lastSyllableMaxX: 40,
             verticalPadding: 6, specs: specs())
-        XCTAssertEqual(width, 6 + 16 + 160)
+        XCTAssertEqual(width, 6 + specs().lineProgressionGradientFeather + 160)
     }
 
     /// 纵向余量要罩住强调峰值（1.14 倍）与半径 5 的辉光。
@@ -74,7 +74,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: .notStarted, progress: 0, verticalPadding: 6, specs: specs())
         XCTAssertEqual(geom.width, 0)
-        XCTAssertEqual(geom.feather, 16)
+        XCTAssertEqual(geom.feather, specs().lineProgressionGradientFeather)
     }
 
     /// 首音节起跑阶段（ratio == 0，如暂停时跳转到音节起点）：
@@ -100,7 +100,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state, progress: 10, verticalPadding: 6, specs: specs())
 
-        XCTAssertEqual(geom.feather, 16)
+        XCTAssertEqual(geom.feather, specs().lineProgressionGradientFeather)
         // 遮罩右端严格停在首音节起始坐标 100，不得侵入音节内部 [100, 140]
         XCTAssertEqual(geom.width, word.frame.minX)
         // 在音节区域内 [100, 140]，遮罩 alpha 严格为 0，零高亮泄漏
@@ -142,7 +142,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
             of: layoutLine, state: state, progress: 13, verticalPadding: 6, specs: specs())
 
         // 羽化恒为 16pt
-        XCTAssertEqual(geom.feather, 16)
+        XCTAssertEqual(geom.feather, specs().lineProgressionGradientFeather)
         // 遮罩右端 208 严格不越过“你”的起始位置 208，alpha 在 >= 208 为 0，“你”零高亮泄漏
         XCTAssertLessThanOrEqual(geom.width, secondWord.frame.minX)
         XCTAssertEqual(geom.width, 208, accuracy: 1e-6)
@@ -181,7 +181,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let state1 = layoutLine.progressState(at: 11.5)
         let geom1 = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state1, progress: 11.5, verticalPadding: pad, specs: s)
-        XCTAssertEqual(geom1.feather, 16)
+        XCTAssertEqual(geom1.feather, specs().lineProgressionGradientFeather)
         // start(100) + (140 - 100) * 0.75 = 130
         XCTAssertEqual(geom1.width, 130, accuracy: 1e-6)
 
@@ -217,7 +217,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let geom = LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine, state: state, progress: 12.0, verticalPadding: pad, specs: s)
 
-        XCTAssertEqual(geom.feather, 16)
+        XCTAssertEqual(geom.feather, specs().lineProgressionGradientFeather)
         XCTAssertEqual(geom.width, expectedTarget)
     }
 
@@ -243,7 +243,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         let expectedWidth = LineProgressGradientGeometry.finishedWidth(
             lastWordMinX: 50, lastSyllableMaxX: 50, verticalPadding: 6, specs: specs())
         XCTAssertEqual(geom.width, expectedWidth)
-        XCTAssertEqual(geom.feather, 16)
+        XCTAssertEqual(geom.feather, specs().lineProgressionGradientFeather)
     }
 
     // MARK: - §7.2 逐字走查
@@ -391,11 +391,14 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         }
 
         // 逐帧步进越过第二个音节的起唱点：挂着 position 动画，模型值已是抬升位。
+        //
+        // 注意 `animationHeadstart = 0.10`：下发给几何的时间是 `progress + 0.10`
+        // （`（略）`），所以步进要落在 0.90 之前，才在第二次步进时越过 1.0。
         let playing = makeLayer()
         let base = try XCTUnwrap(playing.rows.first?.syllables[safe: 1]?.base)
         let restingY = base.position.y
-        playing.setProgress(0.99, animated: true)
-        playing.setProgress(1.01, animated: true)
+        playing.setProgress(0.88, animated: true)
+        playing.setProgress(0.91, animated: true)
         XCTAssertNotNil(base.animation(forKey: "position"))
         XCTAssertEqual(base.position.y, restingY - specs().syllableLift, accuracy: 1e-6)
 
@@ -581,5 +584,175 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         visual.deselectLine(line0)
         let fullWidth = row.gradient.frame.width
         XCTAssertGreaterThan(fullWidth, partialWidth, "取消选中时渐变遮罩模型宽度必须立刻推满到行末")
+    }
+
+    // MARK: - 长音词：逐字母抬升 + 辉光
+
+    /// `hello ` 唱 2 秒（长音），`world` 唱 0.5 秒。
+    private func makeHeldWordLayer() -> SBS_TextContentLayer {
+        var line = TextLine()
+        line.text = "hello world"
+        line.startTime = 0
+        line.endTime = 2.5
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [
+            .init(text: "hello ", startTime: 0, endTime: 2, emphasis: .factor(1)),
+            .init(text: "world", startTime: 2, endTime: 2.5),
+        ]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.setSelected(true, animated: false)
+        layer.bounds = CGRect(x: 0, y: 0, width: 400, height: 80)
+        layer.layoutSublayers()
+        return layer
+    }
+
+    /// 长音词按字形拆层（尾随空白并进最后一个字形），短词仍是一层。
+    func testHeldWordSplitsIntoGlyphLayers() throws {
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertEqual(row.syllables.count, 6)
+        XCTAssertEqual(row.unitRanges, [0..<5, 5..<6])
+        XCTAssertEqual(row.syllables.map { $0.base.string as? String },
+                       ["h", "e", "l", "l", "o ", "world"])
+
+        XCTAssertEqual(row.liftTimes.count, 6)
+        XCTAssertEqual(row.liftTimes[0], 0, accuracy: 1e-9)
+        for index in 1..<5 {
+            XCTAssertGreaterThan(row.liftTimes[index], row.liftTimes[index - 1])
+            XCTAssertLessThan(row.liftTimes[index], 2)
+        }
+        XCTAssertEqual(row.liftTimes[5], 2, accuracy: 1e-9)
+
+        // 字形首尾相接：后一个的左缘就是前一个的左缘 + 字形宽。
+        let xs = row.syllables.prefix(5).map(\.base.frame.minX)
+        for index in 1..<xs.count { XCTAssertGreaterThan(xs[index], xs[index - 1]) }
+        XCTAssertGreaterThan(row.syllables[5].base.frame.minX, xs[4])
+    }
+
+    /// 前沿扫到哪个字母哪个字母才抬；倒 seek 回词首之前全部回落。
+    func testHeldWordLiftsLetterByLetter() throws {
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        // 建层时进度是 0，首字母的抬升时刻也是 0、已经抬起来了；先退到词首之前再取基准。
+        layer.setProgress(-1, animated: false)
+        let resting = row.syllables.map(\.base.position.y)
+        let lift = specs().syllableLift
+
+        let midpoint = (row.liftTimes[2] + row.liftTimes[3]) / 2
+        layer.setProgress(midpoint, animated: false)
+        for index in 0...2 {
+            XCTAssertEqual(row.syllables[index].base.position.y, resting[index] - lift, accuracy: 1e-6)
+        }
+        for index in 3..<6 {
+            XCTAssertEqual(row.syllables[index].base.position.y, resting[index], accuracy: 1e-6)
+        }
+
+        layer.setProgress(-1, animated: false)
+        for index in row.syllables.indices {
+            XCTAssertEqual(row.syllables[index].base.position.y, resting[index], accuracy: 1e-6)
+        }
+    }
+
+    /// 中文单字没法再拆：长音照旧一层，但辉光装上了。
+    func testHeldChineseCharacterStaysSingleLayer() throws {
+        var line = TextLine()
+        line.text = "啊啊"
+        line.startTime = 0
+        line.endTime = 2.5
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [
+            .init(text: "啊", startTime: 0, endTime: 2, emphasis: .factor(1)),
+            .init(text: "啊", startTime: 2, endTime: 2.5),
+        ]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.bounds = CGRect(x: 0, y: 0, width: 300, height: 80)
+        layer.layoutSublayers()
+
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertEqual(row.syllables.count, 2)
+        XCTAssertEqual(row.unitRanges, [0..<1, 1..<2])
+        XCTAssertEqual(row.syllables[0].base.shadowRadius, specs().glowRadius)
+        XCTAssertTrue(row.syllables[0].base.shouldRasterize)
+        XCTAssertFalse(row.syllables[1].base.shouldRasterize)
+    }
+
+    /// 长音词一开唱，整词的每个字形都起一条奔向满强度的辉光 ramp。
+    func testHeldWordGlowsAllGlyphs() throws {
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        layer.setProgress(0.01, animated: true)
+        XCTAssertEqual(Set(row.glows.keys), Set(0..<5))
+        let full = SBS_TextContentLayer.glowIntensity(factor: 1, specs: specs())
+        XCTAssertEqual(full, Float(specs().glowRange.upperBound), accuracy: 1e-6)
+        for ramp in row.glows.values { XCTAssertEqual(ramp.to, full, accuracy: 1e-6) }
+    }
+
+    // MARK: - 不做字形放大
+
+    /// 唱到哪一步都不改字形尺寸——原版整行字重字宽全程不变。
+    ///
+    /// `emphasizingScaleRange`（1.0…1.14）只喂两处**不画字**的地方：渐变条的纵向余量
+    /// 与辉光层的栅格化倍率。曾经把它接到 `transform` 上，对拍 Music.app 时整行字
+    /// 会「越唱越大」，和原版对不上（2026-10-27）。这条测试把那个错误钉死。
+    func testSungGlyphsNeverScale() throws {
+        let layer = makeHeldWordLayer()          // hello 0…2，world 2…2.5
+        let row = try XCTUnwrap(layer.rows.first)
+        for progress in [0.0, 0.5, 1.0, 2.2] {
+            layer.setProgress(progress, animated: false)
+            for pair in row.syllables {
+                XCTAssertEqual(pair.base.transform.m11, 1, accuracy: 1e-9)
+                XCTAssertEqual(pair.base.transform.m22, 1, accuracy: 1e-9)
+                if let sung = pair.sung {
+                    XCTAssertEqual(sung.transform.m11, 1, accuracy: 1e-9)
+                }
+            }
+        }
+        layer.setSelected(false, animated: false)
+        XCTAssertEqual(row.syllables[0].base.transform.m11, 1, accuracy: 1e-9)
+    }
+
+    // MARK: - 悬停底板
+
+    /// 底板：圆角 16、四周外扩 16（以**文字盒**为基准，不是行图层 bounds）、
+    /// 透明度 0↔1，文字整块压到 0.85。插在 index 0，永远在内容之下。
+    func testHoverPlateGeometryAndLabelAlpha() throws {
+        let layer = SyncedLyricsLineLayer()
+        layer.specs = specs()
+        layer.bounds = CGRect(x: 0, y: 0, width: 300, height: 60)
+
+        layer.setHighlighted(true, animated: false)
+        let plate = try XCTUnwrap(layer.backgroundLayer)
+        layer.layoutSublayers()
+
+        XCTAssertTrue(layer.sublayers?.first === plate, "底板必须在最底")
+        XCTAssertEqual(plate.cornerRadius, layer.specs.highlightViewCornerRadius)
+        XCTAssertEqual(plate.opacity, 1, accuracy: 1e-6)
+        XCTAssertEqual(layer.containerLayer.opacity,
+                       Float(layer.specs.highlightLabelAlpha), accuracy: 1e-6)
+
+        let textBox = layer.bounds.insetBy(dx: SyncedLyricsLineLayer.filterBleed,
+                                           dy: SyncedLyricsLineLayer.filterBleed)
+        let margin = layer.specs.highlightViewMargin
+        XCTAssertEqual(plate.frame, textBox.insetBy(dx: -margin, dy: -margin))
+
+        layer.setHighlighted(false, animated: false)
+        XCTAssertEqual(plate.opacity, 0, accuracy: 1e-6)
+        XCTAssertEqual(layer.containerLayer.opacity, 1, accuracy: 1e-6)
+    }
+
+    /// 状态没变就直接返回，不重建底板也不重起动画。
+    func testHighlightIsIdempotent() throws {
+        let layer = SyncedLyricsLineLayer()
+        layer.specs = specs()
+        layer.setHighlighted(false, animated: false)
+        XCTAssertNil(layer.backgroundLayer, "值没变时连底板都不该建")
+        layer.setHighlighted(true, animated: false)
+        let plate = try XCTUnwrap(layer.backgroundLayer)
+        layer.setHighlighted(true, animated: false)
+        XCTAssertTrue(layer.backgroundLayer === plate)
     }
 }

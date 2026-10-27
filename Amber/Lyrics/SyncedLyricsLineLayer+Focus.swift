@@ -148,13 +148,19 @@ extension SyncedLyricsLineLayer {
     ///    再用上面那条 `.custom` 曲线把两个 keyPath 一起动过去；为假时
     ///    直接两次 `setValue(_:forKeyPath:)`。最后无论哪支都写`isLineFocused`
     ///    （两支汇合）。
-    func setLineFocused(_ focused: Bool, animated: Bool) {
+    /// - Parameter adjustingBrightness: 悬停走 `false`。
+    ///
+    ///   原版悬停的「文字变暗」是 `containerLayer.opacity = 0.85`
+    ///   （`（略）` 的 model 闭包），不是亮度滤镜；亮度 ±1 那条是
+    ///   **聚焦**（当前播放行）用的。两者同时上，17.5% 的字会被提亮再压到 0.85，
+    ///   净效果等于没变——所以悬停这条路必须把亮度关掉，只留去模糊。
+    func setLineFocused(_ focused: Bool, animated: Bool, adjustingBrightness: Bool = true) {
         // 1. 选中的行不参与悬停外观。[实测]
         guard !isSelected else { return }
 
         installFocusFiltersIfNeeded()
 
-        let brightness = focused ? focusedBrightnessAmount : 0
+        let brightness = (focused && adjustingBrightness) ? focusedBrightnessAmount : 0
         let blur = focused ? 0 : blurRadius
 
         if animated {
@@ -292,5 +298,75 @@ extension SBS_TextContentLayerProgress {
     static func isContinuousAdvance(newProgress: Double, current: Double) -> Bool {
         let advanced = newProgress - current
         return advanced > 0 && advanced <= maxContinuousAdvance
+    }
+}
+
+// MARK: - 悬停高亮（底板 + 文字 85%）
+
+extension SyncedLyricsLineLayer {
+
+    /// 悬停底板与文字透明度。
+    ///
+    /// [实测] `SyncedLyricsLineView::setHighlighted:`（（略））→ 实体
+    /// `（略）`，三件事：
+    ///
+    /// 1. 新值与 `isHighlighted` 相同就直接 return——**状态没变什么都不做**，
+    ///    连动画都不重起（所以这里第一行就是那道判据）。
+    /// 2. 懒建 `backgroundLayer`：`cornerCurve = .continuous`、`cornerRadius = 16`、
+    ///    `opacity = 0`、插到 `index 0`（永远在所有内容之下）。
+    /// 3. 两条动画并行：底板 `opacity 0 ↔ 1` 与 `containerLayer.opacity 1 ↔ 0.85`
+    ///    同走一条 0.12s 曲线；几何那条弹簧（进 2/300/50、出 1/322/24）驱动
+    ///    `touchDownTransform`，与按下共用同一条通道，本轮先不接——
+    ///    琥珀的按下已经写了 0.95，两条一起动会互相打断，留待像素 A/B 定
+    ///    `[推]`。
+    ///
+    /// 底板颜色用 `+0x298` 那个 8% 白（`+0x290` 的 alpha 是 0，画不出东西）。
+    func setHighlighted(_ highlighted: Bool, animated: Bool) {
+        guard highlighted != isHighlighted else { return }
+        isHighlighted = highlighted
+
+        ensureHighlightLayers()
+
+        let plateOpacity: Float = highlighted ? 1 : 0
+        let labelOpacity = highlighted ? Float(specs.highlightLabelAlpha) : 1
+
+        guard animated else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            backgroundLayer?.opacity = plateOpacity
+            containerLayer.opacity = labelOpacity
+            CATransaction.commit()
+            return
+        }
+        animateHoverOpacity(of: backgroundLayer, to: plateOpacity)
+        animateHoverOpacity(of: containerLayer, to: labelOpacity)
+    }
+
+    /// 懒建容器与底板。容器是内容层的父层，底板永远在最底。
+    func ensureHighlightLayers() {
+        if containerLayer.superlayer !== self {
+            insertSublayer(containerLayer, at: backgroundLayer == nil ? 0 : 1)
+        }
+        guard backgroundLayer == nil else { return }
+        let plate = CALayer()
+        plate.backgroundColor = LyricsSpecs.cgColor(specs.highlightViewBackgroundColor, in: nil)
+        plate.opacity = 0
+        plate.cornerCurve = .continuous
+        plate.cornerRadius = specs.highlightViewCornerRadius
+        plate.contentsScale = renderingScale
+        insertSublayer(plate, at: 0)
+        backgroundLayer = plate
+        setNeedsLayout()
+    }
+
+    private func animateHoverOpacity(of layer: CALayer?, to value: Float) {
+        guard let layer else { return }
+        layer.opacity = value
+        let animation = specs.hoverHighlightTransitionCurve.makeAnimation(keyPath: "opacity")
+        animation.beginTime = CACurrentMediaTime()
+        animation.fillMode = .both
+        animation.isRemovedOnCompletion = true
+        animation.preferredFrameRateRange = LayerPropertyAnimator.frameRateRange(min: 0, max: 0)
+        layer.add(animation, forKey: "hoverOpacity")
     }
 }

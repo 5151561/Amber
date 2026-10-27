@@ -15,6 +15,8 @@ import QuartzCore
 //   `base`/`sung` 文字层。阴影挂`base`——`sung` 被那条推进遮罩罩着，
 //   阴影会跟着在扫过前沿被剪掉；`base` 不带遮罩，光晕才是完整一圈。
 //   两层字形完全同位，视觉上光晕仍然围着亮字。
+//   长音词按字形拆成了好几对层（`appendSyllableLayers`），每个字形的 base
+//   各带一份阴影，ramp 按 `Row.unitRanges` 一次给整词的层起。
 // - **谁来推 tick**：原版把闭包挂进一个队列逐 tick 调 `setShadowOpacity:`。
 //   Amber 的逐字进度本来就由 `SyncedLyricsViewController` 的`CADisplayLink`
 //   每帧推到 `applyProgress`，ramp 直接搭这班车——同样是「逐 tick 直写模型值」，
@@ -179,9 +181,12 @@ extension SBS_TextContentLayer {
             let settling = CASpringAnimation(keyPath: "shadowOpacity", spring: spring)
                 .settlingDuration
 
-            for offset in 0..<word.syllables.count {
-                guard let pair = row.syllables[safe: base + offset] else { continue }
-                row.glows[base + offset] = GlowRamp(
+            // 这个词的全部层：音节 → 层的区间表（长音词一个音节拆成好几个字形层）。
+            guard let first = row.unitRanges[safe: base],
+                  let last = row.unitRanges[safe: base + word.syllables.count - 1] else { continue }
+            for index in first.lowerBound..<max(last.upperBound, first.lowerBound) {
+                guard let pair = row.syllables[safe: index] else { continue }
+                row.glows[index] = GlowRamp(
                     from: pair.base.shadowOpacity,
                     to: target,
                     spring: spring,

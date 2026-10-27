@@ -267,11 +267,13 @@ extension SBS_TextContentLayer {
                 word.emphasis = syllable.emphasis
                 layoutLine.words.append(word)
 
-                row.syllables.append(makeSyllableLayers(text: syllable.text,
-                                                        frame: absoluteFrame,
-                                                        base: baseColor,
-                                                        emphasis: syllable.emphasis,
-                                                        row: row))
+                appendSyllableLayers(text: syllable.text,
+                                     frame: absoluteFrame,
+                                     startTime: syllable.startTime,
+                                     endTime: syllable.endTime,
+                                     base: baseColor,
+                                     emphasis: syllable.emphasis,
+                                     row: row)
             }
 
             layoutLine.startTime = layoutLine.words.first?.syllables.first?.startTime ?? line.startTime
@@ -295,11 +297,16 @@ extension SBS_TextContentLayer {
                 layoutLine.words = [word]
                 layoutLine.startTime = line.startTime
                 layoutLine.endTime = line.endTime
-                row.syllables.append(makeSyllableLayers(text: layoutLine.text,
-                                                        frame: frame,
-                                                        base: baseColor,
-                                                        emphasis: .none,
-                                                        row: row))
+                // 整段兜底的时长几乎总超过长音门槛，但它不是「被唱住的一个词」，
+                // 不拆字形、不发光——照原来整块一层。
+                appendSyllableLayers(text: layoutLine.text,
+                                     frame: frame,
+                                     startTime: line.startTime,
+                                     endTime: line.endTime,
+                                     base: baseColor,
+                                     emphasis: .none,
+                                     splitsHeld: false,
+                                     row: row)
             }
             layoutLine.hasEmphasis = layoutLine.words.contains { !$0.emphasis.isNone }
 
@@ -325,17 +332,93 @@ extension SBS_TextContentLayer {
         applyProgress(liftAnimated: false)
     }
 
-    /// 建一个音节的那一对层，顺手把辉光装到基础层上（§23.2）。
+    /// 建一个音节的层，追加进 `row.syllables`，顺手把辉光装到基础层上（§23.2）。
     /// 发音（ruby）那一层不走这里——原版的阴影只挂在承载正文的词层上。
-    func makeSyllableLayers(text: String,
-                            frame: CGRect,
-                            base: CGColor,
-                            emphasis: Lyrics.Emphasis,
-                            row: Row) -> (base: CATextLayer, sung: CATextLayer?) {
-        let pair = makeTextLayers(text: text, frame: frame, font: specs.font,
-                                  base: base, row: row)
-        configureGlow(on: pair.base, emphasis: emphasis)
-        return pair
+    ///
+    /// - 普通音节：一对层，抬升时刻 = `startTime`，与原来逐音节的行为一样。
+    /// - **长音词**（唱满超过 `LyricsSpecs.heldSyllableThreshold`）：按字形各建一对，
+    ///   每个字形的抬升时刻是渐变前沿扫到它左缘的那一刻——音节内的渐变按宽度线性推进
+    ///   （`LineProgressGradientGeometry.sweptGeometry` 的 `start + (target − start) × ratio`），
+    ///   所以时刻就是 `startTime + span × minX / width`，字母跟着高亮一个个抬起来。
+    ///   只切出一个字形的（中文单字）照旧整块一层。
+    ///
+    /// 不管拆没拆，这个音节占的层区间都记进 `row.unitRanges`，辉光按它找整词的层。
+    ///
+    /// - Parameter splitsHeld: 整段兜底那一支传 `false`——它时长够长，但不是一个词。
+    func appendSyllableLayers(text: String,
+                              frame: CGRect,
+                              startTime: Double,
+                              endTime: Double,
+                              base: CGColor,
+                              emphasis: Lyrics.Emphasis,
+                              splitsHeld: Bool = true,
+                              row: Row) {
+        let lower = row.syllables.count
+        defer { row.unitRanges.append(lower..<row.syllables.count) }
+        let span = endTime - startTime
+        let glyphs = splitsHeld && span > LyricsSpecs.heldSyllableThreshold
+            ? Self.glyphSlices(of: text, font: specs.font)
+            : []
+        guard glyphs.count > 1, frame.width > 0 else {
+            let pair = makeTextLayers(text: text, frame: frame, font: specs.font,
+                                      base: base, row: row)
+            configureGlow(on: pair.base, emphasis: emphasis)
+            row.syllables.append(pair)
+            row.liftTimes.append(startTime)
+            return
+        }
+        for glyph in glyphs {
+            let glyphFrame = CGRect(x: frame.minX + glyph.minX, y: frame.minY,
+                                    width: glyph.width, height: frame.height)
+            let pair = makeTextLayers(text: glyph.text, frame: glyphFrame, font: specs.font,
+                                      base: base, row: row)
+            configureGlow(on: pair.base, emphasis: emphasis)
+            row.syllables.append(pair)
+            let fraction = min(max(glyph.minX / frame.width, 0), 1)
+            row.liftTimes.append(startTime + span * Double(fraction))
+            // 同一音节的每个字形共用整段区间：放大跟的是**音节**进度，不是字形进度。
+        }
+    }
+
+    /// 把一段文字切成字形：按**字素簇**（`Character`）切，`é`、emoji、组合附标不拆；
+    /// 空白不单独成层，并进前一个字形（行首的空白并进后一个）。
+    ///
+    /// x 取这段文字单独排一条 `CTLine` 的偏移，字距（kerning）已经算在里面，
+    /// 各字形拼起来与整段排版逐像素对齐。代价是连字（`fi`、`fl`）会拆成两个字形——
+    /// 只发生在长音词里，观感几乎无差。
+    static func glyphSlices(of text: String,
+                            font: NSFont) -> [(text: String, minX: CGFloat, width: CGFloat)] {
+        guard !text.isEmpty else { return [] }
+        let attributed = NSAttributedString(string: text, attributes: [.font: font])
+        let ctLine = CTLineCreateWithAttributedString(attributed)
+        var slices: [(text: String, minX: CGFloat, width: CGFloat)] = []
+        var pendingLeading = ""
+        var utf16Offset = 0
+        for character in text {
+            let length = String(character).utf16.count
+            defer { utf16Offset += length }
+            if character.isWhitespace {
+                if let last = slices.indices.last {
+                    slices[last].text.append(character)
+                } else {
+                    pendingLeading.append(character)
+                }
+                continue
+            }
+            // 行首空白并进第一个字形：起点退回 0，文本带上前导空白。
+            let minX = pendingLeading.isEmpty
+                ? CTLineGetOffsetForStringIndex(ctLine, utf16Offset, nil)
+                : 0
+            slices.append((pendingLeading + String(character), minX, 0))
+            pendingLeading = ""
+        }
+        // 宽度改成「到下一个字形起点」，这样各字形首尾相接、没有缝。
+        let total = CTLineGetOffsetForStringIndex(ctLine, text.utf16.count, nil)
+        for index in slices.indices {
+            let nextX = index + 1 < slices.count ? slices[index + 1].minX : total
+            slices[index].width = max(nextX - slices[index].minX, 0)
+        }
+        return slices
     }
 
     /// 建一个音节（或一块发音）的暗底层，进 `row.base`。正文与发音用的是同一套，只差字体。

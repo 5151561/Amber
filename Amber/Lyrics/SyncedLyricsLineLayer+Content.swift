@@ -34,7 +34,14 @@ extension SyncedLyricsLineLayer {
 
         if let old = contentLayer, old !== content { old.removeFromSuperlayer() }
         contentLayer = content
-        if let content, content.superlayer !== self { addSublayer(content) }
+        // 内容层挂到 `containerLayer` 下面（悬停时整块压到 85%，见 `setHighlighted`）。
+        // 容器本身插在底板之上：底板一旦建过，容器就得往后挪一格。
+        if containerLayer.superlayer !== self {
+            insertSublayer(containerLayer, at: backgroundLayer == nil ? 0 : 1)
+        }
+        if let content, content.superlayer !== containerLayer {
+            containerLayer.addSublayer(content)
+        }
         // 内容层是在这里现造的，子层默认 1× —— 建完立刻把倍率灌下去。
         applyRenderingScale(renderingScale)
         setNeedsLayout()
@@ -111,7 +118,16 @@ extension SyncedLyricsLineLayer {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         // 行图层为滤镜溢出外扩过（`filterBleed`），内容层缩回去才落在原位。
-        contentLayer?.frame = bounds.insetBy(dx: Self.filterBleed, dy: Self.filterBleed)
+        let contentFrame = bounds.insetBy(dx: Self.filterBleed, dy: Self.filterBleed)
+        if containerLayer.superlayer === self { containerLayer.frame = contentFrame }
+        contentLayer?.frame = containerLayer.bounds
+        // 底板比**文字盒**四周各大 `highlightViewMargin`（16）。原版量的是行图层
+        // bounds（它没有 Amber 这圈 bleed），所以这里必须从 contentFrame 外扩，
+        // 用 bounds 会多做 12pt 一圈。
+        if let backgroundLayer {
+            backgroundLayer.frame = contentFrame.insetBy(dx: -specs.highlightViewMargin,
+                                                         dy: -specs.highlightViewMargin)
+        }
         CATransaction.commit()
     }
 

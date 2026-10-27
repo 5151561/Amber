@@ -30,11 +30,12 @@ extension SyncedLyricsLineView {
     func setHovered(_ hovered: Bool) {
         guard shouldApplyHover() else { return }
         lineLayer?.isHighlighted = hovered
-        // [实测] 真正下发的是 `(isEntering, false)`，
-        // 即**不带动画**地切聚焦外观——亮度 ±1、模糊归零（§9.4）。
-        // `highlightView*` 那四个 spec 字段（8% 白底 / 圆角 16 / 外扩 16 / 标签 0.85）
-        // 的消费者没有定位到，所以这里不画底板。
-        lineLayer?.setLineFocused(hovered, animated: false)
+        // 悬停的观感是**底板 + 文字压到 85%**（`（略）`）：8% 白、圆角 16、
+        // 四周外扩 16，透明度走 0.12s 曲线。
+        lineLayer?.setHighlighted(hovered, animated: true)
+        // 聚焦那条只管**去模糊**：亮度滤镜留给当前播放行，悬停不吃
+        // （原版悬停的"变暗"是 containerLayer.opacity = 0.85，不是亮度）。
+        lineLayer?.setLineFocused(hovered, animated: false, adjustingBrightness: false)
         // 提亮是**不带动画**的，所以这条路必须这一刻就通——晚一帧就是「亮了一帧才亮」。
         syncCoreImageFilterUsage()
     }

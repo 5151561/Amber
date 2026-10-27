@@ -19,9 +19,11 @@ import QuartzCore
 /// 「唱到就切色」：`lineProgressionGradientFeather = 30` 是 mask 前端那条定宽软边。
 ///
 /// 逐字单元按**音节**各自成层（原版 `Syllable` 就带自己的`frame`/`xOffset`），
-/// 这样 `syllableLift` 的上抬才有落点。字形层（`Glyph`）只有`.emphasis`
-/// 能力才用得上，Amber 的 QRC 源不声明这条能力，所以不建——公式仍在
-/// `SyllableEmphasis.glyphPosition` 里备着。
+/// 这样 `syllableLift` 的上抬才有落点。例外是**长音词**（唱满超过
+/// `LyricsSpecs.heldSyllableThreshold`）：它按字形（字素簇）各自成层，
+/// 渐变前沿扫到哪个字母哪个字母才抬，并且整词发辉光。这条不依赖 `.emphasis`
+/// 能力位（Amber 的 QRC 源不声明它），只看时长；强调缩放的公式仍在
+/// `SyllableEmphasis.glyphPosition` 里备着，没有接线。
 final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextContentLayerProgress {
 
     var specs = LyricsSpecs()
@@ -83,8 +85,16 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         /// 每帧照常推进；按需建、按需拆的只是挂在它下面的那些亮字 `CATextLayer`。
         let sung = CALayer()
         let gradient = LineProgressGradientLayer()
-        /// 每个音节一对。`sung` 为 nil = 这一行此刻看不见亮字（见 `hasSungLayers`）。
+        /// 每个**抬升单元**一对：普通音节一对；长音词（> `heldSyllableThreshold`）
+        /// 每个字形一对（见 `appendSyllableLayers`）。
+        /// `sung` 为 nil = 这一行此刻看不见亮字（见 `hasSungLayers`）。
         var syllables: [(base: CATextLayer, sung: CATextLayer?)] = []
+        /// 与 `syllables` 等长：这一对什么时候抬。普通音节就是它的 `startTime`；
+        /// 长音词的字形是渐变前沿扫到它左缘的那一刻。
+        var liftTimes: [Double] = []
+        /// 第 i 个音节（行内展平序号，与 `layoutLine.words` 展平后一一对应）
+        /// 占 `syllables` 的哪一段。普通音节是长度 1 的区间。
+        var unitRanges: [Range<Int>] = []
         /// 发音那一层。与正文同 x 起点、同一条遮罩，只是落在正文下面。
         var ruby: [(base: CATextLayer, sung: CATextLayer?)] = []
         /// 亮字 `CATextLayer` 建着没有。
@@ -97,7 +107,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         /// 拆层的口令。每次变可见、每次重新起淡出都加一；淡出跑完时口令对不上，
         /// 说明中途又被选中 / 预热过、或者换了一条新淡出，那次拆层就作废。
         var sungTeardownToken = 0
-        /// 已经上抬过的音节，避免每帧重发弹簧。倒着 seek 会把越过的项清掉。
+        /// 已经上抬过的层（`syllables` 的下标），避免每帧重发弹簧。倒着 seek 会把越过的项清掉。
         var lifted: Set<Int> = []
         /// 已经起过辉光 ramp 的**词**（键是这个词首音节的展平下标），
         /// 对应 §23.5 那五道闸放行后写回 `animationStatus` 的那一手：一个词只发一次。
@@ -360,7 +370,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         guard Self.shouldForward(newProgress: progress, current: self.progress) else { return }
         let continuous = Self.isContinuousAdvance(newProgress: progress, current: self.progress)
         self.progress = progress
-        applyProgress(liftAnimated: animated && continuous)
+        applyProgress(liftAnimated: animated && continuous,
+                      headstart: animated && isSelected)
     }
 
     /// 每帧走查：算出每个排版行扫到哪儿，顺手把该上抬的音节抬起来。
@@ -374,21 +385,26 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     ///
     /// `liftAnimated` **只管抬升**（渐变、辉光、音译都是逐帧直写模型值）：
     /// 真时那 2pt 由 (1, 14, 7) 那条弹簧慢慢飘上去，假时当场落位。
-    func applyProgress(liftAnimated: Bool) {
+    /// - Parameter headstart: 是否把 `animationHeadstart`（0.10s）叠到进度上。
+    ///   [实测] `（略）`：**只有选中行且走动画那一路**才加，
+    ///   seek / 重排一律用真值。原版加在 `TextLayer.applyProgress` 的入参上，
+    ///   内容层自己存的 `progress` 仍是原始秒数——所以这里也只改局部变量。
+    func applyProgress(liftAnimated: Bool, headstart: Bool = false) {
+        let t = headstart ? progress + specs.animationHeadstart : progress
         let needsTransliteration = transliterationWidth > 0 && !transliterationSung.isHidden
         var totalWords = 0
         var doneWords = 0.0
-        var pendingLifts: [(row: Row, layoutLine: SyncedLyricsLineLayer.LayoutLine)] = []
+        var pendingLifts: [Row] = []
         let lifts = specs.syllableLift != 0 && line?.capabilities.contains(.lift) == true
         let now = CACurrentMediaTime()
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (index, layoutLine) in layoutLines.enumerated() {
-            let state = layoutLine.progressState(at: progress)
+            let state = layoutLine.progressState(at: t)
             if needsTransliteration {
                 totalWords += layoutLine.words.count
-                doneWords += sweptWords(of: layoutLine, state: state)
+                doneWords += sweptWords(of: layoutLine, state: state, progress: t)
             }
             guard let row = rows[safe: index] else { continue }
 
@@ -401,7 +417,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
                 let padding = verticalPadding(for: row)
                 let geometry = sweptGeometry(of: layoutLine,
                                              state: state,
-                                             verticalPadding: padding)
+                                             verticalPadding: padding,
+                                             progress: t)
                 row.gradient.featherWidth = geometry.feather
                 var frame = row.gradient.frame
                 frame.size.width = geometry.width
@@ -415,7 +432,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
 
             // 只为抬升排队。带 emphasis 的行不必也进来——强调缩放没接线
             // （理由见 `liftStartedSyllables`），辉光自己在上面那两句里走完了。
-            if lifts { pendingLifts.append((row, layoutLine)) }
+            if lifts { pendingLifts.append(row) }
         }
         if needsTransliteration {
             let fraction = totalWords > 0
@@ -425,8 +442,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         }
         CATransaction.commit()
 
-        for (row, layoutLine) in pendingLifts {
-            liftStartedSyllables(in: row, layoutLine: layoutLine, animated: liftAnimated)
+        for row in pendingLifts {
+            liftStartedSyllables(in: row, animated: liftAnimated, at: t)
         }
     }
 
@@ -460,7 +477,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// 「走到第几个词 + 词内比例」折成一个比例，再乘到音译自己的宽度上——
     /// 前沿与主行始终同步，又没有多编一层时间。
     private func sweptWords(of layoutLine: SyncedLyricsLineLayer.LayoutLine,
-                            state: SyncedLyricsLineLayer.LayoutLine.ProgressState) -> Double {
+                            state: SyncedLyricsLineLayer.LayoutLine.ProgressState,
+                            progress: Double) -> Double {
         switch state {
         case .notStarted:
             return 0
@@ -489,7 +507,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// 这一行扫到哪儿。几何计算与羽化夹紧委托给 `LineProgressGradientGeometry`。
     func sweptGeometry(of layoutLine: SyncedLyricsLineLayer.LayoutLine,
                        state: SyncedLyricsLineLayer.LayoutLine.ProgressState,
-                       verticalPadding padding: CGFloat) -> LineProgressGradientGeometry.SweptGeometry {
+                       verticalPadding padding: CGFloat,
+                       progress: Double) -> LineProgressGradientGeometry.SweptGeometry {
         LineProgressGradientGeometry.sweptGeometry(
             of: layoutLine,
             state: state,
@@ -501,59 +520,41 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// `syllableLift`：被唱到的音节整体上抬那么多，由 (1, 14, 7) 那条弹簧走完。
     /// **是常量位移不是动画幅度**（§8.1：它是直接从纵向落点里减掉的），抬起来之后保持。
     ///
-    /// 同一趟还带上 §8.1 的**强调缩放**（`emphasizingScaleRange = 1.0…1.14`，
-    /// `scale = lo + (hi − lo) × t`，一条直线、没有缓动，缓动全交给同一条弹簧）。
-    /// 这里的 `t` 取该词的`Emphasis.factor`——与辉光同一个源：
+    /// **不做字形放大。** `emphasizingScaleRange = 1.0…1.14` 这个字段确实在结构体里
+    /// （`+0x100/+0x108`），但它在本仓已经有两个正当消费者：渐变条的纵向余量
+    /// （`|ascent·1.14 + 2·glowRadius − h| / 2`，见 `LineProgressGradientLayer+Layout`）
+    /// 与辉光层的栅格化倍率（`WordGlow`）。把它再叠到 `transform` 上会多出一层放大——
+    /// 2026-10-27 用户拿 Music.app 同帧对拍：**原版整行字重、字宽全程不变**，
+    /// 只有颜色与 2–4pt 的抬升在动。所以这里只保留升降，`scale` 恒 `nil`。
     ///
-    /// - 没有 emphasis 数据时 `factor = 0` ⇒ `scale = lo = 1.0` ⇒ **一个像素都不动**，
-    ///   `LayerPropertyAnimator` 那道「值没变就不建动画」还会把它整条挡掉，
-    ///   所以接上它对现有数据源零影响；
-    /// - 原版这个 `t` 是「归一化进度」，Amber 不逐帧推缩放而是一次推到位，
-    ///   由 (1, 14, 7) 那条欠阻尼弹簧走完这一段——观感上的差别只在起步那几帧。`[补]`
-    ///
-    /// **进出都做**：§25.3 的 `LyricsAnimationStatus` 有`reverseAnimating` 一支，
+    /// **进出都做**：§25.3 的 `LyricsAnimationStatus` 有 `reverseAnimating` 一支，
     /// 说明这套动画本来就是可逆的。往回 seek 时把越过的音节放回原位，
-    /// 否则重听同一段时那些字一直保持抬起 + 放大。
-    private func liftStartedSyllables(in row: Row,
-                                      layoutLine: SyncedLyricsLineLayer.LayoutLine,
-                                      animated: Bool) {
+    /// 否则重听同一段时那些字一直保持抬起。
+    ///
+    /// **按层走，不按音节走**：长音词拆成了好几个字形层，每层有自己的抬升时刻
+    /// （`Row.liftTimes`，渐变前沿扫到它左缘的那一刻），于是同一个词里的字母一个接一个
+    /// 抬起来；普通音节一层、时刻就是它的 `startTime`，与原来逐音节的行为完全一样。
+    private func liftStartedSyllables(in row: Row, animated: Bool, at time: Double) {
         let lift = specs.syllableLift != 0 && line?.capabilities.contains(.lift) == true
             ? specs.syllableLift
             : 0
-        var flat = 0
-        for word in layoutLine.words {
-            // **强调缩放不接线**，公式仍在 `SyllableEmphasis.scale` 里备着。
-            //
-            // 1.0…1.14 这个数是实测（§8.1，`emphasizingScaleRange`），但
-            //    §8.1 里乘上去的 `t` 是**词内归一化进度**，不是 emphasis 的 factor；
-            //    而 §23.5 那道 `.none → 跳过` 的闸，spec 写明是**辉光 ramp 之前**的
-            //    五道闸，不是缩放的闸。拿合成 factor 当 `t` 是把两条链接串了。
-            // 2. 照 §8.1 原样接（`t` = 词内进度）意味着**每个被唱到的词**都要涨到
-            //    1.14×，而 [PX] §22.2 在播放态量到的主行字号只比整数档高 1–8%，
-            //    §23.7 还把这 1–8% 整个归因给了辉光（半径 5 的阴影被墨迹标定算进字高）。
-            //    真有 14% 的缩放，那批样本不可能只高 1–8%。
-            //
-            // 两头都不成立，所以这里不放大。要接的话得先有「哪些词该放大」的实测
-            // 或实测依据——合成 factor 是给辉光用的（`LyricsAdapter.synthesizeEmphasis`
-            // 标了 `[补]`），不该拿去改字号几何。
-            let scale: Double? = nil
-            for syllable in word.syllables {
-                defer { flat += 1 }
-                guard row.syllables.indices.contains(flat) else { continue }
-                let started = progress >= syllable.startTime
-                if started {
-                    guard row.lifted.insert(flat).inserted else { continue }
-                } else {
-                    guard row.lifted.remove(flat) != nil else { continue }
-                }
-                let pair = row.syllables[flat]
-                // 亮字没建时只抬 base：之后现建的亮字照抄 base 的模型位置与在飞的那条
-                // 叠加动画（`makeSungTwin`），落点与飘的相位都与这里一致。
-                for layer in [pair.base] + (pair.sung.map { [$0] } ?? []) {
-                    emphasize(layer, lift: started ? -lift : lift,
-                              scale: scale.map { started ? $0 : 1 },
-                              animated: animated)
-                }
+        // 不做放大（见方法头）：这里只负责「抬不抬」这个离散状态。
+        let scale: Double? = nil
+        for index in row.syllables.indices {
+            guard let liftTime = row.liftTimes[safe: index] else { continue }
+            let started = time >= liftTime
+            if started {
+                guard row.lifted.insert(index).inserted else { continue }
+            } else {
+                guard row.lifted.remove(index) != nil else { continue }
+            }
+            let pair = row.syllables[index]
+            // 亮字没建时只抬 base：之后现建的亮字照抄 base 的模型位置与在飞的那条
+            // 叠加动画（`makeSungTwin`），落点与飘的相位都与这里一致。
+            for layer in [pair.base] + (pair.sung.map { [$0] } ?? []) {
+                emphasize(layer, lift: started ? -lift : lift,
+                          scale: scale.map { started ? $0 : 1 },
+                          animated: animated)
             }
         }
     }

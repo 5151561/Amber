@@ -475,4 +475,32 @@ final class LyricsStoreTests: XCTestCase {
         XCTAssertNotNil(store.cachedLyrics(for: c))
     }
 
+
+    // MARK: - 辉光的触发
+
+    /// **只要有时长就发光**，不看时长门槛。
+    ///
+    /// [实测] `（略）` L264 的门控只有 `glyphs.count > 0 && duration > 0`：
+    /// 函数里的 `1.0` 是弹簧阻尼比、`3.0` 是时长上限，没有「超过 1 秒」这回事。
+    /// 短词也会亮，只是 0.3 秒的词在 3–5 帧内就到顶、同时词也唱完了，
+    /// 肉眼退化成一次闪动——这正是「短词不发光」错觉的来源。
+    func testEmphasisFollowsWordDuration() {
+        let emphasis = LyricsAdapter.synthesizeEmphasis([
+            LyricSyllable(text: "a", time: 0, duration: 0.5),
+            LyricSyllable(text: "b", time: 0.5, duration: LyricsSpecs.heldSyllableThreshold),
+            LyricSyllable(text: "c", time: 1.5, duration: 1.2),
+        ])
+        XCTAssertEqual(emphasis, [.factor(1), .factor(1), .factor(1)])
+
+        // 没有时长的单元（行级时间轴、纯标点）直接不发光。
+        let untimed = LyricsAdapter.synthesizeEmphasis([
+            LyricSyllable(text: "x", time: 0, duration: 0),
+        ])
+        XCTAssertEqual(untimed, [.none])
+
+        let single = LyricsAdapter.synthesizeEmphasis([
+            LyricSyllable(text: "啊", time: 0, duration: 2),
+        ])
+        XCTAssertEqual(single, [.factor(1)])
+    }
 }

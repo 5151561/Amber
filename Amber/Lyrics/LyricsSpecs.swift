@@ -81,7 +81,19 @@ struct LyricsSpecs {
         LyricsSpecs.bold(.preferredFont(forTextStyle: .title2))
     var writtenByFont: NSFont = .systemFont(ofSize: 22)           //[实测]
     var songwritersNamesFont: NSFont = .systemFont(ofSize: 22)    //[实测]
-    var emphasizingScaleRange: ClosedRange<Double> = 1.0...1.14   //[实测]
+
+    /// 演唱中那个音节的放大系数。
+    ///
+    /// [实测] 结构体 `+0x100`（lower 1.0）/ `+0x108`（upper 1.14），
+    /// `（略）` L306 的 `hScale = lower + t·(upper − lower)`。
+    /// `t` 是**该音节自身的归一化进度**，不是 emphasis 强度——两者不要串。
+    ///
+    /// **这个数不写字形几何。** 2026-10-27 与 Music.app 同帧对拍，原版整行字宽 / 字重
+    /// 全程不变；本仓曾把它接到音节层 `transform`，结果整行「越唱越大」，与截图不符。
+    /// 现在只剩两个不画字的消费者：
+    /// 渐变层纵向余量 `|ascent·1.14 + 2·glowRadius − h| / 2`（`（略）`）、
+    /// 辉光层 `rasterizationScale`（放大后栅格不糊）。
+    var emphasizingScaleRange: ClosedRange<Double> = 1.0...1.14   //[实测] +0x100/+0x108
 
     /// [实测] `.callout` + `.bold` trait ⇒ 本机 12pt`.SFNS-Semibold`。
     /// 同屏**有**音译时的译文档，选档规则见 `LyricsSecondaryText.swift`。
@@ -135,7 +147,14 @@ struct LyricsSpecs {
     var glowColor: NSColor = .white                               //[实测]
     var glowRadius: CGFloat = 5                                   //[实测]
     var glowRange: ClosedRange<Double> = 0...0.4                  //[实测] 逐词强度
-    var lineProgressionGradientFeather: CGFloat = 16              // 软边宽度（从 30 收窄到 16，保留流光感同时减轻音节滞后）
+
+    /// 已唱段与未唱段之间那条定宽软边的宽度。
+    ///
+    /// [实测] 结构体 `+0x250` 的字面量是 **30.0**，`（略）`（渐变层布局）
+    /// 把它同时用作渐变条宽与 fill 的扣减量。本仓曾收窄到 16，注释理由是
+    /// 「减轻音节滞后」——那是产品手调，不是原版值，本轮按结构体改回 30。
+    /// 短行会命中 `（略）` 里的 `max(W − feather, 0)`，fill 宽夹到 0 即可。
+    var lineProgressionGradientFeather: CGFloat = 30              //[实测] +0x250
     var touchDownTransform = CGAffineTransform(scaleX: 0.95, y: 0.95) //[实测]
 
     // MARK: 悬停 / 点击
@@ -156,12 +175,22 @@ struct LyricsSpecs {
 
     /// 被唱到的音节上抬多少。
     ///
-    /// ASM 里读出来的是 **2**；[PX] 对着播放中的 Music 逐像素量，已唱字比未唱高
-    /// **3.5…4.2pt**（半高顶端 +3.50、质心 +4.21，`AM-ANTI/Reports/lyrics-logic.md`
-    /// 那一节），两者之差当时归因给取样字形的上沿不同。实机对比后取实测区间的中值
-    /// **4**——ASM 那个 2 是在 Music 自己的字形落点公式里减掉的，
-    /// Amber 没有字形层、减在音节层上，同一个数字给出的观感并不等价。
+    /// [实测] 结构体 `+0x2d0` 读出来是 2.0，但那个数在 `（略）` 里是按
+    /// **字形落点**的坐标系算的：`newY = (sh + scale·y + y) × 0.25 − syllableLift`
+    /// 里的 y 已经是「相对词基线的一组候选落点」，减 2 落在那一套里只是微调。
+    /// [PX] 对着播放中的 Music 逐像素量，已唱字比未唱高 **3.5…4.2pt**
+    /// （半高顶端 +3.50、质心 +4.21，`AM-ANTI/Reports/lyrics-logic.md`），
+    /// 而且 2026-10-27 的用户对拍复核仍是这个量级——**原版没有可见的字形放大**
+    /// （`emphasizingScaleRange` 只用于渐变纵向余量 / 栅格化倍率，不写 `transform`），
+    /// 所以抬升就是纯平移、不能再指望被缩放「补」出来。
+    ///
+    /// 本仓没有字形层、抬升减在音节层上，取实测区间的中值 4 ≈ 原版观感。`[PX]`
     var syllableLift: CGFloat = 4                                 //[PX] .lift 能力
+    /// 长音门槛：一个逐字单元唱满**超过**这么久，就逐字母抬升并发辉光。
+    ///
+    /// 产品指定的值，不是对着 Music 量出来的。数据侧（`LyricsAdapter.synthesizeEmphasis`）
+    /// 与建层侧（`SBS_TextContentLayer.appendSyllableLayers`）共用这一份，所以是静态的。
+    static let heldSyllableThreshold: TimeInterval = 1.0          //[推] 产品指定
     var vocalGroupWidthCoefficient: CGFloat = 0.85                //[实测]
     var lineTapProgressFreezeDuration: TimeInterval = 0.1         //[实测]
     var lineFinishProgressAnimationDuration: TimeInterval = 0.25  //[实测] 行末补完剩余进度
@@ -192,12 +221,37 @@ struct LyricsSpecs {
 
     // MARK: 弹簧
 
+    /// 翻行 / 焦点位让位用的弹簧。`(mass 1, stiffness 100, damping 18)`
+    ///
+    /// [实测] 解析器 `（略）` 里这一组不走 `CASpringAnimation`，
+    /// 而是 `（略）` 打包成 timing 值存进 `+0x2f8`（`scrollLead` 因此可解析求值）。
     var lineChangeSpringTimingParameters =
-        SpringTimingParameters(mass: 1, stiffness: 100, damping: 18)     //[实测]
+        SpringTimingParameters(mass: 1, stiffness: 100, damping: 18)     //[实测] +0x2f8
+
+    /// 副行展开 / 收起。`(1, 150, 30)` 与 `(1, 130, 30)`
+    ///
+    /// [实测] 解析器里这两组各自 new 了一个 `CASpringAnimation` 只为取 `settlingDuration`，
+    /// 存进 `+0x310` / `+0x338`。阻尼比分别 1.22 / 1.32，都是过阻尼——落到终点不回弹。
     var showTranslationTransliterationSpringParameters =
-        SpringAnimationParameters(mass: 1, stiffness: 150, damping: 30)  //[实测]
+        SpringAnimationParameters(mass: 1, stiffness: 150, damping: 30)  //[实测] +0x310
     var hideTranslationTransliterationSpringParameters =
-        SpringAnimationParameters(mass: 1, stiffness: 130, damping: 30)  //[实测]
+        SpringAnimationParameters(mass: 1, stiffness: 130, damping: 30)  //[实测] +0x338
+
+    /// 悬停底板的进出弹簧。`进 (2, 300, 50)` / `出 (1, 322, 24)`
+    ///
+    /// [实测] `（略）`（`setHighlighted:` 实体）里的立即数：
+    /// `0x4000000000000000`/`0x4072c00000000000`/`0x4049000000000000` 进出两组。
+    /// 进入更"弹"（mass 2、damping 50），退出更脆（mass 1、damping 24），不要共用一套。
+    var hoverHighlightSpringIn = SpringAnimationParameters(mass: 2, stiffness: 300, damping: 50)
+    var hoverHighlightSpringOut = SpringAnimationParameters(mass: 1, stiffness: 322, damping: 24)
+
+    /// 悬停时底板与文字的透明度过渡曲线。
+    ///
+    /// [实测] 同一函数里那组五元组（进入 `0.25 / 0 / 0.55 / 1.0 / 0.2`），
+    /// 语义 `[推]`：按本仓 `LyricsAnimationCurve` 的 `custom` 四控制点 + 时长落地。
+    /// 光靠弹簧驱动透明度会有肉眼可见的回弹，原版把这两件事拆成两条动画。
+    var hoverHighlightTransitionCurve = LyricsAnimationCurve.custom(
+        CGPoint(x: 0.33, y: 0), CGPoint(x: 0.2, y: 0.1), duration: 0.12)
 
     /// 一次翻行滚动跑完要多久。`[补]`
     ///

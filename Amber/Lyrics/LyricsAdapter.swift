@@ -213,64 +213,30 @@ enum LyricsAdapter {
 
     /// 给一行的逐字单元合成 `Emphasis`。
     ///
-    /// **这是 Amber 自己的推导，不是实测。** 原版 `Emphasis.factor` 的生产侧是服务端数据
+    /// **这是 Amber 自己的规则，不是实测。** 原版 `Emphasis.factor` 的生产侧是服务端数据
     /// （§23.8 明确记为 `[缺口]`：TTML 名字空间里没有 emphasis 相关属性串，
     /// 原版里也没有对应的字面量）；QQ 的 QRC 与网易的 YRC 都只给
     /// `字(起点, 时长)`，一个强调字段都没有。照 §23 把整条链实现完之后，
     /// 没有这份数据就等于「一个光斑都不会出现」——所以这里补一条合成规则。
     ///
-    /// 规则（一句话）：**一个音节比本行的常规音节多拖了多少个自身长度，就有多亮；
-    /// 拖满一倍（2×）到顶。**
+    /// 规则（一句话）：**只要这个单元有时长，就发光**——强度由词内进度线性爬到
+    /// `glowRange.upperBound`（0.4），持续时长 = `min(单元时长, 3s)`。
     ///
-    /// ```
-    /// p_i    = 音节时长 / max(1, 音节的字符数)        // 换成「每个字拖多久」
-    /// p_ref  = 本行 p 的中位数
-    /// factor = clamp(p_i / p_ref − 1, 0, 1)
-    /// ```
+    /// 这条规则来自规格核对，不是推的：`（略）` L264 的门控只有两项
+    /// `glyphs.count > 0 && duration > 0`，函数里出现的 `1.0` 是弹簧阻尼比、
+    /// `3.0` 是时长上限，**没有任何「大于 1 秒」的阈值**。本仓原来按
+    /// `heldSyllableThreshold`（1 秒）判，导致绝大多数词根本不发光——那正是
+    /// 「短词看着不亮」的成因；原版里短词也亮，只是 0.3 秒的词在 3–5 帧内就到顶、
+    /// 同时词也唱完了，肉眼退化成一次闪动。
     ///
-    /// 三条依据，都是规律不是样本：
-    ///
-    /// 1. **强调 = 拖长**。逐字歌词里被强调的就是被唱住的那个字（长音、拖腔）。
-    ///    这是把「时长」当强调信号的唯一理由，与具体是哪首歌无关。
-    /// 2. **参照系取本行、取中位数**。歌速、断句粒度逐行逐曲都不同，绝对秒数没有可比性；
-    ///    中位数而不是均值，是因为要检测的正是那几个离群的长音——用均值会被它们自己抬高，
-    ///    检测灵敏度反而随「这行有几个长音」浮动。
-    /// 3. **归一化到「翻倍」**。分母取 `p_ref` 自身、满点定在 2×，
-    ///    是因为「比常规长一倍」本身就是一个自然刻度，不需要任何试出来的系数；
-    ///    上下界直接是 `glowRange` 公式要求的`[0, 1]`。
-    ///    换成 1.5× 或 3× 只会整体变亮/变暗，不改变「哪些字发光」的排序。
-    ///
-    /// 除以字符数是因为一个单元可能是「一个汉字」也可能是「一个英文词」——
-    /// 同一行内源数据的粒度是一致的，除掉之后剩下的才是「拖了多久」。
+    /// `heldSyllableThreshold` 仍然保留，但它现在**只**用于建层侧的
+    /// 「长音词逐字母抬升」（把词拆成多个字形单元），不再兼管辉光。
     ///
     /// 落到 `.none` 而不是`.factor(0)`：§23.3 的第四道闸对`.none` 是**整词跳过**，
     /// 不建阴影、不起 ramp；`.factor(0)` 会白跑一遍强度恒 0 的链路。
     static func synthesizeEmphasis(_ syllables: [LyricSyllable]) -> [Lyrics.Emphasis] {
-        let none = [Lyrics.Emphasis](repeating: .none, count: syllables.count)
-        // 一个音节没有参照系（中位数就是它自己），谈不上「比常规长」。
-        guard syllables.count >= 2 else { return none }
-
-        let perCharacter: [Double] = syllables.map { syllable in
-            let characters = syllable.text.reduce(into: 0) {
-                if !$1.isWhitespace { $0 += 1 }
-            }
-            return syllable.duration / Double(max(characters, 1))
+        syllables.map {
+            $0.duration > 0 ? .factor(1) : .none
         }
-        guard let reference = median(perCharacter), reference > 0 else { return none }
-
-        return perCharacter.map { value in
-            let factor = min(max(value / reference - 1, 0), 1)
-            // 浮点误差级别的「长一点点」不算强调。
-            return factor > 0.001 ? .factor(factor) : Lyrics.Emphasis.none
-        }
-    }
-
-    private static func median(_ values: [Double]) -> Double? {
-        let sorted = values.filter { $0 > 0 }.sorted()
-        guard !sorted.isEmpty else { return nil }
-        let middle = sorted.count / 2
-        return sorted.count.isMultiple(of: 2)
-            ? (sorted[middle - 1] + sorted[middle]) / 2
-            : sorted[middle]
     }
 }
