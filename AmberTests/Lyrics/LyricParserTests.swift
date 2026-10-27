@@ -226,6 +226,54 @@ final class LyricParserTests: XCTestCase {
         XCTAssertEqual(lines[0].transliteration, "xx")
     }
 
+    /// [实测] 网易的 `yromalrc` 与 `romalrc` 一律是行级 LRC 时间戳 + 空格切词，
+    /// 不带逐字括号。解析器应按假名锚点与字拍特征把发音归到 YRC 音节上。
+    func testNeteaseYRCTokenizedRomalrcAttachesToSyllables() {
+        let yrc = """
+        [280,840](280,450,0)せー(730,390,0)のっ
+        [16917,3025](16917,160,0)ハ(17077,152,0)イ(17229,104,0)ウ(17333,104,0)ェ(17437,104,0)イ(17541,199,0)が(17740,209,0)伸(17949,208,0)び(18157,124,0)る(18281,248,0)こ(18529,196,0)の(18933,585,0)街(19518,424,0)で
+        """
+        let roma = """
+        [00:00.280]se no
+        [00:16.917]ha i e i ga no bi ru ko no ma chi de
+        """
+        let lines = lyricLines(LyricParser.parse(yrc, transliteration: roma))
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertEqual(lines[0].syllables.map(\.transliteration), ["se", "no"])
+        XCTAssertNil(lines[0].transliteration)
+
+        XCTAssertEqual(lines[1].syllables[11].text, "街")
+        XCTAssertEqual(lines[1].syllables[11].transliteration, "machi")
+        XCTAssertNil(lines[1].syllables[3].transliteration, "拗音后半拍 ェ 不单独拿词")
+        XCTAssertNil(lines[1].transliteration)
+    }
+
+    /// 粤语 / 韩语的网易 YRC + 行级 `romalrc` 也能逐字归位，多字音节内部保留词间空格。
+    func testNeteaseYRCCantoneseAndKoreanRomalrcAttachesToSyllables() {
+        let cantoneseYRC = "[1000,2000](1000,500,0)难(1500,500,0)忘(2000,500,0)今(2500,500,0)宵"
+        let cantoneseRoma = "[00:01.000]naan mong gam siu"
+        let cLines = lyricLines(LyricParser.parse(cantoneseYRC, transliteration: cantoneseRoma))
+        XCTAssertEqual(cLines[0].syllables.map(\.transliteration), ["naan", "mong", "gam", "siu"])
+        XCTAssertNil(cLines[0].transliteration)
+
+        let koreanYRC = "[55294,2000](55294,500,0)총 (55794,700,0)맞은 (56494,800,0)것처럼"
+        let koreanRoma = "[00:55.294]chong ma jeun geot cheo reom"
+        let kLines = lyricLines(LyricParser.parse(koreanYRC, transliteration: koreanRoma))
+        XCTAssertEqual(kLines[0].syllables.map(\.transliteration),
+                       ["chong", "ma jeun", "geot cheo reom"])
+        XCTAssertNil(kLines[0].transliteration)
+    }
+
+    /// 日英混排的 `romalrc` 会把英文词原样复述一遍，对齐时消费掉但不给英文音节注音。
+    func testNeteaseYRCMixedEnglishAndJapaneseSkipsEnglishReading() {
+        let yrc = "[1000,2000](1000,400,0)Step (1400,400,0)by (1800,400,0)step (2200,400,0)私(2600,400,0)は"
+        let roma = "[00:01.000]step by step wa ta shi wa"
+        let lines = lyricLines(LyricParser.parse(yrc, transliteration: roma))
+        XCTAssertEqual(lines[0].syllables.map(\.transliteration),
+                       [nil, nil, nil, "watashi", "wa"])
+        XCTAssertNil(lines[0].transliteration)
+    }
+
     /// 只有一边有内容时，另一边保持 nil——菜单那两项的置灰就靠这个判据。
     func testMissingTransliterationStaysNil() {
         let lines = lyricLines(LyricParser.parse("[00:10.00]AAA",
@@ -1107,5 +1155,38 @@ final class LyricParserTests: XCTestCase {
         XCTAssertTrue(lines.allSatisfy { $0.kind == .plain })
         XCTAssertEqual(lines.map(\.text), texts)
         XCTAssertEqual(lines.map(\.index), Array(0..<texts.count))
+    }
+
+    // MARK: - 重叠句与同时间戳 LRC 终点保留
+
+    /// 逐字歌词（QRC/YRC）若上一句尾音越过下一句起点，保留真实音节结束时刻，
+    /// 不被下一句 `startTime` 截断，从而支持重叠对唱同时高亮。
+    func testOverlappingSyllablesKeepTrueEndTime() {
+        let qrc = """
+        [10000,4000]主(10000,2000)唱(12000,2000)
+        [12000,3000]合(12000,1500)音(13500,1500)
+        """
+        let lines = lyricLines(LyricParser.parse(qrc))
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertEqual(lines[0].time, 10.0, accuracy: 1e-6)
+        XCTAssertEqual(lines[0].end, 14.0, accuracy: 1e-6, "有逐字音节的行保留真实末尾 14.0s，不被 12.0s 截断")
+        XCTAssertEqual(lines[1].time, 12.0, accuracy: 1e-6)
+        XCTAssertEqual(lines[1].end, 15.0, accuracy: 1e-6)
+    }
+
+    /// 同一时间戳的两条纯 LRC 行共享下一个严格更大的行起点作为 `end`，
+    /// 第一条不会因为 `nextStart == line.time` 被压成 0 时长。
+    func testSameTimestampLRCLinesShareNextDistinctEndTime() {
+        let lrc = """
+        [00:10.00]主唱句
+        [00:10.00]和声句
+        [00:15.00]下一句
+        """
+        let lines = lyricLines(LyricParser.parse(lrc))
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0].time, 10.0, accuracy: 1e-6)
+        XCTAssertEqual(lines[0].end, 15.0, accuracy: 1e-6, "同时间戳首行也延续到 15.0s")
+        XCTAssertEqual(lines[1].time, 10.0, accuracy: 1e-6)
+        XCTAssertEqual(lines[1].end, 15.0, accuracy: 1e-6)
     }
 }

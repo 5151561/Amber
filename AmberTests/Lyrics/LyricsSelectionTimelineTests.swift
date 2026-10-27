@@ -124,4 +124,47 @@ final class LyricsSelectionTimelineTests: XCTestCase, LyricsKitFixtures {
         gate.lastTapDate = now.addingTimeInterval(-1.01)
         XCTAssertEqual(gate.decide(newElapsed: 20, currentElapsed: 10, now: now), .accept)
     }
+
+    // MARK: - 重叠句淘汰与末尾不提前出局
+
+    /// 正在唱的行在 `endTime - lead` 到 `endTime` 之间不会提前 100ms 出局，
+    /// 必须等到 `elapsed > endTime` 才淘汰。
+    func testSingingLineIsNotEvictedBeforeTrueEndTime() {
+        let manager = makeManager(lead: 0.1)
+        var lyrics = Lyrics()
+        lyrics.lines = [textLine(index: 0, start: 0, end: 10),
+                        textLine(index: 1, start: 10.2, end: 14)]
+        manager.setLyrics(lyrics)
+
+        // 9.95 秒（位于最后 100ms 尾音窗口内）：第 0 行仍在唱，不提前淘汰
+        manager.elapsedTimeProvider = { 9.95 }
+        manager.update()
+        XCTAssertEqual(manager.selectedLines.map(\.index), [0, 1])
+
+        // 10.01 秒（第 0 行真实唱完）：第 0 行出局
+        manager.elapsedTimeProvider = { 10.01 }
+        manager.update()
+        XCTAssertEqual(manager.selectedLines.map(\.index), [1])
+    }
+
+    /// 包络型重叠：主唱长句 [10, 16] 包裹短合音 [11, 13]，当第 2 行 [13.2, 18] 进场时，
+    /// 优先淘汰已经唱完的短合音（index 1），保留仍在延音的主唱长句（index 0）。
+    func testOverlappingEnvelopeEvictsShorterInnerLineFirst() {
+        let manager = makeManager(lead: 0.1)
+        var lyrics = Lyrics()
+        lyrics.lines = [
+            textLine(index: 0, start: 10, end: 16),
+            textLine(index: 1, start: 11, end: 13),
+            textLine(index: 2, start: 13.2, end: 18),
+        ]
+        manager.setLyrics(lyrics)
+
+        manager.elapsedTimeProvider = { 12.0 }
+        manager.update()
+        XCTAssertEqual(manager.selectedLines.map(\.index), [0, 1], "重叠期间主唱与合音同时亮起")
+
+        manager.elapsedTimeProvider = { 13.05 }
+        manager.update()
+        XCTAssertEqual(manager.selectedLines.map(\.index), [0, 2], "短合音先唱完出局，长主唱继续保留")
+    }
 }

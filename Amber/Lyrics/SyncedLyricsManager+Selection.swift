@@ -134,20 +134,23 @@ extension SyncedLyricsManager {
             return basis
         }
 
-        evictFinishedHead(cutoff: basis.cutoff)
-        admitUpcomingLines(elapsed: basis.elapsed, cutoff: basis.cutoff)
+        reportFinishedLines(elapsed: basis.elapsed)
+        evictFinishedHead(cutoff: basis.elapsed)
+        admitUpcomingLines(elapsed: basis.elapsed, cutoff: basis.elapsed)
         reportFinishedLines(elapsed: basis.elapsed)
         return basis
     }
 
-    /// 队首出局。[实测]：满了才比，`endTime >= cutoff` 保留。
+    /// 已唱完行出局：满了才比，按真实 `endTime < cutoff` 淘汰最先唱完的那一行
+    /// （包络型重叠下较短的后进场行可能先唱完，不局限于队首）。
     private func evictFinishedHead(cutoff: TimeInterval) {
-        while let first = selectedLines.first,
-              shouldEvictOldestSelectedLine(oldestEndTime: first.endTime,
-                                            cutoff: cutoff,
-                                            selectedCount: selectedLines.count) {
-            selectedLines.removeFirst()
-            delegate?.syncedLyricsManager(self, didDeselect: first)
+        while let idx = selectedLines.firstIndex(where: {
+            shouldEvictOldestSelectedLine(oldestEndTime: $0.endTime,
+                                          cutoff: cutoff,
+                                          selectedCount: selectedLines.count)
+        }) {
+            let evicted = selectedLines.remove(at: idx)
+            delegate?.syncedLyricsManager(self, didDeselect: evicted)
         }
     }
 
@@ -211,7 +214,7 @@ extension SyncedLyricsManager {
 
         let previous = selectedLines
         let admitted = lines.filter { shouldAdmit(line: $0, elapsed: elapsed) }
-        let cutoff = elapsed + configuration.animationDuration(0)
+        let cutoff = elapsed
         var kept = admitted.suffix(maxSelectedLines).filter { $0.endTime >= cutoff }
         // 全都过期时（例如拖到间奏正中）留最后一条，免得整屏没有落点。
         if kept.isEmpty, let last = admitted.last { kept = [last] }

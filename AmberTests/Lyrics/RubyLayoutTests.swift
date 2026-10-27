@@ -168,4 +168,44 @@ final class RubyLayoutTests: XCTestCase {
         let plain = "[16917,3025]ハ(16917,160)イ(17077,152)街(18933,585)"
         XCTAssertTrue(blocks(plain, roma: "[00:16.91]haistreet").isEmpty)
     }
+
+    /// 普通 LRC（没有逐字时间轴）只要带有空格切词的 `romalrc`，
+    /// `RubyLayout.blocks(for:)` 与 `TextContentLayer` 同样能按词排出对词注音块。
+    func testLineLevelLRCWithRomalrcBuildsRubyBlocks() {
+        var line = TextLine()
+        line.text = "私だけのモナリザ"
+        line.transliteration = "wa ta shi da ke no mo na ri za"
+        line.translation = "只属于我的蒙娜丽莎"
+
+        let specs = LyricsSpecs()
+        let result = RubyLayout.blocks(for: line, specs: specs)
+        XCTAssertEqual(result.map(\.text), ["私", "だけ", "の", "モナリザ"])
+        XCTAssertEqual(result.map(\.ruby), ["watashi", "dake", "no", "monariza"])
+
+        let layer = TextContentLayer()
+        layer.bounds = CGRect(x: 0, y: 0, width: 600, height: 200)
+        layer.updateAppearance(specs: specs, appearance: nil)
+        layer.setLine(line)
+        layer.layoutSublayers()
+
+        XCTAssertEqual(layer.rubyBlocks.count, 4)
+        XCTAssertGreaterThan(layer.sizeThatFits(width: 600).height, 0)
+    }
+
+    /// 粤语 / 韩语没有假名，按单字音节成块，使每个字的罗马音严丝合缝落在自己底下。
+    func testCantoneseAndKoreanRubyBlocksAlignPerCharacter() {
+        var cantonese = TextLine()
+        cantonese.text = "难忘今宵"
+        cantonese.transliteration = "naan mong gam siu"
+        let cBlocks = RubyLayout.blocks(for: cantonese, specs: LyricsSpecs())
+        XCTAssertEqual(cBlocks.map(\.text), ["难", "忘", "今", "宵"])
+        XCTAssertEqual(cBlocks.map(\.ruby), ["naan", "mong", "gam", "siu"])
+
+        var korean = TextLine()
+        korean.text = "사랑해"
+        korean.transliteration = "sa rang hae"
+        let kBlocks = RubyLayout.blocks(for: korean, specs: LyricsSpecs())
+        XCTAssertEqual(kBlocks.map(\.text), ["사", "랑", "해"])
+        XCTAssertEqual(kBlocks.map(\.ruby), ["sa", "rang", "hae"])
+    }
 }

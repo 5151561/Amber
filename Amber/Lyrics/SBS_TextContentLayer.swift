@@ -137,16 +137,16 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         setNeedsLayout()
     }
 
-    /// 重算发音块。开关关掉、没有逐字、或者发音没落到音节上时为空。
+    /// 重算发音块。开关关掉、或者发音没能对齐到音节/词块上时为空。
     func refreshRubyBlocks() {
-        guard specs.showsTransliteration, let line, !line.syllables.isEmpty else {
+        guard specs.showsTransliteration, let line else {
             rubyBlocks = []
             return
         }
         // 发音块的宽度按**发音真正会用的那一档**量：「更大字体 = 歌词」时它是小档，
         // 拿基线 15 去量会把块撑宽，正文被顶开的距离就跟画出来的对不上。
-        rubyBlocks = RubyLayout.blocks(text: line.text, syllables: line.syllables,
-                                       specs: specs, rubyFont: transliterationFontForMeasuring)
+        rubyBlocks = RubyLayout.blocks(for: line, specs: specs,
+                                       rubyFont: transliterationFontForMeasuring)
     }
 
     // MARK: - SyncedLyricsContentLayer
@@ -432,7 +432,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
 
     /// 音译那条渐变。宽度 = 内外余量 + 扫过比例 × 音译墨宽。
     /// 调用方已经把它包在关掉隐式动画的事务里了。
-    private func applyTransliterationProgress(fraction: Double) {
+    func applyTransliterationProgress(fraction: Double) {
         guard fraction > 0 else {
             var frame = transliterationGradient.frame
             frame.size.width = 0

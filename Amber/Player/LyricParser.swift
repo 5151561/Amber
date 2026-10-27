@@ -73,9 +73,9 @@ enum LyricParser {
         markAgentCues(&raw)
 
         let trans = translation.map { parseTimedLines($0) } ?? []
-        // 音译（Music 界面上叫「发音」）：QQ 的 `roma` 常常是 QRC 逐字格式、
-        // 网易的 `yromalrc` 是 YRC 逐字、`romalrc` 是纯 LRC，
-        // `parseTimedLines` 三种都认，按时间就近配对。
+        // 音译（Music 界面上叫「发音」）：QQ 的 `roma` 是 QRC 逐字格式，
+        // 网易的 `yromalrc` 与 `romalrc` [实测] 都是行级 LRC 时间戳 + 空格切词，
+        // `parseTimedLines` 两种都认，按时间就近配对。
         let roma = transliteration.map { parseTimedLines($0) } ?? []
         return assemble(raw, translation: trans, transliteration: roma, credits: credits,
                         breaks: breaks)
@@ -793,6 +793,454 @@ enum LyricParser {
         return result
     }
 
+    /// 把**行级空格切词**的发音（网易的 `yromalrc` / `romalrc`，或跨源补来的整行发音）
+    /// 对齐到正文的音节序列上。
+    ///
+    /// [实测] 网易的 `yromalrc` 与 `romalrc` 一律是 `[mm:ss.xxx]se no` 这种行级时间戳 +
+    /// 空格切开的发音 token，不带逐字 `(start,duration,0)` 标签。
+    /// - 假名音节（平/片假名）自带确定读音（含拗音 `きゃ -> kya`、促音 `っ`、长音 `ー`），
+    ///   作为锚点约束动态规划路径；
+    /// - 汉字在日语里可读 1~4 拍（`私 -> wa ta shi`、`街 -> ma chi`），在粤语/普通话里
+    ///   一字一词（`吻 -> man`）；谚文在韩语里一字一词（`사 -> sa`）；
+    /// - 拉丁字母词与阿拉伯数字如果在发音行里被原样复述（`Step -> step`），消费掉但
+    ///   不在拉丁正文底下重复渲染，只在表意/音节文字底下挂发音。
+    /// 对齐失败或覆盖率不足 `minTransliterationCoverage` 时返回 `nil`，由调用方退回整行副行。
+    static func attachTransliteration(_ romaText: String,
+                                      to syllables: [LyricSyllable]) -> [LyricSyllable]? {
+        guard !syllables.isEmpty,
+              syllables.contains(where: { needsTransliteration($0.text) })
+        else { return nil }
+        let tokens = tokenizeRoma(romaText)
+        guard !tokens.isEmpty else { return nil }
+
+        let metas = syllables.map(SyllableMeta.init(syllable:))
+        let n = syllables.count
+        let m = tokens.count
+        guard n <= 128, m <= 128 else { return nil }
+
+        let inf = 1_000_000
+        var dp = Array(repeating: Array(repeating: inf, count: m + 1), count: n + 1)
+        var back = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        dp[0][0] = 0
+
+        for i in 0..<n {
+            let meta = metas[i]
+            let prevSokuon = i > 0 && metas[i - 1].endsWithSokuon
+            for j in 0...m where dp[i][j] < inf {
+                // 转移 1：当前音节消费 0 个 token
+                let zeroCost: Int
+                if !meta.needsTrans {
+                    zeroCost = 0
+                } else if meta.isPureNonMoraicKana {
+                    // 拗音后半拍（`ェ`）、促音（`っ`）、长音符（`ー`）在 romalrc 里常并入相邻拍
+                    zeroCost = 0
+                } else if !meta.expectedRoma.isEmpty {
+                    zeroCost = 500
+                } else {
+                    zeroCost = 300
+                }
+                if dp[i][j] + zeroCost < dp[i + 1][j] {
+                    dp[i + 1][j] = dp[i][j] + zeroCost
+                    back[i + 1][j] = j
+                }
+
+                // 转移 2：当前音节消费 k 个 token
+                let maxK: Int
+                if !meta.needsTrans {
+                    maxK = meta.latinWords.isEmpty ? 0 : min(meta.latinWords.count, m - j)
+                } else {
+                    maxK = min(max(meta.maxTokens, 1), m - j)
+                }
+                guard maxK >= 1 else { continue }
+
+                for k in 1...maxK {
+                    let slice = tokens[j..<(j + k)]
+                    let joined = slice.map(\.norm).joined()
+                    let stepCost: Int
+
+                    if !meta.needsTrans {
+                        let expectedJoined = meta.latinWords.joined()
+                        if !expectedJoined.isEmpty && joined == expectedJoined {
+                            stepCost = 0
+                        } else if k == meta.latinWords.count {
+                            stepCost = 20
+                        } else {
+                            continue
+                        }
+                    } else if meta.isPureNonMoraicKana {
+                        if k == 1 && (meta.text.contains("っ") || meta.text.contains("ッ"))
+                            && sokuonConsonants.contains(joined) {
+                            stepCost = 0
+                        } else if k == 1 && joined.count <= 2 {
+                            stepCost = 2
+                        } else {
+                            continue
+                        }
+                    } else if !meta.expectedRoma.isEmpty {
+                        if meta.expectedRoma.contains(joined) {
+                            stepCost = 0
+                        } else if prevSokuon,
+                                  let firstChar = joined.first,
+                                  meta.expectedRoma.contains(String(joined.dropFirst())),
+                                  joined.dropFirst().first == firstChar {
+                            // 前一拍是促音时，romalrc 常把双写辅音冠在当前拍开头（`っ` + `た` -> `tta`）
+                            stepCost = 0
+                        } else if k == 1,
+                                  meta.expectedRoma.contains(where: {
+                                      joined.hasPrefix($0) && joined.count <= $0.count + 2
+                                  }) {
+                            // 下一拍是促音或长音并进本拍（`い` + `っ` -> `it`、`も` + `う` -> `mou`）
+                            stepCost = 1
+                        } else if k <= 2 {
+                            stepCost = 12 * k
+                        } else {
+                            stepCost = 40 * k
+                        }
+                    } else if meta.hangulCount > 0 {
+                        let diff = abs(k - meta.hangulCount)
+                        stepCost = diff == 0 ? 1 : (diff * 15 + 5)
+                    } else {
+                        let minExpected = max(1, meta.hanziCount + meta.kanaMoraCount)
+                        if k < minExpected {
+                            stepCost = (minExpected - k) * 15
+                        } else {
+                            // 汉字 1 拍最常见（汉语单字、日语单拍训/音读），多拍依次微增先验代价
+                            stepCost = 2 + (k - minExpected) * 3
+                        }
+                    }
+
+                    let candidate = dp[i][j] + stepCost
+                    if candidate < dp[i + 1][j + k] {
+                        dp[i + 1][j + k] = candidate
+                        back[i + 1][j + k] = j
+                    }
+                }
+            }
+        }
+
+        guard dp[n][m] < 200 else { return nil }
+
+        var ranges = Array(repeating: 0..<0, count: n)
+        var cur = m
+        for i in stride(from: n, through: 1, by: -1) {
+            let prev = back[i][cur]
+            ranges[i - 1] = prev..<cur
+            cur = prev
+        }
+
+        let lineHasKana = syllables.contains { hasKana($0.text) }
+        let totalCharCount = metas.reduce(0) { $0 + $1.hanziCount + $1.hangulCount }
+
+        var result: [LyricSyllable] = []
+        var wanted = 0
+        var covered = 0
+        for (i, syllable) in syllables.enumerated() {
+            guard metas[i].needsTrans else {
+                result.append(syllable)
+                continue
+            }
+            wanted += 1
+            let assigned = tokens[ranges[i]].map(\.raw).filter { !$0.isEmpty }
+            // 汉语/韩语一个多字音节领到多个词时保留词间空格（`命运` -> `meng wan`、`맞은` -> `ma jeun`）；
+            // 日语一个汉字或假名领到多拍时直接拼合（`私` -> `watashi`、`街` -> `machi`）。
+            let joinSeparator = (!lineHasKana && (metas[i].hangulCount > 0 || m <= totalCharCount))
+                ? " "
+                : ""
+            let reading = assigned.joined(separator: joinSeparator)
+            guard !reading.isEmpty else {
+                result.append(syllable)
+                continue
+            }
+            covered += 1
+            result.append(LyricSyllable(text: syllable.text, time: syllable.time,
+                                        duration: syllable.duration,
+                                        transliteration: reading))
+        }
+        guard wanted > 0, Double(covered) >= Double(wanted) * minTransliterationCoverage
+        else { return nil }
+        return result
+    }
+
+    /// 把没有逐字时间轴的整行歌词切成供发音归位用的合成音节单元：
+    /// - 汉字、谚文、大假名各占一单元（小书假名/长音符自动并入前一假名）；
+    /// - 连续拉丁字母/数字归为一单元；
+    /// - 标点与空白并入前一单元（行首标点独立成单元）。
+    static func segmentForTransliteration(_ text: String) -> [LyricSyllable] {
+        var units: [String] = []
+        let scalars = Array(text.unicodeScalars)
+        var idx = 0
+        while idx < scalars.count {
+            let scalar = scalars[idx]
+            if isAsciiAlphanumeric(scalar) {
+                var word = String(scalar)
+                idx += 1
+                while idx < scalars.count && (isAsciiAlphanumeric(scalars[idx]) || scalars[idx] == "'") {
+                    word.unicodeScalars.append(scalars[idx])
+                    idx += 1
+                }
+                while idx < scalars.count && !needsTransliteration(String(scalars[idx]))
+                    && !isAsciiAlphanumeric(scalars[idx]) {
+                    word.unicodeScalars.append(scalars[idx])
+                    idx += 1
+                }
+                units.append(word)
+            } else if needsTransliteration(String(scalar)) {
+                var unit = String(scalar)
+                idx += 1
+                // 小书拗音（ゃゅょぁぃぅぇぉ等，不含促音っ/ッ）并入前一假名拍
+                while idx < scalars.count && isSmallYoonOrLongVowel(scalars[idx]) {
+                    unit.unicodeScalars.append(scalars[idx])
+                    idx += 1
+                }
+                while idx < scalars.count && !needsTransliteration(String(scalars[idx]))
+                    && !isAsciiAlphanumeric(scalars[idx]) {
+                    unit.unicodeScalars.append(scalars[idx])
+                    idx += 1
+                }
+                units.append(unit)
+            } else {
+                var punct = String(scalar)
+                idx += 1
+                while idx < scalars.count && !needsTransliteration(String(scalars[idx]))
+                    && !isAsciiAlphanumeric(scalars[idx]) {
+                    punct.unicodeScalars.append(scalars[idx])
+                    idx += 1
+                }
+                if !units.isEmpty {
+                    units[units.count - 1] += punct
+                } else {
+                    units.append(punct)
+                }
+            }
+        }
+        return units.map { LyricSyllable(text: $0, time: 0, duration: 0) }
+    }
+
+    private struct RomaToken {
+        var raw: String
+        var norm: String
+    }
+
+    private static func tokenizeRoma(_ roma: String) -> [RomaToken] {
+        roma.split(whereSeparator: \.isWhitespace).compactMap { piece in
+            let raw = romanization(of: String(piece))
+            let norm = raw.lowercased().unicodeScalars.filter {
+                isAsciiAlphanumeric($0)
+            }.map(String.init).joined()
+            guard !norm.isEmpty else { return nil }
+            return RomaToken(raw: raw, norm: norm)
+        }
+    }
+
+    private struct SyllableMeta {
+        var text: String
+        var needsTrans: Bool
+        var isPureNonMoraicKana: Bool
+        var endsWithSokuon: Bool
+        var expectedRoma: Set<String>
+        var hanziCount: Int
+        var hangulCount: Int
+        var kanaMoraCount: Int
+        var latinWords: [String]
+        var maxTokens: Int
+
+        init(syllable: LyricSyllable) {
+            self.text = syllable.text
+            self.needsTrans = LyricParser.needsTransliteration(syllable.text)
+            let scalars = Array(syllable.text.unicodeScalars)
+            let meaningful = scalars.filter {
+                !CharacterSet.whitespacesAndNewlines.contains($0)
+                    && !CharacterSet.punctuationCharacters.contains($0)
+                    && !CharacterSet.symbols.contains($0)
+            }
+            self.isPureNonMoraicKana = !meaningful.isEmpty
+                && meaningful.allSatisfy(LyricParser.isNonMoraicKana)
+            self.endsWithSokuon = meaningful.last.map { $0.value == 0x3063 || $0.value == 0x30C3 } ?? false
+
+            var hanzi = 0
+            var hangul = 0
+            var kanaMora = 0
+            for scalar in meaningful {
+                switch scalar.value {
+                case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF:
+                    hanzi += 1
+                case 0xAC00...0xD7AF, 0x1100...0x11FF, 0x3130...0x318F:
+                    hangul += 1
+                case 0x3040...0x30FF, 0x31F0...0x31FF:
+                    if !LyricParser.isNonMoraicKana(scalar) { kanaMora += 1 }
+                default:
+                    break
+                }
+            }
+            self.hanziCount = hanzi
+            self.hangulCount = hangul
+            self.kanaMoraCount = kanaMora
+
+            var words: [String] = []
+            var current = ""
+            for scalar in scalars {
+                if LyricParser.isAsciiAlphanumeric(scalar) {
+                    current.append(Character(scalar).lowercased())
+                } else if !current.isEmpty {
+                    words.append(current)
+                    current = ""
+                }
+            }
+            if !current.isEmpty { words.append(current) }
+            self.latinWords = words
+
+            if hanzi == 0 && hangul == 0 && kanaMora > 0 && !isPureNonMoraicKana {
+                let kanaOnly = String(String.UnicodeScalarView(meaningful.filter {
+                    (0x3040...0x30FF).contains($0.value) || (0x31F0...0x31FF).contains($0.value)
+                }))
+                self.expectedRoma = LyricParser.expectedReadings(forKana: kanaOnly)
+            } else {
+                self.expectedRoma = []
+            }
+
+            if !needsTrans {
+                self.maxTokens = max(1, words.count)
+            } else if isPureNonMoraicKana {
+                self.maxTokens = 1
+            } else if hanzi > 0 {
+                self.maxTokens = hanzi * 4 + max(0, kanaMora)
+            } else if hangul > 0 {
+                self.maxTokens = hangul * 2
+            } else {
+                self.maxTokens = max(1, kanaMora)
+            }
+        }
+    }
+
+    private static func isAsciiAlphanumeric(_ scalar: Unicode.Scalar) -> Bool {
+        (0x30...0x39).contains(scalar.value)
+            || (0x41...0x5A).contains(scalar.value)
+            || (0x61...0x7A).contains(scalar.value)
+    }
+
+    private static func hasKana(_ text: String) -> Bool {
+        text.unicodeScalars.contains {
+            (0x3040...0x30FF).contains($0.value) || (0x31F0...0x31FF).contains($0.value)
+        }
+    }
+
+    private static func isNonMoraicKana(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3041, 0x3043, 0x3045, 0x3047, 0x3049,
+             0x3063,
+             0x3083, 0x3085, 0x3087, 0x308E,
+             0x3095, 0x3096,
+             0x30A1, 0x30A3, 0x30A5, 0x30A7, 0x30A9,
+             0x30C3,
+             0x30E3, 0x30E5, 0x30E7, 0x30EE,
+             0x30F5, 0x30F6,
+             0x30FC:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 不含促音 `っ`/`ッ` 的小书假名与长音符。
+    private static func isSmallYoonOrLongVowel(_ scalar: Unicode.Scalar) -> Bool {
+        isNonMoraicKana(scalar) && scalar.value != 0x3063 && scalar.value != 0x30C3
+    }
+
+    private static let sokuonConsonants: Set<String> = [
+        "k", "s", "t", "p", "c", "g", "z", "d", "b", "m", "r", "ch", "sh", "ts",
+    ]
+
+    private static func toHiragana(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if (0x30A1...0x30F6).contains(scalar.value),
+               let hira = Unicode.Scalar(scalar.value - 0x60) {
+                scalars.append(hira)
+            } else {
+                scalars.append(scalar)
+            }
+        }
+        return String(scalars)
+    }
+
+    private static func expectedReadings(forKana text: String) -> Set<String> {
+        let hira = toHiragana(text)
+        let chars = Array(hira)
+        guard !chars.isEmpty else { return [] }
+        var results: Set<String> = [""]
+        var idx = 0
+        while idx < chars.count {
+            let ch = chars[idx]
+            if ch == "ー" || ch == "っ" {
+                idx += 1
+                continue
+            }
+            var candidates: [String] = []
+            if idx + 1 < chars.count, let yoon = smallYoonSuffix[chars[idx + 1]],
+               let bases = kanaReadingTable[ch] {
+                for base in bases {
+                    if base == "shi" {
+                        candidates.append("sh" + yoon.dropFirst())
+                        candidates.append("sy" + yoon.dropFirst())
+                    } else if base == "chi" {
+                        candidates.append("ch" + yoon.dropFirst())
+                        candidates.append("ty" + yoon.dropFirst())
+                    } else if base == "ji" {
+                        candidates.append("j" + yoon.dropFirst())
+                        candidates.append("zy" + yoon.dropFirst())
+                    } else if base.hasSuffix("i") {
+                        candidates.append(String(base.dropLast()) + yoon)
+                    } else if base.hasSuffix("u") || base == "fu" {
+                        let prefix = base == "fu" ? "f" : String(base.dropLast())
+                        candidates.append(prefix + yoon)
+                        candidates.append(base)
+                    }
+                }
+                idx += 2
+            } else if let bases = kanaReadingTable[ch] {
+                candidates = bases
+                idx += 1
+            } else {
+                idx += 1
+                continue
+            }
+            var nextResults: Set<String> = []
+            for prefix in results {
+                for cand in candidates {
+                    nextResults.insert(prefix + cand)
+                }
+            }
+            results = nextResults
+        }
+        return results.filter { !$0.isEmpty }
+    }
+
+    private static let smallYoonSuffix: [Character: String] = [
+        "ゃ": "ya", "ゅ": "yu", "ょ": "yo",
+        "ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o",
+        "ゎ": "wa",
+    ]
+
+    private static let kanaReadingTable: [Character: [String]] = [
+        "あ": ["a"], "い": ["i"], "う": ["u", "wu"], "え": ["e"], "お": ["o"],
+        "か": ["ka"], "き": ["ki"], "く": ["ku"], "け": ["ke"], "こ": ["ko"],
+        "さ": ["sa"], "し": ["shi", "si"], "す": ["su"], "せ": ["se"], "そ": ["so"],
+        "た": ["ta"], "ち": ["chi", "ti"], "つ": ["tsu", "tu"], "て": ["te"], "と": ["to"],
+        "な": ["na"], "に": ["ni"], "ぬ": ["nu"], "ね": ["ne"], "の": ["no"],
+        "は": ["ha", "wa"], "ひ": ["hi"], "ふ": ["fu", "hu"], "へ": ["he", "e"], "ほ": ["ho"],
+        "ま": ["ma"], "み": ["mi"], "む": ["mu"], "め": ["me"], "も": ["mo"],
+        "や": ["ya"], "ゆ": ["yu"], "よ": ["yo"],
+        "ら": ["ra"], "り": ["ri"], "る": ["ru"], "れ": ["re"], "ろ": ["ro"],
+        "わ": ["wa"], "ゐ": ["i", "wi"], "ゑ": ["e", "we"], "を": ["o", "wo"],
+        "ん": ["n", "m", "nn"],
+        "が": ["ga"], "ぎ": ["gi"], "ぐ": ["gu"], "げ": ["ge"], "ご": ["go"],
+        "ざ": ["za"], "じ": ["ji", "zi"], "ず": ["zu"], "ぜ": ["ze"], "ぞ": ["zo"],
+        "だ": ["da"], "ぢ": ["ji", "di", "zi"], "づ": ["zu", "du", "dzu"], "で": ["de"], "ど": ["do"],
+        "ば": ["ba"], "び": ["bi"], "ぶ": ["bu"], "べ": ["be"], "ぼ": ["bo"],
+        "ぱ": ["pa"], "ぴ": ["pi"], "ぷ": ["pu"], "ぺ": ["pe"], "ぽ": ["po"],
+        "ゔ": ["vu", "bu"],
+    ]
+
     /// 一个 roma 音节的可显示文本。
     ///
     /// QQ 用前置撇号标促音：「乗(20987)っ(21187)た(21387)」对上 `no` / `'t` / `ta`，
@@ -841,12 +1289,17 @@ enum LyricParser {
         // 「空得够不够久」的检测。拿行槽去量，带留白的行会把真·间奏吃掉一截。
         var ends: [TimeInterval] = []
         for (offset, line) in raw.enumerated() {
-            let nextStart = offset + 1 < raw.count ? raw[offset + 1].time : .greatestFiniteMagnitude
+            let nextStart = raw[(offset + 1)...]
+                .first(where: { $0.time > line.time + 1e-3 })?.time
+                ?? .greatestFiniteMagnitude
             let estimated: TimeInterval
+            let hasExplicitEnd: Bool
             if let last = line.syllables.last {
                 estimated = max(last.end - line.time, minLineDuration)
+                hasExplicitEnd = true
             } else if let declared = line.declaredDuration, declared > 0 {
                 estimated = declared
+                hasExplicitEnd = true
             } else if case let boundary = min(breaks.first(where: { $0 > line.time }) ?? nextStart,
                                               nextStart),
                       boundary < .greatestFiniteMagnitude {
@@ -854,10 +1307,18 @@ enum LyricParser {
                 // 空隙会在长音没唱完时把焦点位翻走、把间奏行提前插进来。
                 // 于是没有空行标记的 LRC 句间不再出间奏，有标记的照真实空档出。
                 estimated = boundary - line.time
+                hasExplicitEnd = false
             } else {
                 estimated = max(minLineDuration, Double(line.text.count) * secondsPerCharacter)
+                hasExplicitEnd = false
             }
-            ends.append(min(line.time + estimated, nextStart))
+            // 有逐字音节或声明时长的行保留真实 endTime（允许重叠对唱/尾音延音与下一句交叠）；
+            // 纯 LRC 无明确终点时仍截断到下一个相异起点。
+            if hasExplicitEnd {
+                ends.append(line.time + estimated)
+            } else {
+                ends.append(min(line.time + estimated, nextStart))
+            }
         }
 
         // 两条副行按序认领，一条只归一行。
@@ -884,18 +1345,24 @@ enum LyricParser {
         for (rank, offset) in emitted.enumerated() {
             let line = raw[offset]
             let translationText = translations[offset].map { translation[$0].text }
-            // 音译与正文**逐字同源**（QQ 的 roma 是 QRC），发音还要按音节归位，
-            // 所以这里要的是整条 `RawLine`，不只是文本。
+            // 音译与正文可能**逐字同源**（QQ 的 roma 是 QRC），也可能是行级空格切词
+            //（网易的 `yromalrc` / `romalrc`），所以这里要的是整条 `RawLine`。
             let romaLine = transliterations[offset].map { transliteration[$0] }
-            // 逐字都有的时候把发音落到音节上：这样界面才排得出「发音贴在对应那几个字
-            // 底下」的样子，而不是整行扔在下面。落不进去（网易的 romalrc 只有行级）
-            // 就退回整行那条副行。
+            // 正文有逐字时把发音落到音节上：这样界面才排得出「发音贴在对应那几个字
+            // 底下」的样子，而不是整行扔在下面。有逐字时间戳就按时间归位，只有行级文本
+            // 就按空格切词对齐音节；都落不进去才退回整行那条副行。
             var syllables = line.syllables
             var transliterationText = romaLine?.text
-            if let romaLine, !romaLine.syllables.isEmpty, !syllables.isEmpty,
-               let merged = attachTransliteration(romaLine.syllables, to: syllables) {
-                syllables = merged
-                transliterationText = nil
+            if let romaLine, !syllables.isEmpty {
+                if !romaLine.syllables.isEmpty,
+                   let merged = attachTransliteration(romaLine.syllables, to: syllables) {
+                    syllables = merged
+                    transliterationText = nil
+                } else if !romaLine.text.isEmpty,
+                          let merged = attachTransliteration(romaLine.text, to: syllables) {
+                    syllables = merged
+                    transliterationText = nil
+                }
             }
             append {
                 LyricLine(index: $0, time: line.time, end: ends[offset], text: line.text,

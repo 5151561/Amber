@@ -354,7 +354,8 @@ extension SyncedLyricsViewController {
                                        duration: nil,
                                        settlingDuration: settlingDuration))
 
-        let stagger = LineStagger.sharedFirstPair(specs.lineDelay)
+        let delayScale = manager.scrollLead > 0 ? min(1.0, settlingDuration / manager.scrollLead) : 1.0
+        let stagger = LineStagger.sharedFirstPair(specs.lineDelay * delayScale)
 
         // 记录动画前各行在屏幕上的呈现位置（优先取 presentationLayer 以便并发打断时连续衔接）
         let beforePresentationY: [ObjectIdentifier: CGFloat] = combined.reduce(into: [:]) { map, view in

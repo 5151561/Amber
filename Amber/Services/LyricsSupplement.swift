@@ -103,13 +103,21 @@ enum LyricsSupplement {
             else { return line }
             // 逐字行的发音已经落到音节上时（`LyricParser.attachTransliteration`），
             // 整行那条副行是 nil 是故意的，别把行级的补回来叠一份。
+            // 若主源只有逐字正文、副源补来的是行级发音文本，趁这里也尝试落到音节上。
             let syllablesCarryReading = line.syllables.contains { $0.transliteration != nil }
+            var syllables = line.syllables
+            var transliteration = syllablesCarryReading
+                ? line.transliteration
+                : (line.transliteration ?? donor.transliteration)
+            if !syllablesCarryReading, !syllables.isEmpty, let roma = transliteration,
+               let merged = LyricParser.attachTransliteration(roma, to: syllables) {
+                syllables = merged
+                transliteration = nil
+            }
             return LyricLine(index: line.index, time: line.time, end: line.end, text: line.text,
                              translation: line.translation ?? donor.translation,
-                             transliteration: syllablesCarryReading
-                                ? line.transliteration
-                                : (line.transliteration ?? donor.transliteration),
-                             syllables: line.syllables, kind: line.kind,
+                             transliteration: transliteration,
+                             syllables: syllables, kind: line.kind,
                              vocalist: line.vocalist, startsParagraph: line.startsParagraph)
         }
     }

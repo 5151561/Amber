@@ -23,6 +23,11 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
     private let translationLayer = CATextLayer()
     private let transliterationLayer = CATextLayer()
 
+    /// 「发音贴在字底下」那条排版的块。非空就走它，空就走原来的整行副行。
+    private(set) var rubyBlocks: [RubyLayout.Block] = []
+    private var rubyTextLayers: [CATextLayer] = []
+    private var rubyReadingLayers: [CATextLayer] = []
+
     override init() {
         super.init()
         // 倍率不能写死 2：外接 1× 屏上是浪费，真正的值由 `SyncedLyricsLineView`
@@ -48,8 +53,16 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
     }
 
     /// 文字本身在 `layoutSublayers` 里落——折行结果要按当时的宽度算，
-    /// 这里只更新可见性再请一次布局。
+    /// 这里只重算发音块、更新可见性再请一次布局。
     private func refreshText() {
+        if specs.showsTransliteration, let line {
+            rubyBlocks = RubyLayout.blocks(for: line, specs: specs,
+                                           rubyFont: transliterationFont)
+        } else {
+            rubyBlocks = []
+        }
+        mainLayer.isHidden = !rubyBlocks.isEmpty
+        if rubyBlocks.isEmpty { clearRubyLayers() }
         translationLayer.isHidden = visibleTranslation == nil
         transliterationLayer.isHidden = visibleTransliteration == nil
         setNeedsLayout()
@@ -60,8 +73,10 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
     /// 规则与逐字档共用，见 `LyricsSecondaryText.swift`。
     private var visibleTranslation: String? { specs.visibleTranslation(line?.translation) }
 
+    /// 发音已经成块贴到字底下时，整行那条副行就不要了，免得写两遍。
     private var visibleTransliteration: String? {
-        specs.visibleTransliteration(line?.transliteration)
+        guard rubyBlocks.isEmpty else { return nil }
+        return specs.visibleTransliteration(line?.transliteration)
     }
 
     /// 把一段文字落到图层上并返回它占的尺寸。
@@ -147,6 +162,8 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
         let targets: [(CATextLayer, CGColor)] = [
             (mainLayer, main), (translationLayer, secondary), (transliterationLayer, secondary),
         ]
+        + rubyTextLayers.map { ($0, main) }
+        + rubyReadingLayers.map { ($0, secondary) }
         guard animated else {
             for (layer, color) in targets { layer.foregroundColor = color }
             refreshText()
@@ -172,9 +189,16 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
         var height: CGFloat = 0
         var used: CGFloat = 0
 
-        let main = measure(line?.text, font: specs.font, width: width)
-        height += main.height
-        used = max(used, main.width)
+        let ruby = RubyLayout.rows(for: rubyBlocks, width: width,
+                                   specs: specs, rubyFont: transliterationFont)
+        if ruby.isEmpty {
+            let main = measure(line?.text, font: specs.font, width: width)
+            height += main.height
+            used = max(used, main.width)
+        } else {
+            height += ruby.map(\.height).reduce(0, +)
+            used = max(used, ruby.map(\.width).max() ?? 0)
+        }
 
         if let translation = visibleTranslation {
             let size = measure(translation, font: translationFont, width: width)
@@ -212,22 +236,35 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
         guard width > 0 else { return }
         var y: CGFloat = 0
 
-        let main = assign(line?.text, to: mainLayer,
-                          font: specs.font, color: mainColor, width: width)
-        mainLayer.frame = CGRect(x: 0, y: y, width: width, height: main.height)
-        y += main.height
+        let ruby = RubyLayout.rows(for: rubyBlocks, width: width,
+                                   specs: specs, rubyFont: transliterationFont)
+        if !ruby.isEmpty {
+            mainLayer.string = nil
+            mainLayer.isHidden = true
+            transliterationLayer.string = nil
+            transliterationLayer.isHidden = true
+            let isFlipped = line?.agentAlignment == .flipped || line?.direction == .rightToLeft
+            y = layoutRubyRows(ruby, boxWidth: width, isFlipped: isFlipped)
+        } else {
+            clearRubyLayers()
+            mainLayer.isHidden = false
+            let main = assign(line?.text, to: mainLayer,
+                              font: specs.font, color: mainColor, width: width)
+            mainLayer.frame = CGRect(x: 0, y: y, width: width, height: main.height)
+            y += main.height
 
-        // 发音在上、翻译在下：发音是正文的读法，贴着正文才讲得通。
-        // 逐字档那边（发音贴在字底下）就是这个次序，这条也得一致。
-        let transliteration = assign(visibleTransliteration, to: transliterationLayer,
-                                     font: transliterationFont, color: secondaryColor,
-                                     lineHeightAdjustment: specs.transliterationLineHeightAdjustment,
-                                     width: width)
-        if transliteration.height > 0 {
-            y += specs.translationSpacing
-            transliterationLayer.frame = CGRect(x: 0, y: y, width: width,
-                                                height: transliteration.height)
-            y += transliteration.height
+            // 发音在上、翻译在下：发音是正文的读法，贴着正文才讲得通。
+            // 逐字档那边（发音贴在字底下）就是这个次序，这条也得一致。
+            let transliteration = assign(visibleTransliteration, to: transliterationLayer,
+                                         font: transliterationFont, color: secondaryColor,
+                                         lineHeightAdjustment: specs.transliterationLineHeightAdjustment,
+                                         width: width)
+            if transliteration.height > 0 {
+                y += specs.translationSpacing
+                transliterationLayer.frame = CGRect(x: 0, y: y, width: width,
+                                                    height: transliteration.height)
+                y += transliteration.height
+            }
         }
 
         let translation = assign(visibleTranslation, to: translationLayer,
@@ -236,5 +273,69 @@ final class TextContentLayer: CALayer, SyncedLyricsContentLayer {
             y += specs.translationSpacing
             translationLayer.frame = CGRect(x: 0, y: y, width: width, height: translation.height)
         }
+    }
+
+    private func clearRubyLayers() {
+        for layer in rubyTextLayers { layer.removeFromSuperlayer() }
+        for layer in rubyReadingLayers { layer.removeFromSuperlayer() }
+        rubyTextLayers.removeAll()
+        rubyReadingLayers.removeAll()
+    }
+
+    private func layoutRubyRows(_ rows: [RubyLayout.Row],
+                                boxWidth: CGFloat,
+                                isFlipped: Bool) -> CGFloat {
+        clearRubyLayers()
+        let main = mainColor
+        let secondary = secondaryColor
+        let rFont = transliterationFont
+        var y: CGFloat = 0
+        for row in rows {
+            let originX = SBS_TextContentLayer.rowOriginX(rowWidth: row.width,
+                                                          boxWidth: boxWidth,
+                                                          isFlipped: isFlipped)
+            for entry in row.blocks {
+                let block = rubyBlocks[entry.index]
+                let textLayer = makeRubyBlockLayer(
+                    text: block.text,
+                    frame: CGRect(x: originX + entry.x, y: y,
+                                  width: block.textWidth, height: row.textHeight),
+                    font: specs.font,
+                    color: main)
+                addSublayer(textLayer)
+                rubyTextLayers.append(textLayer)
+
+                guard !block.ruby.isEmpty, row.rubyHeight > 0 else { continue }
+                let readingLayer = makeRubyBlockLayer(
+                    text: block.ruby,
+                    frame: CGRect(x: originX + entry.x, y: y + row.rubyTop,
+                                  width: block.rubyWidth, height: row.rubyHeight),
+                    font: rFont,
+                    color: secondary)
+                addSublayer(readingLayer)
+                rubyReadingLayers.append(readingLayer)
+            }
+            y += row.height
+        }
+        return y
+    }
+
+    private func makeRubyBlockLayer(text: String,
+                                    frame: CGRect,
+                                    font: NSFont,
+                                    color: CGColor) -> CATextLayer {
+        let layer = CATextLayer()
+        layer.contentsScale = contentsScale
+        layer.isWrapped = false
+        layer.truncationMode = .none
+        layer.alignmentMode = .left
+        layer.font = font
+        layer.fontSize = font.pointSize
+        layer.foregroundColor = color
+        layer.string = text
+        layer.frame = CGRect(x: frame.minX, y: frame.minY,
+                             width: frame.width + font.pointSize,
+                             height: frame.height)
+        return layer
     }
 }

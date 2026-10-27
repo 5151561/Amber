@@ -15,22 +15,7 @@ import QuartzCore
 
 extension SBS_TextContentLayer {
 
-    /// 一个排版行：行内有哪些块、各自落在哪个 x。
-    struct RubyRow {
-        var blocks: [(index: Int, x: CGFloat)] = []
-        /// 行宽（末块的 x + 它的占位宽）。
-        var width: CGFloat = 0
-        /// 正文那一段的高度。
-        var textHeight: CGFloat = 0
-        /// 发音那一段的高度；0 表示这一行一个字都没注上音。
-        var rubyHeight: CGFloat = 0
-        /// 正文与发音之间的间距。[实测] `transliterationLineHeightAdjustment` = 5——
-        /// 整行式那条副行拿它当行距，成块之后它就是这道缝。
-        var spacing: CGFloat = 0
-
-        var height: CGFloat { textHeight + (rubyHeight > 0 ? spacing + rubyHeight : 0) }
-        var rubyTop: CGFloat { textHeight + spacing }
-    }
+    typealias RubyRow = RubyLayout.Row
 
     /// 按块折行。
     ///
@@ -47,39 +32,8 @@ extension SBS_TextContentLayer {
     /// 发音比正文窄的块（多数汉字词都是）步进就是正文宽，正文保持紧排，
     /// 只有发音真的要挤到一起时才把后面顶开。
     func rubyRows(width: CGFloat) -> [RubyRow] {
-        guard width > 0, !rubyBlocks.isEmpty else { return [] }
-        let spacing = specs.transliterationMinWordSpacing
-        var result: [RubyRow] = []
-        var current = RubyRow(spacing: specs.transliterationLineHeightAdjustment)
-        var x: CGFloat = 0
-
-        func flush() {
-            guard !current.blocks.isEmpty else { return }
-            // 行宽按末块的**占位宽**算，不带它身后那点给下一块留的间距。
-            current.width = current.blocks.last.map { $0.x + rubyBlocks[$0.index].advance } ?? x
-            current.textHeight = LyricsTextLayout.rasterSafeHeight(
-                current.blocks.map { rubyBlocks[$0.index].textHeight }.max() ?? 0,
-                font: specs.font)
-            let ruby = current.blocks
-                .map { rubyBlocks[$0.index].rubyHeight }
-                .max() ?? 0
-            current.rubyHeight = ruby > 0
-                ? LyricsTextLayout.rasterSafeHeight(ruby, font: transliterationFontForMeasuring)
-                : 0
-            result.append(current)
-            current = RubyRow(spacing: specs.transliterationLineHeightAdjustment)
-            x = 0
-        }
-
-        for (index, block) in rubyBlocks.enumerated() {
-            // 放不下就换行；一行只有一个块时再宽也得留着，不然会丢内容。
-            // 判断用的是「它作为行末时占多宽」，不含给后面留的那点间距。
-            if !current.blocks.isEmpty, x + block.advance > width { flush() }
-            current.blocks.append((index: index, x: x))
-            x += max(block.textWidth, block.rubyWidth + spacing)
-        }
-        flush()
-        return result
+        RubyLayout.rows(for: rubyBlocks, width: width,
+                        specs: specs, rubyFont: transliterationFontForMeasuring)
     }
 
     /// 重排（块排版）。与 TextKit 那条同构：每个排版行一组 base/sung 图层，

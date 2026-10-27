@@ -538,4 +538,48 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         XCTAssertTrue(rebuilt.hasSungLayers)
         XCTAssertTrue(rebuilt.syllables.allSatisfy { $0.sung?.frame == $0.base.frame })
     }
+
+    /// 换行取消选中或唱完收尾时，`finishRemainingProgress` 立即将渐变遮罩模型宽度推到 `finishedWidth`，
+    /// 保证上一行在淡出期间 100% 满高亮，不会停在半截。
+    func testFinishRemainingProgressImmediatelyCommitsFullWidthOnDeselect() throws {
+        let (controller, visual, _) = makeScrubFixture { 0.5 }
+        var line0 = TextLine()
+        line0.index = 0
+        line0.startTime = 0
+        line0.endTime = 2
+        line0.text = "测试逐字歌词"
+        line0.capabilities = [.gradient, .lift]
+        line0.syllables = [
+            .init(text: "测试", startTime: 0, endTime: 1),
+            .init(text: "逐字歌词", startTime: 1, endTime: 2),
+        ]
+        var line1 = TextLine()
+        line1.index = 1
+        line1.startTime = 2
+        line1.endTime = 4
+        line1.text = "下一句歌词"
+        line1.capabilities = [.gradient, .lift]
+        line1.syllables = [
+            .init(text: "下一句歌词", startTime: 2, endTime: 4),
+        ]
+        var lyrics = Lyrics()
+        lyrics.type = .timedWords
+        lyrics.lines = [line0, line1]
+        controller.setLyrics(lyrics)
+
+        let view = try XCTUnwrap(visual.lineViews.first)
+        let content = try XCTUnwrap(view.lineLayer?.contentLayer as? SBS_TextContentLayer)
+        content.bounds = CGRect(x: 0, y: 0, width: 300, height: 60)
+        content.layoutSublayers()
+
+        visual.selectLine(line0, animation: nil, deselectingOthers: true, updatesInstrumentalTime: false)
+        content.setProgress(0.2, animated: false)
+
+        let row = try XCTUnwrap(content.rows.first)
+        let partialWidth = row.gradient.frame.width
+
+        visual.deselectLine(line0)
+        let fullWidth = row.gradient.frame.width
+        XCTAssertGreaterThan(fullWidth, partialWidth, "取消选中时渐变遮罩模型宽度必须立刻推满到行末")
+    }
 }

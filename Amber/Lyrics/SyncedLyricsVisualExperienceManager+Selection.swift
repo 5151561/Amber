@@ -249,6 +249,21 @@ extension SyncedLyricsVisualExperienceManager {
     /// 与 `followScrollTarget` 下发的那条弹簧同源，所以「提前量」与「跑完」严格相等。
     var scrollLead: TimeInterval { manager?.configuration.scrollLead ?? 0 }
 
+    /// 按句间让位时长生成滚动弹簧：当 `handoverDuration < fastHandoverSpringDuration`
+    /// （如 `gap == 0` 的紧邻句或极窄空档）时，不退化为瞬移，也不回落到 0.89s 慢弹簧，
+    /// 而是使用 `fastHandoverSpringDuration`（0.38s）的快速弹簧。
+    func makeHandoverScrollAnimation(for line: (any LyricsLine)?,
+                                     handoverDuration: TimeInterval)
+        -> SyncedLyricsLineLayer.SelectionAnimation {
+        let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: line) : 0
+        let useSpecs = lyrics?.type != .timedWords
+        let effectiveDuration = max(handoverDuration, specs.fastHandoverSpringDuration)
+        return makeLineChangeAnimation(speed: speed,
+                                       useSpecsSpring: useSpecs,
+                                       settlingIn: effectiveDuration)
+            ?? makeLineChangeAnimation(speed: speed, useSpecsSpring: useSpecs)
+    }
+
     /// 每帧跟一次焦点位。规则 3 的让位时刻不一定落在准入 / 点亮 / 淘汰任何一个事件上，
     /// 所以按帧查；目标行没换就什么都不做，换了才滚一次。
     func followScrollTarget(at elapsed: TimeInterval) {
@@ -259,10 +274,8 @@ extension SyncedLyricsVisualExperienceManager {
         scrollTargetView = plan.view
         // 打开着的间奏行由展开动画自己落位（动画期间视口不动），这里不抢。
         guard plan.view !== instrumentalBreakVisibleView else { return }
-        let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: plan.view.lineLayer?.line) : 0
-        let anim = makeLineChangeAnimation(speed: speed,
-                                           useSpecsSpring: lyrics?.type != .timedWords,
-                                           settlingIn: plan.duration)
+        let anim = makeHandoverScrollAnimation(for: plan.view.lineLayer?.line,
+                                               handoverDuration: plan.duration)
         viewController.scrollFocus(to: plan.view, animation: anim)
         adoptScrollTarget(plan.view, animation: anim)
     }
@@ -396,12 +409,9 @@ extension SyncedLyricsVisualExperienceManager {
             // 完全可见 → 不滚，就地换选中态。起
             // 弹簧按这一次让位的时长压过（句间空档窄就跟着窄），与 `followScrollTarget` 同源。
             // 这里的描述符同时管**行外观与行盒重排**，空档为 0 时也不该退化成瞬时——
-            // 视口不滚是一回事，行自己的外观切换是另一回事，所以兜底回原装那条。
-            let speed = lyrics?.type == .timedWords ? calculateLineSpeed(for: line) : 0
-            let animation = makeLineChangeAnimation(speed: speed,
-                                                    useSpecsSpring: lyrics?.type != .timedWords,
-                                                    settlingIn: plan?.duration ?? scrollLead)
-                ?? makeLineChangeAnimation(speed: speed, useSpecsSpring: lyrics?.type != .timedWords)
+            // 视口不滚是一回事，行自己的外观切换是另一回事，所以用 `makeHandoverScrollAnimation`。
+            let animation = makeHandoverScrollAnimation(for: line,
+                                                        handoverDuration: plan?.duration ?? scrollLead)
             selectLine(line, animation: animation,
                        deselectingOthers: false, updatesInstrumentalTime: true)
             // 抓一份「当前与可视矩形相交的行」快照，
@@ -650,6 +660,9 @@ extension SyncedLyricsVisualExperienceManager {
         let animation = makeLineChangeAnimation(speed: 0, useSpecsSpring: true)
         if view.isHighlighted { view.isHighlighted = false }
         view.setAccessibilitySelected(false)
+        if let content = view.lineLayer?.contentLayer as? SBS_TextContentLayer {
+            content.finishRemainingProgress(duration: specs.lineFinishProgressAnimationDuration)
+        }
         view.lineLayer?.apply(selected: false, animation: animation)
         setBlurRadius(Self.deselectedBlurRadius, on: view, animated: true)
         // 间奏行是这一路收起的：先把字段置空，再让下面那次重排把它收掉（§9）。
@@ -660,17 +673,31 @@ extension SyncedLyricsVisualExperienceManager {
 
         // 收回到焦点位该停的那一行（原版是「还亮着的第一行」；先滚动后高亮之后，
         // 那一行可能还没点亮，统一交给 `scrollTargetLineView` 判）。
-        guard let anchor = scrollTargetLineView(at: currentElapsedTime()) ?? selectedLineViews.first,
+        let elapsed = currentElapsedTime()
+        let plan = scrollFocusPlan(in: selectedLineViews, at: elapsed)
+        guard let anchor = plan?.view ?? selectedLineViews.first,
               let viewController, let scrollView = viewController.scrollView
         else { return }
+        // 若被淘汰的 `view` 刚刚从 `selectedLineViews` 移除，此时 `scrollFocusPlan` 只看到剩下的 `anchor`
+        // 会回落到 `scrollLead`；按被淘汰行 `line` 到 `anchor` 的真实句间空档求 `handoverDuration`。
+        let handover: TimeInterval
+        if let anchorLine = anchor.lineLayer?.line, anchorLine.startTime >= line.startTime {
+            handover = handoverDuration(from: line, to: anchorLine)
+        } else {
+            handover = plan?.duration ?? specs.fastHandoverSpringDuration
+        }
+        let scrollAnim = dismissesInstrumental
+            ? animation
+            : makeHandoverScrollAnimation(for: anchor.lineLayer?.line,
+                                          handoverDuration: handover)
         // 下面那次 `relayout` 的 `defer { scrollToSelectedLine }` 就是冲着 `anchor`
         // 去的——焦点位当场登记，顺带补上「起跑即亮起」。
-        adoptScrollTarget(anchor, animation: animation)
+        adoptScrollTarget(anchor, animation: scrollAnim)
         let target = viewController.targetOrigin(for: anchor)       //，§2.5
         let span = CGRect(origin: target, size: .zero)
             .union(scrollView.documentVisibleRect)
         viewController.relayout(affected: viewController.lineViews(in: span),
-                                animation: animation,
+                                animation: scrollAnim,
                                 animated: true,
                                 // 收起间奏行时逐行错开，第 n 条延迟 n × 0.05——
                                 // 这条是**线性累加**，和展开那条 max(i,1)−1 不是一个公式。

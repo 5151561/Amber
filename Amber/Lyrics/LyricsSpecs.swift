@@ -209,6 +209,9 @@ struct LyricsSpecs {
     /// 按帧读的那一份存在 `SyncedLyricsManager.Configuration.scrollLead`。
     var scrollLead: TimeInterval { lineChangeSpringTimingParameters.settlingDuration }
 
+    /// 紧邻句或极窄空档（`gap < fastHandoverSpringDuration`）换行时的快速弹簧结算时长。`[补]`
+    var fastHandoverSpringDuration: TimeInterval = 0.38
+
     init() {}
 
     /// 叠 bold trait（原版的 `fontDescriptorWithSymbolicTraits: 2`）。取不到粗体时退回原字体。

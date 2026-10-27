@@ -508,9 +508,10 @@ extension SyncedLyricsViewController {
         // 滚动那半：弹簧积分 + 焦点行推进 + 视口边缘淡出。
         let scroll = signposter.beginInterval("scroll")
         advanceScrollSpring()
-        // 先点亮到点的行，再按点亮后的结果决定焦点位要不要往下一句挪。
-        visual.activateDueLines(at: basis.elapsed)
+        // 先按窄缝压缩弹簧推进焦点位，再点亮到点的行（防止 `activateDueLines` 在紧邻句
+        // 交界处用 0.89s 默认弹簧抢走滚动权）。
         visual.followScrollTarget(at: basis.elapsed)
+        visual.activateDueLines(at: basis.elapsed)
         updateLineAlphasForViewportEdges()
         signposter.endInterval("scroll", scroll)
 

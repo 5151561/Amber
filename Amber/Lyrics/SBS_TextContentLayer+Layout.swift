@@ -486,12 +486,18 @@ extension SBS_TextContentLayer {
                 verticalPadding: padding,
                 specs: specs)
 
-            row.gradient.featherWidth = specs.lineProgressionGradientFeather
-            row.gradient.layoutIfNeeded()
-
             var frame = row.gradient.frame
             let from = frame.size.width
             frame.size.width = target
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            row.gradient.featherWidth = specs.lineProgressionGradientFeather
+            row.gradient.frame = frame
+            row.gradient.layoutIfNeeded()
+            if transliterationWidth > 0 {
+                applyTransliterationProgress(fraction: 1.0)
+            }
+            CATransaction.commit()
             let animator = LayerPropertyAnimator(curve: .easeOut(duration))
             animator.layers = [row.gradient]
             animator.addAnimation(to: row.gradient, keyPath: "bounds.size.width",

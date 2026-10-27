@@ -83,4 +83,23 @@ final class LyricsSupplementTests: XCTestCase {
         XCTAssertEqual(merged[1].translation, "世界（QQ）", "另一家自己有的不覆盖")
         XCTAssertEqual(merged[0].syllables, candidate[0].syllables)
     }
+
+    func testCarrySecondaryLinesAttachesLineLevelRomalrcToCandidateSyllables() {
+        let own = [
+            LyricLine(index: 0, time: 1, end: 3, text: "私の街",
+                      translation: "我的街道", transliteration: "wa ta shi no ma chi")
+        ]
+        let candidate = [
+            LyricLine(index: 0, time: 1.05, end: 3, text: "私の街",
+                      syllables: [
+                          LyricSyllable(text: "私", time: 1.05, duration: 0.6),
+                          LyricSyllable(text: "の", time: 1.65, duration: 0.4),
+                          LyricSyllable(text: "街", time: 2.05, duration: 0.9),
+                      ])
+        ]
+        let merged = LyricsSupplement.carrySecondaryLines(from: own, into: candidate)
+        XCTAssertEqual(merged[0].translation, "我的街道")
+        XCTAssertNil(merged[0].transliteration, "已归到音节上，整行副行不再保留")
+        XCTAssertEqual(merged[0].syllables.map(\.transliteration), ["watashi", "no", "machi"])
+    }
 }

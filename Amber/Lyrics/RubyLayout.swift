@@ -52,6 +52,54 @@ enum RubyLayout {
         }
     }
 
+    /// 一个排版行：行内有哪些块、各自落在哪个 x。
+    struct Row {
+        var blocks: [(index: Int, x: CGFloat)] = []
+        /// 行宽（末块的 x + 它的占位宽）。
+        var width: CGFloat = 0
+        /// 正文那一段的高度。
+        var textHeight: CGFloat = 0
+        /// 发音那一段的高度；0 表示这一行一个字都没注上音。
+        var rubyHeight: CGFloat = 0
+        /// 正文与发音之间的间距。[实测] `transliterationLineHeightAdjustment` = 5——
+        /// 整行式那条副行拿它当行距，成块之后它就是这道缝。
+        var spacing: CGFloat = 0
+
+        var height: CGFloat { textHeight + (rubyHeight > 0 ? spacing + rubyHeight : 0) }
+        var rubyTop: CGFloat { textHeight + spacing }
+    }
+
+    /// 从整条 `TextLine` 生成发音块：
+    /// - 有逐字时间轴且音节自带发音时，直接按音节切块；
+    /// - 只有行级发音（如普通 LRC 歌词配 `romalrc`）时，先将正文按字符/词切分为合成单元并对齐发音，
+    ///   成功后再走同一套块测量与排版。对齐失败时返回 `[]`，由调用方退回整行副行。
+    static func blocks(for line: TextLine,
+                       specs: LyricsSpecs,
+                       rubyFont: NSFont? = nil) -> [Block] {
+        if !line.syllables.isEmpty,
+           line.syllables.contains(where: { $0.transliteration?.isEmpty == false }) {
+            return blocks(text: line.text, syllables: line.syllables,
+                          specs: specs, rubyFont: rubyFont)
+        }
+        guard let roma = line.transliteration, !roma.isEmpty else { return [] }
+        let baseSyllables: [LyricSyllable]
+        if !line.syllables.isEmpty {
+            baseSyllables = line.syllables.map {
+                LyricSyllable(text: $0.text, time: $0.startTime,
+                              duration: max(0, $0.endTime - $0.startTime))
+            }
+        } else {
+            baseSyllables = LyricParser.segmentForTransliteration(line.text)
+        }
+        guard let attached = LyricParser.attachTransliteration(roma, to: baseSyllables)
+        else { return [] }
+        let timings = attached.map {
+            TextLine.SyllableTiming(text: $0.text, startTime: $0.time, endTime: $0.end,
+                                    transliteration: $0.transliteration)
+        }
+        return blocks(text: line.text, syllables: timings, specs: specs, rubyFont: rubyFont)
+    }
+
     /// 把一行切成块。返回空数组表示这行不走 ruby 排版（没有音节级发音、
     /// 或者音节与正文对不上），调用方退回原来那条 TextKit 路径。
     /// `rubyFont` 是**发音真正会用的那一档**（`LyricsSpecs.secondaryFonts`）：
@@ -68,6 +116,9 @@ enum RubyLayout {
         else { return [] }
 
         let starts = wordStarts(in: text)
+        let lineHasKana = text.unicodeScalars.contains {
+            (0x3040...0x30FF).contains($0.value) || (0x31F0...0x31FF).contains($0.value)
+        }
         var blocks: [Block] = []
         var groups: [[Int]] = []            // 每组是落在同一个词里的音节下标
 
@@ -77,12 +128,18 @@ enum RubyLayout {
             // 落在词与词之间的字符（空格、标点）没有自己的词起点，于是自然
             // 并进前一块，不会单独撑出一个空块。
             //
-            // 一个例外：上一块以促音或小书假名收尾时不开新块。分词给的是形态素，
-            // 「なかった」会切成「なかっ」+「た」，而促音收不了尾——真按这个断点
-            // 成块，发音就成了 `nakat ta`。并回去拼出来才是`nakatta`。
-            let opensBlock = starts.contains(range.lowerBound)
-                && !endsWithNonMoraicKana(previousText)
-                && !bothKatakana(previousText, syllables[index].text)
+            // 日语按词（`NLTokenizer` 的 `.word`）成块，上一块以促音或小书假名收尾、
+            // 或连续片假名外来语（「モナリザ」）时不开新块；非假名行（粤语/普通话/韩语）
+            // 每个带发音的音节各自成块，保证单字读音严丝合缝贴在对应那个字底下。
+            let opensBlock: Bool
+            if lineHasKana {
+                opensBlock = starts.contains(range.lowerBound)
+                    && !endsWithNonMoraicKana(previousText)
+                    && !bothKatakana(previousText, syllables[index].text)
+            } else {
+                opensBlock = starts.contains(range.lowerBound)
+                    || syllables[index].transliteration?.isEmpty == false
+            }
             if groups.isEmpty || opensBlock {
                 groups.append([index])
             } else {
@@ -127,6 +184,48 @@ enum RubyLayout {
             blocks.append(block)
         }
         return blocks
+    }
+
+    /// 按块折行。
+    ///
+    /// [实测] `transliterationMinWordSpacing` = 5 是**发音之间**的最小间距，
+    /// 不是块之间的恒定间距——步进取「正文紧排」与「发音留够间距」里大的那个：
+    /// `x₊₁ = x + max(正文宽, 发音宽 + minWordSpacing)`。
+    static func rows(for blocks: [Block],
+                     width: CGFloat,
+                     specs: LyricsSpecs,
+                     rubyFont: NSFont? = nil) -> [Row] {
+        guard width > 0, !blocks.isEmpty else { return [] }
+        let effectiveRubyFont = rubyFont ?? specs.transliterationFont
+        let spacing = specs.transliterationMinWordSpacing
+        var result: [Row] = []
+        var current = Row(spacing: specs.transliterationLineHeightAdjustment)
+        var x: CGFloat = 0
+
+        func flush() {
+            guard !current.blocks.isEmpty else { return }
+            current.width = current.blocks.last.map { $0.x + blocks[$0.index].advance } ?? x
+            current.textHeight = LyricsTextLayout.rasterSafeHeight(
+                current.blocks.map { blocks[$0.index].textHeight }.max() ?? 0,
+                font: specs.font)
+            let ruby = current.blocks
+                .map { blocks[$0.index].rubyHeight }
+                .max() ?? 0
+            current.rubyHeight = ruby > 0
+                ? LyricsTextLayout.rasterSafeHeight(ruby, font: effectiveRubyFont)
+                : 0
+            result.append(current)
+            current = Row(spacing: specs.transliterationLineHeightAdjustment)
+            x = 0
+        }
+
+        for (index, block) in blocks.enumerated() {
+            if !current.blocks.isEmpty, x + block.advance > width { flush() }
+            current.blocks.append((index: index, x: x))
+            x += max(block.textWidth, block.rubyWidth + spacing)
+        }
+        flush()
+        return result
     }
 
     // MARK: - 分词

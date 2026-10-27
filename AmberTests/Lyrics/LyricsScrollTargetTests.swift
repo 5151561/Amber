@@ -525,4 +525,37 @@ final class LyricsScrollTargetTests: XCTestCase, LyricsKitFixtures {
         XCTAssertEqual(clip.bounds.origin.y, targetOrigin.y, accuracy: 1e-9)
         XCTAssertTrue(controller.displacedLineViews.isEmpty)
     }
+
+    /// 紧邻句（`gap == 0`）或极窄空档（`gap < fastHandoverSpringDuration`）换行时，
+    /// 使用 `fastHandoverSpringDuration`（0.38s）快速弹簧，既不瞬移也不回退到 0.89s 慢弹簧。
+    func testTouchingAndNarrowGapLinesUseFastHandoverSpring() throws {
+        var elapsed: TimeInterval = 0
+        let (controller, visual, timeline) = makeScrubFixture { elapsed }
+        controller.setLyrics(Self.makeTextLyrics([(0, 8), (8, 12)]))
+        let fast = controller.specs.fastHandoverSpringDuration
+
+        // gap == 0 时 handoverDuration 为 0，makeHandoverScrollAnimation 保底给 fastHandoverSpringDuration
+        let zeroAnim = visual.makeHandoverScrollAnimation(for: controller.lyrics?.lines[1],
+                                                          handoverDuration: 0)
+        XCTAssertEqual(zeroAnim.settlingDuration, fast, accuracy: 1e-6)
+
+        // 空档 0.6s（介于 fast 与 scrollLead 之间）按实际空档时长压缩
+        let midAnim = visual.makeHandoverScrollAnimation(for: controller.lyrics?.lines[1],
+                                                         handoverDuration: 0.6)
+        XCTAssertEqual(midAnim.settlingDuration, 0.6, accuracy: 1e-6)
+
+        // 模拟紧邻句从 7.8s 推进到 8.01s：displayLinkFired 触发快速弹簧而非 0.89s 慢弹簧
+        elapsed = 7.8
+        timeline.resync(at: elapsed)
+        controller.displayLinkFired()
+
+        elapsed = 8.01
+        controller.displayLinkFired()
+        XCTAssertTrue(visual.scrollTargetView === visual.lineViews[1])
+        let animator = try XCTUnwrap(controller.currentAnimators.first)
+        let layer = try XCTUnwrap(animator.layers.first)
+        let springAnim = try XCTUnwrap(layer.animation(forKey: "position") as? CASpringAnimation)
+        XCTAssertEqual(springAnim.duration, fast, accuracy: 1e-4,
+                       "紧邻句交界处必须采用 0.38s 快速弹簧，不能被 0.89s 慢弹簧抢占")
+    }
 }

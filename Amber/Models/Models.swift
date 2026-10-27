@@ -300,10 +300,11 @@ struct LyricSyllable: Hashable, Sendable {
     let duration: TimeInterval
     /// 这个音节自己的发音（罗马音）。
     ///
-    /// QQ 的 `roma` 与正文是**同一套时间戳**的 QRC——正文` 甘(46529,928)い(47457,297)`
-    /// 对上 roma `a(46529,176)ma(46705,752)i(47457,297)`，roma 切得更细但端点严丝合缝，
-    /// 所以按时间区间就能把它归到正文音节上（`LyricParser.attachTransliteration`）。
-    /// 网易的 `romalrc` 只有行级时间，归不进来，留 nil、退回整行那条副行。
+    /// - QQ 的 `roma` 与正文是**同一套时间戳**的 QRC——正文` 甘(46529,928)い(47457,297)`
+    ///   对上 roma `a(46529,176)ma(46705,752)i(47457,297)`，按时间就近归到正文音节上。
+    /// - 网易的 `yromalrc` / `romalrc` 只有行级时间戳，但内容是按拍/字空格切开的罗马音序列，
+    ///   按音节文字特征与读音表对齐后同样归到正文音节上（见 `LyricParser.attachTransliteration`）。
+    /// 两种都归不进去时留 nil、退回整行那条副行。
     let transliteration: String?
     var end: TimeInterval { time + duration }
 
