@@ -275,8 +275,8 @@ final class InspectorLyricsViewController: NSViewController {
         }
         let sizeClass = currentSizeClass
         specs.font = .systemFont(ofSize: sizeClass.lineSize, weight: .bold)
-        // 行距要跟着字号一起换：基线 spec 的 `lineSpacing = 25` 配的是 26pt 的
-        // Dynamic Type，直接拿去配 38pt 会挤成 63pt 的顶距。
+        // 行距要跟着字号一起换：基线 spec 的 `lineSpacing = 25` 配的是侧栏 24pt，
+        // 直接拿去配 38pt 会挤成 63pt 的顶距。
         // [PX] 整窗 38pt 档实测顶距 95 = 2.5 倍字号，`SizeClass.lineSpacing`
         // 就是按「顶距 − 行盒」反解出来的那个数。
         specs.lineSpacing = sizeClass.lineSpacing

@@ -21,7 +21,9 @@ final class LyricsFontsTests: XCTestCase, LyricsKitFixtures {
         func size(_ style: NSFont.TextStyle) -> CGFloat {
             NSFont.preferredFont(forTextStyle: style).pointSize
         }
-        XCTAssertEqual(specs.font.pointSize, size(.largeTitle))
+        // 主字体是 provider 覆写后的 `boldSystemFont(24)`，**不走 TextStyle**；
+        // 副行才走 `.callout + bold`。所以这里断 24，其余断 TextStyle。
+        XCTAssertEqual(specs.font.pointSize, 24)
         XCTAssertEqual(specs.transliterationFont.pointSize, size(.title3))
         XCTAssertEqual(specs.translationLargeFont.pointSize, size(.title3))
         XCTAssertEqual(specs.translationSmallFont.pointSize, size(.callout))

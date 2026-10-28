@@ -74,8 +74,16 @@ struct LyricsSpecs {
     // Semibold」不是两套字重，是同一条 trait 链在不同 optical size 上的解析结果；
     // 写死 `.semibold` 在辅助功能放大字号之后就与原版分岔了。
 
-    /// [实测] `.largeTitle` + `.bold` trait。macOS 上约 26pt，解析成 Bold。
-    var font: NSFont = LyricsSpecs.bold(.preferredFont(forTextStyle: .largeTitle))
+    /// 主字体：**`boldSystemFont(24)`**，不走 Dynamic Type。
+    ///
+    /// [实测] 结构体默认值在 `+0xe0` 写的是 `.largeTitle` + bold（≈26），
+    /// 但主 surface 的 provider（`（略）` @（略））无条件覆写成
+    /// `boldSystemFont(24.0)`。**生效的是 24** —— 上一版取了 `.largeTitle`，
+    /// 比原版大 8%。
+    ///
+    /// 副行的 `+0xf0/+0xf8` 则被改写成 `.callout` + bold（见 `translationSmallFont`），
+    /// 「更大字体」那条 `scaleSecondaryFonts` 只动副行，与原版一致。
+    var font: NSFont = .boldSystemFont(ofSize: 24)
     /// [实测] `.title2` + `.bold` trait。
     var backgroundVocalsFont: NSFont =
         LyricsSpecs.bold(.preferredFont(forTextStyle: .title2))
@@ -125,24 +133,42 @@ struct LyricsSpecs {
 
     // MARK: 颜色
     //
-    // 原版每个颜色都是 `NSColor(name:dynamicProvider:)`，provider 只判断是否高对比度
-    // 辅助功能外观：命中 → labelColor 系，未命中（平时）→ whiteColor 系，只调 alpha。
-    // 所以常规状态下歌词恒为白。`_x` 那一半是原结构里缓存解析结果的字段，复刻不需要。
+    // 原版每个颜色都是 `NSColor(name:dynamicProvider:)` + 外层 `withAlphaComponent`。
+    // **provider 里返回什么是由宿主给的**：resolver 的默认值返回「平时 white /
+    // 高对比度 labelColor」，但主 surface 的 provider 一律返回 `labelColor`，
+    // 于是明暗跟随系统、只剩 alpha 在变。两套都在二进制里，生效的是后者。
+    // `_x` 那一半是原结构里缓存解析结果的字段，复刻不需要。
 
-    var selectedTextColor = LyricsSpecs.dynamicWhite(1.00, highContrast: 1.00)    //[实测]
-    var selectedUpcomingTextColor = LyricsSpecs.dynamicWhite(0.35, highContrast: 0.85) //[实测]
-    var deselectedTextColor = LyricsSpecs.dynamicWhite(0.175, highContrast: 0.40) //[实测]
-    var selectedBackgroundVocalsTextColor = LyricsSpecs.dynamicWhite(1.00, highContrast: 1.00)
-    var selectedUpcomingBackgroundVocalsTextColor = LyricsSpecs.dynamicWhite(0.35, highContrast: 0.85)
-    var deselectedScrollTextColor = LyricsSpecs.dynamicWhite(0.40, highContrast: 0.40) //[实测] 拖动时全部行
-    var translationTextColor: NSColor? = nil                      //[实测] nil = 继承主色
-    var lineProgressionGradientColor = LyricsSpecs.dynamicWhite(1.00, highContrast: 1.00)   //[实测]
+    // [实测] 主 surface 的 provider（`（略）`）把这一组**整段换掉**：
+    // 全部是 `labelColor` 加不同 alpha，不再有 white 那一支。原来那套
+    // 「平时 white / 高对比度换 labelColor」是 resolver（W1 默认值）的写法，
+    // 运行时并不生效——上一版照默认值抄，未唱 0.35、普通行 0.175，
+    // 比原版暗了一大截（生效值是 0.50 / 0.40）。
+    //
+    // 顺带修掉一个真实缺陷：white 系在浅色外观下等于「白字白底」，
+    // 换成 labelColor 后自动跟随明暗。
+    var selectedTextColor = LyricsSpecs.dynamicLabel(1.00)        //+0x168
+    var selectedUpcomingTextColor = LyricsSpecs.dynamicLabel(0.50) //+0x178
+    var deselectedTextColor = LyricsSpecs.dynamicLabel(0.40)      //+0x188
+    var selectedBackgroundVocalsTextColor = LyricsSpecs.dynamicLabel(0.65)          //+0x198
+    var selectedUpcomingBackgroundVocalsTextColor = LyricsSpecs.dynamicLabel(0.45)  //+0x1a8
+    var deselectedScrollTextColor = LyricsSpecs.dynamicLabel(0.40) //+0x1b8 拖动时全部行
+    var translationTextColor: NSColor? = nil                      //+0x1d8 = labelColor，nil = 继承主色
+    /// 已唱段的颜色。`+0x1e8` 在主 surface 是 `labelColor @65%`，
+    /// 但「谁画已唱、谁画未唱」这条映射还挂着（`lyrics-spec.md` §6 O5），
+    /// 改成 0.65 有可能把已唱/未唱**反过来**，所以先留 1.00 等 O5 闭合。
+    var lineProgressionGradientColor = LyricsSpecs.dynamicLabel(1.00)   //[待 O5]
+    /// 背景和声的渐变条颜色。**这一项没有在原版里定位到写入点**（provider 只写了
+    /// `+0x1e8` 那一处渐变），沿用手上的旧实测值，等和声行真正开始渲染时再查。`[未查]`
     var lineProgressionBackgroundVocalsGradientColor =
-        LyricsSpecs.dynamicWhite(0.175, highContrast: 0.175)             //[实测]
+        LyricsSpecs.dynamicWhite(0.175, highContrast: 0.175)
 
     // MARK: 动效
 
-    var deselectedTransform = CGAffineTransform(scaleX: 0.98, y: 0.98) //[实测]
+    /// 未选中行的缩放。**主 surface 是单位阵**：provider（（略））把它覆盖成
+    /// identity，消费者 `setSelected:`（（略））读到什么就打在整行 layer 上。
+    /// 0.98 只是 resolver 的默认值，别的 surface 才可能用它。
+    var deselectedTransform = CGAffineTransform.identity
     var animationHeadstart: TimeInterval = 0.1                    //[实测] 比时间轴提前起跑
     var glowColor: NSColor = .white                               //[实测]
     var glowRadius: CGFloat = 5                                   //[实测]
@@ -320,6 +346,16 @@ struct LyricsSpecs {
         var resolved = color.cgColor
         appearance.performAsCurrentDrawingAppearance { resolved = color.cgColor }
         return resolved
+    }
+
+    /// `labelColor` 加 alpha。对应原版
+    /// `NSColor(name:dynamicProvider: { _ in labelColor }).withAlphaComponent(a)`。
+    /// 原版把 alpha 套在 dynamic 色**外面**；这里放进 provider 里面，
+    /// 保证每次按外观解析时拿到的一定是「当次外观的 labelColor × alpha」——
+    /// 外层套 alpha 是否保留动态性依赖 AppKit 实现，放里面没有这个不确定性。
+    /// 主 surface 的六个文字色全部走这一个。
+    static func dynamicLabel(_ alpha: CGFloat) -> NSColor {
+        NSColor(name: nil) { _ in NSColor.labelColor.withAlphaComponent(alpha) }
     }
 
     /// 平时用 white 调 alpha，高对比度辅助功能外观下换 labelColor。
