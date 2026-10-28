@@ -21,9 +21,10 @@ import QuartzCore
 /// 逐字单元按**音节**各自成层（原版 `Syllable` 就带自己的`frame`/`xOffset`），
 /// 这样 `syllableLift` 的上抬才有落点。例外是**长音词**（唱满超过
 /// `LyricsSpecs.heldSyllableThreshold`）：它按字形（字素簇）各自成层，
-/// 渐变前沿扫到哪个字母哪个字母才抬，并且整词发辉光。这条不依赖 `.emphasis`
-/// 能力位（Amber 的 QRC 源不声明它），只看时长；强调缩放的公式仍在
-/// `SyllableEmphasis.glyphPosition` 里备着，没有接线。
+/// 渐变前沿扫到哪个字母哪个字母才抬，并且整词发辉光。
+///
+/// 强调缩放（`emphasizingScaleRange`，那个「鱼眼横扫」）与抬升是两套时刻表、
+/// 两条弹簧：**开唱（高亮到达）那一刻**逐字形鼓起来再被按回去，见 `emphasizeSyllables` 与 §1.1。
 final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextContentLayerProgress {
 
     var specs = LyricsSpecs()
@@ -92,6 +93,11 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         /// 与 `syllables` 等长：这一对什么时候抬。普通音节就是它的 `startTime`；
         /// 长音词的字形是渐变前沿扫到它左缘的那一刻。
         var liftTimes: [Double] = []
+        /// 与 `syllables` 等长：这一对的两条强调时刻（§1.1）。`nil` = 这一层不缩放
+        /// ——整段兜底那种「时长够长但不是一个词」的层。
+        var emphasisWindows: [SyncedLyricsLineLayer.SyllableEmphasis.Window?] = []
+        /// 每层此刻处在哪一相。只在**跨相那一帧**下发弹簧。
+        var emphasisPhases: [SyncedLyricsLineLayer.SyllableEmphasis.Phase] = []
         /// 第 i 个音节（行内展平序号，与 `layoutLine.words` 展平后一一对应）
         /// 占 `syllables` 的哪一段。普通音节是长度 1 的区间。
         var unitRanges: [Range<Int>] = []
@@ -114,6 +120,22 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         var glowed: Set<Int> = []
         /// 正在跑的辉光 ramp，键是音节的展平下标。逐 tick 直写，跑完就摘（§23.4）。
         var glows: [Int: GlowRamp] = [:]
+        /// **强调辉光**的第二条 ramp，与 `glows` 同键不同源（§1.1.1）。
+        ///
+        /// [实测] `（略）`：音节被强调时对**音节层**再跑一条 `shadowOpacity`
+        /// 斜坡，`from = specs[0x240]`、`to = specs[0x248]`、按 `t` 取端点，
+        /// 弹簧 `min(span, 3)`。它与 `startGlowRamps` 那条**词级**辉光是两条独立的
+        /// ramp（不同触发点、不同层），所以这里分开存，合成时才相加。
+        var emphasisGlows: [Int: GlowRamp] = [:]
+        /// 与 `syllables` 等长：这一层所属词的 `Emphasis.factor`。
+        /// 强调辉光的峰值用它乘（与词级辉光同一个强度来源）。
+        var glowFactors: [Double] = []
+        /// 词级辉光**静止后**的值（ramp 摘掉之后由它顶上）。
+        /// 两条 ramp 合成到同一个 `shadowOpacity` 时，少一份就会掉光——所以 ramp
+        /// 只管「在飞的那段」，落定值单独记着，互不依赖。
+        var glowResting: [Int: Float] = [:]
+        /// 强调辉光静止后的值，同上。
+        var emphasisGlowResting: [Int: Float] = [:]
         /// 整盒（正文 + 发音）。
         var frame: CGRect = .zero
         /// 正文那一段的高度。渐变的纵向余量按它算，不按整盒——
@@ -165,6 +187,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         guard selected != isSelected else { return }
         isSelected = selected
         if !selected { isSungPrepared = false }
+        // 退场先把还鼓着的字收回去：收起的时刻靠每帧比对，而这一行已经没有帧了。
+        if !selected { collapseEmphasis(animated: animated) }
         applyColors(animated: animated)
     }
 
@@ -430,9 +454,11 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             startGlowRamps(in: row, layoutLine: layoutLine, now: now)
             advanceGlowRamps(in: row, now: now)
 
-            // 只为抬升排队。带 emphasis 的行不必也进来——强调缩放没接线
-            // （理由见 `liftStartedSyllables`），辉光自己在上面那两句里走完了。
-            if lifts { pendingLifts.append(row) }
+            // 为抬升 / 强调排队。两者都在事务外下发：`addAnimation` 在
+            // `CATransaction.disableActions()` 为真时会退化成直接赋值，包进去弹簧就没了。
+            if lifts || row.emphasisWindows.contains(where: { $0 != nil }) {
+                pendingLifts.append(row)
+            }
         }
         if needsTransliteration {
             let fraction = totalWords > 0
@@ -443,7 +469,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         CATransaction.commit()
 
         for row in pendingLifts {
-            liftStartedSyllables(in: row, animated: liftAnimated, at: t)
+            if lifts { liftStartedSyllables(in: row, animated: liftAnimated, at: t) }
+            emphasizeSyllables(in: row, animated: liftAnimated, at: t)
         }
     }
 
@@ -520,12 +547,9 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// `syllableLift`：被唱到的音节整体上抬那么多，由 (1, 14, 7) 那条弹簧走完。
     /// **是常量位移不是动画幅度**（§8.1：它是直接从纵向落点里减掉的），抬起来之后保持。
     ///
-    /// **不做字形放大。** `emphasizingScaleRange = 1.0…1.14` 这个字段确实在结构体里
-    /// （`+0x100/+0x108`），但它在本仓已经有两个正当消费者：渐变条的纵向余量
-    /// （`|ascent·1.14 + 2·glowRadius − h| / 2`，见 `LineProgressGradientLayer+Layout`）
-    /// 与辉光层的栅格化倍率（`WordGlow`）。把它再叠到 `transform` 上会多出一层放大——
-    /// 2026-10-27 用户拿 Music.app 同帧对拍：**原版整行字重、字宽全程不变**，
-    /// 只有颜色与 2–4pt 的抬升在动。所以这里只保留升降，`scale` 恒 `nil`。
+    /// 放大不在这条路上——它有自己的时刻表与弹簧，见 `emphasizeSyllables`。
+    /// 两个字段（`+0x100/+0x108` 与 `+0x2d0`）在原版里也是两套：
+    /// 缩放归 `（略）` 的逐字形循环，抬升归落点公式。
     ///
     /// **进出都做**：§25.3 的 `LyricsAnimationStatus` 有 `reverseAnimating` 一支，
     /// 说明这套动画本来就是可逆的。往回 seek 时把越过的音节放回原位，
@@ -538,8 +562,6 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         let lift = specs.syllableLift != 0 && line?.capabilities.contains(.lift) == true
             ? specs.syllableLift
             : 0
-        // 不做放大（见方法头）：这里只负责「抬不抬」这个离散状态。
-        let scale: Double? = nil
         for index in row.syllables.indices {
             guard let liftTime = row.liftTimes[safe: index] else { continue }
             let started = time >= liftTime
@@ -552,57 +574,144 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             // 亮字没建时只抬 base：之后现建的亮字照抄 base 的模型位置与在飞的那条
             // 叠加动画（`makeSungTwin`），落点与飘的相位都与这里一致。
             for layer in [pair.base] + (pair.sung.map { [$0] } ?? []) {
-                emphasize(layer, lift: started ? -lift : lift,
-                          scale: scale.map { started ? $0 : 1 },
-                          animated: animated)
+                liftLayer(layer, by: started ? -lift : lift, animated: animated)
             }
         }
     }
 
-    /// 把一个音节层推到「已唱」或「未唱」那一端。位移是增量（抬起来是负的），
-    /// 缩放是绝对值（`nil` 表示这个词没有强调数据，整条不碰`transform`）。
+    // MARK: - 强调缩放（§1.1）
+
+    /// 唱到哪个字形、哪个字形就鼓一下：**每个字形两条弹簧**，
+    /// 一条在 `start + stagger·i` 把 `transform` 写成放大，一条在
+    /// `start + span/(n/2) + stagger·i` 把它写回恒等。
+    ///
+    /// 四条与观感直接对应的：
+    /// - **零点在「开唱」不是「唱完」**：放大跟高亮同时起。规格核对里两条延迟都是
+    ///   纯延迟（`（略）(stagger·i)` / `（略）(…, span/(n/2)+stagger·i, …)`），
+    ///   没有 `end` 项，下发时刻就是音节成为当前音节那一帧。
+    /// - **逐字形错峰**：首字母先鼓、末字母晚 `stagger·(n−1)` 起。
+    ///   所以「横扫」扫的是**一个词内部**，词与词之间不扫。
+    /// - **回落是覆盖不是曲线**：第二次写恒等直接把第一次的放大顶掉，
+    ///   两条弹簧又打同一个 config（ζ=1、ω=2π/span），而 `span/(n/2)` 总短于上升段，
+    ///   所以先起的那几个在半路就被按住——峰值 +8%，不是 1.14。
+    /// - **只有唱住了的音节才进得来**：准入在建层那一处（与拆字形共用判据），
+    ///   短词连窗口都没有、`transform` 一下都不碰。
+    ///
+    /// 只在**跨相那一帧**下发。逐帧重发会把弹簧一秒重启几十次，永远停在起步那小段。
+    private func emphasizeSyllables(in row: Row, animated: Bool, at time: Double) {
+        let now = CACurrentMediaTime()
+        for index in row.syllables.indices {
+            guard let slot = row.emphasisWindows[safe: index], let window = slot else { continue }
+            let phase = window.phase(at: time)
+            guard row.emphasisPhases[safe: index] != phase else { continue }
+            while row.emphasisPhases.count <= index { row.emphasisPhases.append(.idle) }
+            row.emphasisPhases[index] = phase
+
+            let pair = row.syllables[index]
+            for layer in [pair.base] + (pair.sung.map { [$0] } ?? []) {
+                switch phase {
+                case .grown:
+                    // 幅度就是区间上界。**不是**所有音节都走到这里：没有窗口的音节
+                    // （短词、整段兜底）在上面的 `guard let window` 就被跳过了，
+                    // `transform` 一次都不写。准入在建层那一处，见 `appendSyllableLayers`。
+                    applyScale(window.scale, to: layer,
+                               spring: animated ? window.span : nil)
+                case .shrunk:
+                    applyScale(1, to: layer, spring: animated ? window.span : nil)
+                case .idle:
+                    // 往回 seek 退到窗口之前：当场归位。重听时不该看见一次收缩。
+                    applyScale(1, to: layer, spring: nil)
+                }
+            }
+            // **强调辉光**：与缩放同一相、同一条弹簧（§1.1.1）。
+            // 只挂在 `base` 上——`sung` 被推进遮罩罩着，投影会跟着前沿被剪掉（§23.2）。
+            applyEmphasisGlow(index: index,
+                              factor: row.glowFactors[safe: index] ?? 0,
+                              span: window.span,
+                              active: phase == .grown,
+                              row: row,
+                              now: now)
+        }
+    }
+
+    /// 这一行不再是当前播放行：把还鼓着的字形收回去。
+    ///
+    /// 收起是**按时刻**触发的（`start + span/(n/2) + stagger·i`），而时刻靠每帧的
+    /// `applyProgress` 去比对。行一旦不再是当前行，`applyProgress` 就不再被调用，
+    /// 那个时刻永远不会到——最后几个字会一直停在 1.14，成了「上一句里有个字特别大」。
+    /// 最后一句的末音节几乎必然踩这个坑：它的鼓起铺在句尾之后，而下一句紧接着就来了。
+    ///
+    /// 所以退场时主动收：还在鼓着的走一条弹簧，其余的当场归位（它们本来就在 1）。
+    private func collapseEmphasis(animated: Bool) {
+        for row in rows {
+            for index in row.syllables.indices {
+                guard row.emphasisPhases[safe: index] == .grown,
+                      let span = row.emphasisWindows[safe: index]??.span else { continue }
+                row.emphasisPhases[index] = .shrunk
+                let pair = row.syllables[index]
+                for layer in [pair.base] + (pair.sung.map { [$0] } ?? []) {
+                    applyScale(1, to: layer, spring: animated ? span : nil)
+                }
+            }
+        }
+    }
+
+    /// 把一个字形层的 `transform` 推到 `scale` 倍；`spring` 给了就走弹簧，否则当场落位。
+    ///
+    /// **模型值当场写，动画只负责追**。两条弹簧会互相顶（收起总在鼓起落位之前到），
+    /// 若把写模型值留到 `finishDispatch`，先起的那条落位时会把后来的那条又写回旧值，
+    /// 字就停在放大状态回不来。收尾回调用在这里只有害处，索性不用。
+    private func applyScale(_ scale: Double, to layer: CALayer, spring span: TimeInterval?) {
+        let target = CATransform3DMakeScale(scale, scale, 1)
+        // 起点：**有动画在飞就接住它当前的样子**，否则就是模型值。
+        // 不能无条件取 `presentation()`——没有在飞的动画时它可能是上一次的残留，
+        // 一取就可能算出「起点 == 终点」，弹簧直接被当成无变化丢掉。
+        let from = layer.animation(forKey: "transform") != nil
+            ? (layer.presentation()?.transform ?? layer.transform)
+            : layer.transform
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = target
+        CATransaction.commit()
+        guard let span else { return }
+        let animator = LayerPropertyAnimator(
+            curve: .spring(SyncedLyricsLineLayer.SyllableEmphasis.spring(span: span)))
+        animator.layers = [layer]
+        animator.addAnimation(to: layer, keyPath: "transform",
+                              from: NSValue(caTransform3D: from),
+                              to: NSValue(caTransform3D: target),
+                              frameRateRange: (min: 0, max: 0))
+    }
+
+    /// 把一个音节层抬起来（负）或放回去（正）。
     ///
     /// **位移走叠加式动画**（§6.5）：模型值当场写成真值，动画只把「旧 − 新」
     /// 这个 2pt 偏移在时间上退回 0。常规的 `from = 旧 / to = 新` 在飘的那 0.7 秒里
     /// 把层放在一套临时坐标里，期间一次重排（改窗宽、开关翻译 / 发音会重建`rows`）
     /// 就会让它从旧坐标起飞。
-    private func emphasize(_ layer: CALayer,
-                           lift: CGFloat,
-                           scale: Double?,
-                           animated: Bool) {
+    private func liftLayer(_ layer: CALayer, by lift: CGFloat, animated: Bool) {
         let curve = LyricsAnimationCurve.spring(
             .init(mass: SpringTimingParameters.syllableEmphasis.mass,
                   stiffness: SpringTimingParameters.syllableEmphasis.stiffness,
                   damping: SpringTimingParameters.syllableEmphasis.damping))
         let position = CGPoint(x: layer.position.x, y: layer.position.y + lift)
-        // 原版是把 scale 折进字形的落点公式（§8.1 `glyphPosition`）；Amber 没有字形层，
-        // 音节层的 anchorPoint 就是 (0.5, 0.5)，`transform` 缩放等价于绕中心放大。
-        // `newX = (sw + scale·x + x) × 0.5` 在 scale = 1 时正是中心 x，两条对得上。`[补]`
-        let transform = scale.map { NSValue(caTransform3D: CATransform3DMakeScale($0, $0, 1)) }
 
-        guard animated else {
-            if lift != 0 { layer.position = position }
-            if let transform { layer.transform = transform.caTransform3DValue }
+        guard animated, lift != 0 else {
+            if lift != 0 {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.position = position
+                CATransaction.commit()
+            }
             return
         }
         let animator = LayerPropertyAnimator(curve: curve)
         animator.layers = [layer]
-        if lift != 0 {
-            // `offset = 旧 − 新 = −lift`：抬升时 lift 是 −2，动画从 +2 退回 0。
-            animator.addAdditiveAnimation(to: layer, keyPath: "position",
-                                          offset: CGPoint(x: 0, y: -lift),
-                                          frameRateRange: (min: 0, max: 0))
-        }
-        if let transform {
-            animator.addAnimation(to: layer, keyPath: "transform",
-                                  from: NSValue(caTransform3D: layer.transform),
-                                  to: transform,
-                                  frameRateRange: (min: 0, max: 0))
-        }
-        animator.finishDispatch {
-            if lift != 0 { layer.position = position }
-            if let transform { layer.transform = transform.caTransform3DValue }
-        }
+        // `offset = 旧 − 新 = −lift`：抬升时 lift 是 −2，动画从 +2 退回 0。
+        animator.addAdditiveAnimation(to: layer, keyPath: "position",
+                                      offset: CGPoint(x: 0, y: -lift),
+                                      frameRateRange: (min: 0, max: 0))
+        animator.finishDispatch { layer.position = position }
     }
 
     /// 换行 / 换歌时把上抬与进度清干净。
@@ -616,6 +725,10 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         for row in rows {
             row.lifted.removeAll()
             row.glowed.removeAll()
+            // 强调缩放也归零：相清空、`transform` 复位。少了这一步，换行 / 换歌时
+            // 正鼓着的那个字会带着 1.14 走进下一行（重排会重建 `rows`，但 `resetProgress`
+            // 之后到重排之间还有几帧是同一批层）。
+            row.emphasisPhases.removeAll()
             var frame = row.gradient.frame
             frame.size.width = 0
             CATransaction.begin()
@@ -623,6 +736,10 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
             row.gradient.featherWidth = specs.lineProgressionGradientFeather
             row.gradient.frame = frame
             row.gradient.layoutIfNeeded()
+            for pair in row.syllables {
+                pair.base.transform = CATransform3DIdentity
+                pair.sung?.transform = CATransform3DIdentity
+            }
             // 去辉光：先落值、再清引用，最后熄灭（§8.1 / §23.5）。
             interruptGlow(in: row, fade: true)
             CATransaction.commit()

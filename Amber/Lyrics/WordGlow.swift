@@ -8,6 +8,13 @@ import QuartzCore
 // 推上去（§23.2）。强度是逐词的 `Emphasis.factor` 乘进`glowRange`（§23.3），
 // ramp 的弹簧只用来取时长、执行是逐 tick 直写模型值（§23.4）。
 //
+// **两条 ramp 打同一个属性**（§1.1.2）：
+// - `glows`：词级，词段一开始就亮，整词各层一起（§23.5 的五道闸）；
+// - `emphasisGlows`：强调级，`（略）` 在逐字形循环之前下发，
+//   跟着鼓包走，一个字形一个字形地亮起来，与缩放同一相、同一条弹簧。
+// 两者都写在 `shadowOpacity` 上，所以 `advanceGlowRamps` 取和；各自另存一份
+// 「静止值」，ramp 跑完摘掉之后由它顶上，免得晚起的那条把先落定的顶成 0。
+//
 // 落到 Amber 的两处形变，都记在下面各自的注释里：
 //
 // - **挂在哪一层**：原版一个词一个 `Word.layer`（承载文字，overlay 拿它当 mask，
@@ -186,6 +193,7 @@ extension SBS_TextContentLayer {
                   let last = row.unitRanges[safe: base + word.syllables.count - 1] else { continue }
             for index in first.lowerBound..<max(last.upperBound, first.lowerBound) {
                 guard let pair = row.syllables[safe: index] else { continue }
+                row.glowResting[index] = target
                 row.glows[index] = GlowRamp(
                     from: pair.base.shadowOpacity,
                     to: target,
@@ -196,20 +204,104 @@ extension SBS_TextContentLayer {
         }
     }
 
-    /// 逐 tick 直写 `shadowOpacity`（§23.4 第 5 步）。
+    /// 逐 tick 直写 `shadowOpacity`——**两条 ramp 在这里合成**。
     ///
     /// 调用方已经把它包在 `CATransaction.setDisableActions(true)` 里了——
     /// **必须**如此：写的是模型值，再让 CoreAnimation 叠一次隐式动画就不是直写了。
+    ///
+    /// 词级辉光（`glows`）与强调辉光（`emphasisGlows`）是两条独立的斜坡，
+    /// 但落在**同一个属性**上，所以这里取两者之和。这也是「强调时辉光加强」
+    /// 的实现方式：不是再加一层 layer，而是让第二条斜坡把同一个投影推得更亮
+    /// ——观感等价，且不会和第一条互相覆盖。
+    ///
+    /// 跑完的那条**不一定当场摘**：另一条还在跑时要留着它，`value(at:)` 在
+    /// 结束后恒返回 `to`，等于把它降级成常量参与求和。两条都结束了才摘。
     func advanceGlowRamps(in row: Row, now: CFTimeInterval) {
-        guard !row.glows.isEmpty else { return }
-        for (index, ramp) in row.glows {
+        guard !row.glows.isEmpty || !row.emphasisGlows.isEmpty else { return }
+        var indices = Set(row.glows.keys)
+        indices.formUnion(row.emphasisGlows.keys)
+        for index in indices {
             guard let pair = row.syllables[safe: index] else {
                 row.glows[index] = nil
+                row.emphasisGlows[index] = nil
                 continue
             }
-            pair.base.shadowOpacity = ramp.value(at: now)
-            if ramp.isFinished(at: now) { row.glows[index] = nil }
+            var opacity: Float = 0
+            // 在飞的那段取 ramp 的解析解；已经落定的那一份由静止值顶上。
+            // 两条 ramp 的寿命互不相干，谁先跑完都不影响另一条的读数。
+            if let ramp = row.glows[index] {
+                opacity += ramp.value(at: now)
+                if ramp.isFinished(at: now) { row.glows[index] = nil }
+            } else {
+                opacity += row.glowResting[index] ?? 0
+            }
+            if let ramp = row.emphasisGlows[index] {
+                opacity += ramp.value(at: now)
+                if ramp.isFinished(at: now) { row.emphasisGlows[index] = nil }
+            } else {
+                opacity += row.emphasisGlowResting[index] ?? 0
+            }
+            pair.base.shadowOpacity = min(opacity, 1)
         }
+    }
+
+    // MARK: - 强调辉光（§1.1.1）
+
+    /// 音节被强调时额外起的那条 `shadowOpacity` 斜坡。
+    ///
+    /// [实测] `（略）(t, span, specs)` —— 与 `（略）` 同一个强调块里、
+    /// 在逐字形循环**之前**下发的那一条：
+    ///
+    /// ```
+    /// dVar10 = specs[0x240] ; dVar11 = specs[0x248]
+    /// spring = （略）(ζ = 1.0, dur = min(span, 3.0))
+    /// 收尾   = （略） → setShadowOpacity(layer, (float)(dVar10 + t·(dVar11 − dVar10)))
+    /// ```
+    ///
+    /// 回调本体只有一句 `setShadowOpacity:`，所以这一条**只动投影的透明度**，
+    /// 不改半径、也不是第二次模糊拷贝。目标是 `self+0xd0` 那个**音节层**，
+    /// 与 §23 那条挂在 `Word.layer` 上的辉光是两个触发点、两条独立斜坡。
+    ///
+    /// 两端点（`0x240`/`0x248`）没在二进制里读到字面量——它们走默认值，
+    /// 而默认值模板不在已规格核对的段里。这里取与词级辉光**同一个强度函数**
+    /// （`glowRange` × `factor`，0 → 0.4），理由是：两处都按 `factor` 归一、
+    /// 且强调是「再加一道」，取同一个上界等于把投影推到两倍。`[推]`
+    func emphasisGlowIntensity(factor: Double) -> Float {
+        Self.glowIntensity(factor: factor, specs: specs)
+    }
+
+    /// 给某个音节层起/收强调辉光。`active == false` 时 ramp 回 0。
+    ///
+    /// 与缩放共用同一个 `Window.span` 当弹簧周期——规格核对里两处的
+    /// `（略）(1.0, min(span, 3.0))` 是同一个入参。
+    func applyEmphasisGlow(index: Int,
+                           factor: Double,
+                           span: TimeInterval,
+                           active: Bool,
+                           row: Row,
+                           now: CFTimeInterval) {
+        let to = active ? emphasisGlowIntensity(factor: factor) : 0
+        // 只在**目标变了**才重起一条。比的是静止值而不是此刻的解析解：
+        // 后者在 ramp 刚起步时还约等于起点，跟 `to` 一比就成了「没变化」，
+        // 会把该收的那次收掉。缺省按 0 算——还没亮过的层不需要建一条奔向 0 的空 ramp。
+        guard (row.emphasisGlowResting[index] ?? 0) != to else { return }
+        // 起点是**此刻这一份辉光的值**：在飞就取解析解，落定了就取静止值。
+        // 早先写成 `?? to`，于是首次触发时 from == to、整条 ramp 建不起来——
+        // 强调辉光一次都不会亮。
+        let from = row.emphasisGlows[index]?.value(at: now)
+            ?? row.emphasisGlowResting[index] ?? 0
+        // 与缩放的 `SyllableEmphasis.spring(span:)` 等价：同为 ζ=1、周期 `min(span, 3)`
+        // （`（略）(1.0, min(span,3))` 两处共用），只是这里是
+        // `SpringTimingParameters` 的表示法，好和 `GlowRamp` 对上。
+        let spring = Self.glowSpring(span: span)
+        let settling = CASpringAnimation(keyPath: "shadowOpacity", spring: spring)
+            .settlingDuration
+        row.emphasisGlows[index] = GlowRamp(from: from,
+                                            to: to,
+                                            spring: spring,
+                                            settlingDuration: settling,
+                                            startTime: now)
+        row.emphasisGlowResting[index] = to
     }
 
     // MARK: - 打断（§23.5 + §8.1「去辉光的打断」）
@@ -228,6 +320,10 @@ extension SBS_TextContentLayer {
             pair.base.shadowOpacity = ramp.to        // 先落值
         }
         row.glows.removeAll()                        // 再清引用
+        row.glowResting.removeAll()
+        // 强调辉光也一并清：它和词级辉光共用 `shadowOpacity`，留下会漏一道光。
+        row.emphasisGlows.removeAll()
+        row.emphasisGlowResting.removeAll()
         for pair in row.syllables {
             Self.cancelBasicAnimations(on: pair.base,
                                        keyPaths: Self.syllableAnimationKeyPaths)

@@ -430,6 +430,255 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         XCTAssertEqual(withLift.y, (40 + 20 + 20) * 0.25 - s.syllableLift, accuracy: 1e-9)
     }
 
+    // MARK: - §1.1 强调缩放的两条时刻
+
+    /// 零点在**音节开唱**那一刻（不是唱完），逐字形错峰 `stagger·i`，
+    /// 回收比鼓起晚 `span/(n/2)`。三个数都是从 `（略）` 的延迟参数直读的，
+    /// 其中没有任何 `end` 加法——所以放大与高亮同时起步。
+    func testEmphasisWindowsStaggerFromSyllableStart() {
+        let windows = SyncedLyricsLineLayer.SyllableEmphasis.windows(
+            start: 10, span: 2, glyphCount: 6,
+            range: specs().emphasizingScaleRange)
+        XCTAssertEqual(windows.count, 6)
+
+        // stagger = min(2/6 × 0.4, 0.4) = 0.1333…
+        let stagger = 2.0 / 6 * 0.4
+        // hold = min(2/(6/2), 2) = 0.6667
+        let hold = 2.0 / 3
+        for (i, window) in windows.enumerated() {
+            XCTAssertEqual(window.grow, 10 + stagger * Double(i), accuracy: 1e-9)
+            XCTAssertEqual(window.shrink, 10 + hold + stagger * Double(i), accuracy: 1e-9)
+            XCTAssertEqual(window.span, 2, accuracy: 1e-9)
+        }
+        // 首字母先鼓：末字母起步时首字母已经在收（实测 7.37s → 8.03s 的差就是它）。
+        XCTAssertLessThan(windows[0].grow, windows[5].grow)
+        XCTAssertGreaterThan(windows[0].shrink, windows[5].grow - 1e-9)
+    }
+
+    /// 错峰有上限 0.4s，`span/(n/2)` 那一段则随字数变短——短词被按回去得更早。
+    func testEmphasisWindowsClampStaggerAndHold() {
+        let many = SyncedLyricsLineLayer.SyllableEmphasis.windows(
+            start: 0, span: 9, glyphCount: 2,
+            range: specs().emphasizingScaleRange)
+        XCTAssertEqual(many[1].grow, 0.4, accuracy: 1e-9)          // stagger 被 0.4 夹住
+        XCTAssertEqual(many[0].shrink, 9, accuracy: 1e-9)          // hold 被 span 夹住
+
+        // 一个汉字的长音：`span/(n/2)` 会退化成 2·span，夹回 span。
+        let single = SyncedLyricsLineLayer.SyllableEmphasis.windows(
+            start: 5, span: 2, glyphCount: 1,
+            range: specs().emphasizingScaleRange)
+        XCTAssertEqual(single.count, 1)
+        XCTAssertEqual(single[0].grow, 5, accuracy: 1e-9)
+        XCTAssertEqual(single[0].shrink, 7, accuracy: 1e-9)
+    }
+
+    /// **只有「唱住了」的音节才有窗口**，而「唱住了」和「拆不拆字形」是**同一个判据**。
+    ///
+    /// 这是第一版做坏的地方：把 `s = lo + t·(hi − lo)` 当成恒取上界，于是每个音节
+    /// 唱完都跳一下 14%。正确的关系是——没被拆成字形层的短词，连窗口都不生成，
+    /// `transform` 一次都不写。`hello`（2.0s）拆成 5 层、每层有窗口；
+    /// `world`（0.5s）一层、没有窗口。
+    func testEmphasisWindowsOnlyForHeldSyllables() throws {
+        let range = specs().emphasizingScaleRange
+        // 函数本身不做准入，短时长只用来证明 `windows` 不背这个判断。
+        XCTAssertEqual(SyncedLyricsLineLayer.SyllableEmphasis.windows(
+            start: 1, span: 0.25, glyphCount: 3, range: range).count, 3)
+        XCTAssertTrue(SyncedLyricsLineLayer.SyllableEmphasis.windows(
+            start: 1, span: 0, glyphCount: 3, range: range).isEmpty)
+
+        // 真正的门在建层那一处：`hello ` 拆成 5 个字形、5 条窗口；
+        // `world` 0.5s，不到 `heldSyllableThreshold`，一层且无窗口。
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertEqual(row.syllables.count, 6)
+        for index in 0..<5 {
+            let window = try XCTUnwrap(row.emphasisWindows[index])
+            XCTAssertEqual(window.scale, range.upperBound, accuracy: 1e-9)
+            XCTAssertEqual(window.span, 2, accuracy: 1e-9)
+        }
+        XCTAssertNil(row.emphasisWindows[5])
+    }
+
+    func testEmphasisWindowsAreEmptyForZeroSpan() {
+        XCTAssertTrue(SyncedLyricsLineLayer.SyllableEmphasis.windows(
+            start: 3, span: 0, glyphCount: 4,
+            range: specs().emphasizingScaleRange).isEmpty)
+    }
+
+    /// 三相就位：还没轮到 → 鼓着 → 被按回去。
+    func testEmphasisWindowPhaseAt() {
+        let window = SyncedLyricsLineLayer.SyllableEmphasis.Window(
+            grow: 10, shrink: 11, span: 2, scale: 1.14)
+        XCTAssertEqual(window.phase(at: 9.99), .idle)
+        XCTAssertEqual(window.phase(at: 10), .grown)
+        XCTAssertEqual(window.phase(at: 10.99), .grown)
+        XCTAssertEqual(window.phase(at: 11), .shrunk)
+    }
+
+    /// 那条弹簧是**临界阻尼**：`mass 1`、`ω = 2π/min(span, 3)`、`c = 2ω`——
+    /// 不弹，也是「鼓起来很稳」的原因。
+    func testEmphasisSpringIsCriticallyDamped() {
+        let spring = SyncedLyricsLineLayer.SyllableEmphasis.spring(span: 2)
+        let omega = 2 * Double.pi / 2
+        XCTAssertEqual(spring.mass, 1)
+        XCTAssertEqual(spring.stiffness, omega * omega, accuracy: 1e-9)
+        XCTAssertEqual(spring.damping, 2 * omega, accuracy: 1e-9)
+        // ζ = c / (2√(km)) = 1
+        XCTAssertEqual(spring.damping / (2 * (spring.stiffness * spring.mass).squareRoot()),
+                       1, accuracy: 1e-9)
+
+        // 长音节被 3s 截顶，短音节被 0.05s 兜底（不发散）。
+        XCTAssertEqual(SyncedLyricsLineLayer.SyllableEmphasis.spring(span: 9).stiffness,
+                       (2 * Double.pi / 3) * (2 * Double.pi / 3), accuracy: 1e-9)
+        XCTAssertGreaterThan(SyncedLyricsLineLayer.SyllableEmphasis.spring(span: 0).stiffness, 0)
+    }
+
+    /// 接线的落点：长音词（`span > heldSyllableThreshold`）拆成字形层之后，
+    /// **开唱那一刻**起逐字形鼓起来、再被按回去——放大与高亮同时起，不是之后。
+    ///
+    /// `beyond` 0…2s、6 个字形：`stagger = 2/6×0.4 = 0.133`、`hold = 2/3 = 0.667`，
+    /// 于是 `grow_0 = 0`、`grow_5 = 0.667`、`shrink_0 = 0.667`、`shrink_5 = 1.333`。
+    /// 也就是说末字母开始鼓的那一刻，正好是首字母被按回去的那一刻。
+    func testEmphasisScalesGlyphsFromTheSyllableStart() throws {
+        var line = TextLine()
+        line.text = "beyond"
+        line.startTime = 0
+        line.endTime = 2
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [.init(text: "beyond", startTime: 0, endTime: 2)]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.setSelected(true, animated: false)
+        layer.bounds = CGRect(x: 0, y: 0, width: 400, height: 80)
+        layer.layoutSublayers()
+
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertEqual(row.syllables.count, 6, "长音词按字形各自成层")
+        let first = row.syllables[0].base
+        let last = row.syllables[5].base
+
+        // 刚开唱：首字母已经鼓起来（与高亮同时），末字母还没轮到。
+        layer.setProgress(0.05, animated: false)
+        XCTAssertEqual(first.transform.m11, 1.14, accuracy: 1e-9, "开唱即鼓")
+        XCTAssertEqual(last.transform.m11, 1, accuracy: 1e-9, "末字母还在排队")
+
+        // 唱到一半：首字母早被按回去，末字母顶上（鼓包移到词尾）。
+        layer.setProgress(1.0, animated: false)
+        XCTAssertEqual(first.transform.m11, 1, accuracy: 1e-9)
+        XCTAssertEqual(last.transform.m11, 1.14, accuracy: 1e-9)
+
+        // 唱完之后hold 也走完了：全部归位。
+        layer.setProgress(1.6, animated: false)
+        XCTAssertEqual(first.transform.m11, 1, accuracy: 1e-9)
+        XCTAssertEqual(last.transform.m11, 1, accuracy: 1e-9)
+
+        // 往回拖：鼓包回到词头，词尾退回排队。
+        layer.setProgress(0.05, animated: false)
+        XCTAssertEqual(first.transform.m11, 1.14, accuracy: 1e-9)
+        XCTAssertEqual(last.transform.m11, 1, accuracy: 1e-9)
+    }
+
+    /// **短词全程不放大**——这是用户两次否掉的那条（「100% 不是每个词都触发」）。
+    ///
+    /// `word` 只唱 0.4s，不到 `heldSyllableThreshold`，不拆字形层，也就没有窗口；
+    /// 从开唱到唱完之后扫一整段进度，`transform` 必须一直是恒等。
+    /// 上一版把 `s` 当恒定上界，这里每一帧都会是 1.14。
+    func testShortWordNeverScales() throws {
+        var line = TextLine()
+        line.text = "word"
+        line.startTime = 0
+        line.endTime = 0.4
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [.init(text: "word", startTime: 0, endTime: 0.4)]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.setSelected(true, animated: false)
+        layer.bounds = CGRect(x: 0, y: 0, width: 400, height: 80)
+        layer.layoutSublayers()
+
+        let row = try XCTUnwrap(layer.rows.first)
+        XCTAssertEqual(row.syllables.count, 1, "短词不拆字形层")
+        XCTAssertNil(row.emphasisWindows.first ?? nil, "短词没有强调窗口")
+
+        let base = row.syllables[0].base
+        for progress in stride(from: 0.0, through: 1.2, by: 0.05) {
+            layer.setProgress(progress, animated: false)
+            XCTAssertEqual(base.transform.m11, 1, accuracy: 1e-9, "progress = \(progress)")
+            XCTAssertEqual(base.transform.m22, 1, accuracy: 1e-9, "progress = \(progress)")
+        }
+    }
+
+    /// 正常的帧步进才走弹簧；seek 落点一律当场落位（与抬升同一条闸）。
+    ///
+    /// 这里顺带守住「模型值先写、动画后挂」：参数被写进模型，动画只是把画面追上去。
+    func testEmphasisSpringIsDispatchedOnContinuousAdvance() throws {
+        var line = TextLine()
+        line.text = "beyond"
+        line.startTime = 0
+        line.endTime = 2
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [.init(text: "beyond", startTime: 0, endTime: 2)]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.setSelected(true, animated: false)
+        layer.bounds = CGRect(x: 0, y: 0, width: 400, height: 80)
+        layer.layoutSublayers()
+        let row = try XCTUnwrap(layer.rows.first)
+        let base = row.syllables[0].base
+
+        // seek 到窗口里：不起弹簧，直接到上界（开唱那一刻首字母就该鼓）。
+        layer.setProgress(0.05, animated: false)
+        XCTAssertNil(base.animation(forKey: "transform"))
+        XCTAssertEqual(base.transform.m11, 1.14, accuracy: 1e-9)
+
+        // 退回去重来，这次按帧步进跨过首字母的**回收**时刻
+        // （`start + span/(n/2) = 0 + 2/3 ≈ 0.667s`）。
+        // 注意 `applyProgress` 只在 animated 那一路叠 `animationHeadstart`（0.10s），
+        // 所以步到 0.75 一定有越线的那一帧，不依赖那个 0.1 有没有加。
+        layer.setProgress(0.2, animated: true)
+        for step in stride(from: 0.25, through: 0.75, by: 0.05) {
+            layer.setProgress(step, animated: true)
+        }
+        let spring = try XCTUnwrap(base.animation(forKey: "transform") as? CASpringAnimation)
+        // span = 2 → ω = 2π/2 = π，临界阻尼的 c = 2ω。
+        XCTAssertEqual(spring.damping, 2 * Double.pi, accuracy: 1e-6)
+        XCTAssertEqual(spring.stiffness, Double.pi * Double.pi, accuracy: 1e-6)
+        XCTAssertGreaterThan(spring.duration, 0)
+        // 模型值当场就是终点，动画跑完不会弹回。
+        XCTAssertEqual(base.transform.m11, 1, accuracy: 1e-9)
+    }
+
+    /// 一句唱完、不再是当前行时，还鼓着的字要当场收回去。
+    ///
+    /// 不这么做的话：收起靠每帧比对时刻，而这行已经没有帧了，最后一个字会永远停在 1.14
+    /// ——「上一句里有个字特别大」。
+    func testEmphasisCollapsesWhenTheLineStopsBeingCurrent() throws {
+        var line = TextLine()
+        line.text = "beyond"
+        line.startTime = 0
+        line.endTime = 2
+        line.capabilities = [.gradient, .lift]
+        line.syllables = [.init(text: "beyond", startTime: 0, endTime: 2)]
+        let layer = SBS_TextContentLayer()
+        layer.specs = specs()
+        layer.setLine(line)
+        layer.setSelected(true, animated: false)
+        layer.bounds = CGRect(x: 0, y: 0, width: 400, height: 80)
+        layer.layoutSublayers()
+
+        let row = try XCTUnwrap(layer.rows.first)
+        // 取开唱后不久：首字母正鼓着（`shrink_0 = 0.667s` 之前）。
+        layer.setProgress(0.3, animated: false)
+        XCTAssertEqual(row.syllables[0].base.transform.m11, 1.14, accuracy: 1e-9)
+
+        layer.setSelected(false, animated: false)
+        XCTAssertEqual(row.syllables[0].base.transform.m11, 1, accuracy: 1e-9)
+        XCTAssertEqual(row.syllables[0].sung?.transform.m11 ?? 1, 1, accuracy: 1e-9)
+    }
+
     // MARK: - 亮字按需建
 
     /// 亮字 `CATextLayer` 只在看得见时存在：未选中没有、选中后与 base 逐个同位、
@@ -691,28 +940,113 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         for ramp in row.glows.values { XCTAssertEqual(ramp.to, full, accuracy: 1e-6) }
     }
 
-    // MARK: - 不做字形放大
+    // MARK: - 强调辉光（§1.1.1）
 
-    /// 唱到哪一步都不改字形尺寸——原版整行字重字宽全程不变。
+    /// 强调时**额外**起一条 `shadowOpacity` 斜坡：与缩放同一相、同一条弹簧。
     ///
-    /// `emphasizingScaleRange`（1.0…1.14）只喂两处**不画字**的地方：渐变条的纵向余量
-    /// 与辉光层的栅格化倍率。曾经把它接到 `transform` 上，对拍 Music.app 时整行字
-    /// 会「越唱越大」，和原版对不上（2026-10-27）。这条测试把那个错误钉死。
-    func testSungGlyphsNeverScale() throws {
-        let layer = makeHeldWordLayer()          // hello 0…2，world 2…2.5
+    /// [实测] `（略）` 在逐字形循环之前对音节层下发，回调本体只有
+    /// `setShadowOpacity:`（`（略）`），所以它只推亮度、不加层。
+    func testEmphasisGlowFollowsTheScalePhase() throws {
+        let layer = makeHeldWordLayer()
         let row = try XCTUnwrap(layer.rows.first)
-        for progress in [0.0, 0.5, 1.0, 2.2] {
-            layer.setProgress(progress, animated: false)
-            for pair in row.syllables {
-                XCTAssertEqual(pair.base.transform.m11, 1, accuracy: 1e-9)
-                XCTAssertEqual(pair.base.transform.m22, 1, accuracy: 1e-9)
-                if let sung = pair.sung {
-                    XCTAssertEqual(sung.transform.m11, 1, accuracy: 1e-9)
-                }
-            }
-        }
-        layer.setSelected(false, animated: false)
+        let full = SBS_TextContentLayer.glowIntensity(factor: 1, specs: specs())
+
+        // 开唱那一刻：首字母鼓起来的同时多一条强调辉光；词尾还在排队。
+        // 断言落点用 `emphasisGlowResting`（ramp 的目标），不用瞬时值——
+        // ramp 是按时钟推的，测试里两帧之间没有真实时间流逝。
+        layer.setProgress(0.0, animated: false)
+        XCTAssertEqual(try XCTUnwrap(row.emphasisGlowResting[0]), full, accuracy: 1e-6)
+        XCTAssertNotNil(row.emphasisGlows[0], "该有一条在飞的 ramp")
+        XCTAssertNil(row.emphasisGlowResting[4], "词尾还没轮到，不该起")
+        XCTAssertEqual(row.syllables[0].base.transform.m11, 1.14, accuracy: 1e-9)
+
+        // 首字母被收回：辉光目标转为 0，与缩放同相。
+        layer.setProgress(1.0, animated: false)
+        XCTAssertEqual(try XCTUnwrap(row.emphasisGlowResting[0]), 0, accuracy: 1e-6)
         XCTAssertEqual(row.syllables[0].base.transform.m11, 1, accuracy: 1e-9)
+
+        // 词尾这时才轮到：辉光鼓包跟着缩放一起传到词末。
+        XCTAssertEqual(try XCTUnwrap(row.emphasisGlowResting[4]), full, accuracy: 1e-6)
+    }
+
+    /// 短词既不复也不额外发光——准入是同一处判据，`emphasisGlows` 里不该有它。
+    func testShortWordHasNoEmphasisGlow() throws {
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        for progress in [0.0, 1.0, 2.1, 2.4] {
+            layer.setProgress(progress, animated: false)
+            XCTAssertNil(row.emphasisGlowResting[5], "\(progress)s：world 不该发光")
+            XCTAssertNil(row.emphasisGlows[5], "\(progress)s：world 不该起 ramp")
+        }
+    }
+
+    /// 两条 ramp 落在**同一个** `shadowOpacity` 上，取和、并被夹到 1。
+    func testWordGlowAndEmphasisGlowCompose() throws {
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        let spring = SBS_TextContentLayer.glowSpring(span: 2)
+        let full = SBS_TextContentLayer.glowIntensity(factor: 1, specs: specs())
+
+        // 两条都已跑完（`settlingDuration = 0`）：值恒为 `to`，相加落在层上。
+        row.glows[0] = .init(from: 0, to: full, spring: spring,
+                             settlingDuration: 0, startTime: 0)
+        row.emphasisGlows[0] = .init(from: 0, to: full, spring: spring,
+                                     settlingDuration: 0, startTime: 0)
+        layer.advanceGlowRamps(in: row, now: 1)
+        XCTAssertEqual(row.syllables[0].base.shadowOpacity,
+                       full * 2, accuracy: 1e-6, "强调是再叠一道，不是替换")
+        XCTAssertNil(row.glows[0], "两条都跑完就一起摘")
+        XCTAssertNil(row.emphasisGlows[0])
+
+        // 夹到 1：两条都满值时不会溢出。
+        row.emphasisGlows[0] = .init(from: 0, to: 1, spring: spring,
+                                     settlingDuration: 0, startTime: 0)
+        row.glows[0] = .init(from: 0, to: 1, spring: spring,
+                             settlingDuration: 0, startTime: 0)
+        layer.advanceGlowRamps(in: row, now: 1)
+        XCTAssertEqual(row.syllables[0].base.shadowOpacity, 1, accuracy: 1e-6)
+    }
+
+    /// 退场时强调辉光必须跟着清掉，否则共用 `shadowOpacity` 会漏一道光。
+    func testEmphasisGlowClearedWhenTheLineStopsBeingCurrent() throws {
+        let layer = makeHeldWordLayer()
+        let row = try XCTUnwrap(layer.rows.first)
+        layer.setProgress(0.2, animated: false)
+        XCTAssertFalse(row.emphasisGlows.isEmpty)
+
+        layer.setSelected(false, animated: false)
+        XCTAssertTrue(row.emphasisGlows.isEmpty)
+        XCTAssertTrue(row.emphasisGlowResting.isEmpty)
+        XCTAssertEqual(row.syllables[0].base.shadowOpacity, 0, accuracy: 1e-6)
+    }
+
+    // MARK: - 放大与高亮同时起
+
+    /// 放大**跟高亮同时**起，不是唱完之后（§1.1 第 9 条）。
+    ///
+    /// 这条替换掉了 `testGlyphsDoNotScaleWhileStillSinging`——那条是按
+    /// 「零点在唱完」的错误模型写的，量的正是本次推翻的结论。
+    /// 规格核对里两条延迟都是纯延迟（`stagger·i` / `span/(n/2) + stagger·i`），
+    /// 没有任何 `end` 加法，所以下发时刻（音节成为当前音节那一帧）就是零点。
+    func testHeldWordScalesFromTheStartAndShortWordNever() throws {
+        let layer = makeHeldWordLayer()          // hello 0…2（5 个字形），world 2…2.5（1 层）
+        let row = try XCTUnwrap(layer.rows.first)
+
+        // 开唱即鼓：progress 0 时首字母已经是 1.14，与高亮同一帧。
+        layer.setProgress(0.0, animated: false)
+        XCTAssertEqual(row.syllables[0].base.transform.m11, 1.14, accuracy: 1e-9)
+        XCTAssertEqual(row.syllables[0].sung?.transform.m11 ?? 1, 1.14, accuracy: 1e-9,
+                       "亮字与暗底必须同步鼓，否则会露出重影")
+        // 词尾字母还在排队（`grow_4 = stagger×4 = 0.64s`），此刻不该动。
+        XCTAssertEqual(row.syllables[4].base.transform.m11, 1, accuracy: 1e-9)
+
+        // 短词 `world` 全程不鼓：它没有窗口，`transform` 一次都不碰。
+        for progress in [0.0, 1.0, 2.1, 2.4] {
+            layer.setProgress(progress, animated: false)
+            XCTAssertEqual(row.syllables[5].base.transform.m11, 1, accuracy: 1e-9,
+                           "\(progress)s：world 只有 0.5s，不该鼓")
+            XCTAssertEqual(row.syllables[5].base.transform.m22, 1, accuracy: 1e-9)
+        }
     }
 
     // MARK: - 悬停底板

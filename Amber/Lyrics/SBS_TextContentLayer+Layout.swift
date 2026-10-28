@@ -356,8 +356,19 @@ extension SBS_TextContentLayer {
         let lower = row.syllables.count
         defer { row.unitRanges.append(lower..<row.syllables.count) }
         let span = endTime - startTime
-        let glyphs = splitsHeld && span > LyricsSpecs.heldSyllableThreshold
-            ? Self.glyphSlices(of: text, font: specs.font)
+        // **一处判据**：这个音节算不算「唱住了」。拆字形与强调缩放共用它，
+        // 所以「会拆成逐字母层」和「会被放大」永远是同一批音节——短词两边都不进。
+        // 分成两个条件写就会漂：上一版正是在这里让缩放单独跑，短词唱完也跳一下。
+        let held = splitsHeld && span > LyricsSpecs.heldSyllableThreshold
+        let glyphs = held ? Self.glyphSlices(of: text, font: specs.font) : []
+        // 强调缩放的时刻表（§1.1）。`n` 是**音节的字形数**，不是层的数量：
+        // 一个字一层时 `span/(n/2)` 会退化成 2·span，所以按字数摊。
+        // 整段兜底那一支（`splitsHeld == false`）不是词，不缩。
+        let scaleWindows = held
+            ? SyncedLyricsLineLayer.SyllableEmphasis.windows(
+                start: startTime, span: span,
+                glyphCount: glyphs.isEmpty ? max(text.count, 1) : glyphs.count,
+                range: specs.emphasizingScaleRange)
             : []
         guard glyphs.count > 1, frame.width > 0 else {
             let pair = makeTextLayers(text: text, frame: frame, font: specs.font,
@@ -365,9 +376,11 @@ extension SBS_TextContentLayer {
             configureGlow(on: pair.base, emphasis: emphasis)
             row.syllables.append(pair)
             row.liftTimes.append(startTime)
+            row.emphasisWindows.append(scaleWindows.first)
+            row.glowFactors.append(emphasis.factor)
             return
         }
-        for glyph in glyphs {
+        for (index, glyph) in glyphs.enumerated() {
             let glyphFrame = CGRect(x: frame.minX + glyph.minX, y: frame.minY,
                                     width: glyph.width, height: frame.height)
             let pair = makeTextLayers(text: glyph.text, frame: glyphFrame, font: specs.font,
@@ -376,6 +389,10 @@ extension SBS_TextContentLayer {
             row.syllables.append(pair)
             let fraction = min(max(glyph.minX / frame.width, 0), 1)
             row.liftTimes.append(startTime + span * Double(fraction))
+            // 抬升跟的是渐变前沿（按宽度），强调缩放跟的是字形序号（按 `stagger·i`）：
+            // 两者在原文里本来就是两条独立的时刻表，别合并。
+            row.emphasisWindows.append(scaleWindows[safe: index])
+            row.glowFactors.append(emphasis.factor)
             // 同一音节的每个字形共用整段区间：放大跟的是**音节**进度，不是字形进度。
         }
     }
