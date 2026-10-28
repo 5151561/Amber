@@ -557,12 +557,24 @@ final class NeteaseAPI: MusicProvider {
 
     // MARK: - 搜索
 
+    /// 搜索单曲。**走 cloudsearch，不再走 `/api/search/get`**。
+    ///
+    /// [实测 2026-10-29 curl] 老接口 `result.songs[].album` 现在只剩
+    /// `{publishTime, size, artist, copyrightId, name, id, picId, mark, status}`
+    /// ——**`picUrl` 被裁掉了，只留 `picId`**。而 `picId` 单独一个数拼不出图片地址
+    /// （地址里那段 `xxxxx==/1099…` 的散列，是 `picUrl` 才有的），于是
+    /// `parseTrack` 读到 nil，搜索结果整列封面空白。
+    ///
+    /// 同一时刻（[实测 2026-10-29] 逐条打过）`/api/v3/song/detail`、歌单详情、
+    /// 专辑详情、`personalized/newsong` 的曲目对象都还带着 `picUrl`，
+    /// 只有这一条被裁了——所以现象是「只有搜索结果没封面」，不是全站没封面。
+    ///
+    /// cloudsearch（`/api/cloudsearch/pc`）参数一模一样，回的是 v3 那套缩写
+    /// （`ar` / `al` / `dt`），`parseTrack` 两套都认，`al.picUrl` 齐全，
+    /// 还顺带给了 `sq` / `hr`（见 `cloudsearchTracks`）。同一关键词两条接口的
+    /// `songCount` 实测一致（275 对 275），换过去不丢结果。
     func searchTracks(keyword: String, limit: Int, offset: Int) async throws -> [Track] {
-        let resp = try await get("/api/search/get", params: [
-            "s": keyword, "type": "1", "limit": "\(limit)", "offset": "\(offset)",
-        ])
-        let songs = (resp["result"] as? [String: Any])?["songs"] as? [[String: Any]] ?? []
-        return songs.compactMap { Self.parseTrack($0) }
+        try await cloudsearchTracks(keyword: keyword, limit: limit, offset: offset)
     }
 
     func searchAlbums(keyword: String, limit: Int, offset: Int) async throws -> [Album] {
