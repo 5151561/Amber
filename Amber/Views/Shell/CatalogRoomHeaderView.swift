@@ -46,8 +46,8 @@ final class CatalogRoomHeaderView: NSView, NSCollectionViewElement, TrackTableHe
     private let titleLabel = CatalogCardKit.label(size: P.titleSize, weight: .bold)
     private let subtitleLabel = CatalogCardKit.label(
         size: CatalogRoomHeaderView.subtitleSize, color: .secondaryLabelColor)
-    private let playButton = RoomActionButton(shape: .capsule)
-    private let shuffleButton = RoomActionButton(shape: .circle)
+    private let playButton: HeaderActionButton
+    private let shuffleButton: HeaderActionButton
     private let tagScroll = NSScrollView()
     private let tagStrip = TagStripView()
 
@@ -65,18 +65,38 @@ final class CatalogRoomHeaderView: NSView, NSCollectionViewElement, TrackTableHe
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
+        playButton = HeaderActionButton(
+            symbol: "play.fill",
+            title: "播放",
+            width: 0,
+            height: Self.actionHeight,
+            backgroundOpacity: 0.065,
+            iconSize: 13,
+            titleSize: 13,
+            horizontalPadding: Self.capsuleInset
+        )
+        shuffleButton = HeaderActionButton(
+            symbol: "shuffle",
+            title: nil,
+            width: Self.actionHeight,
+            height: Self.actionHeight,
+            backgroundOpacity: 0.065,
+            iconSize: 13,
+            titleSize: 0
+        )
+
         super.init(frame: frameRect)
 
         addSubview(titleLabel)
         addSubview(subtitleLabel)
 
-        playButton.set(title: "播放", systemImage: "play.fill", tint: NSColor(Color.amberKey))
         playButton.target = self
         playButton.action = #selector(playClicked)
+        playButton.setAccessibilityLabel("播放")
+        playButton.toolTip = "播放"
         playButton.isHidden = true
         addSubview(playButton)
 
-        shuffleButton.set(title: nil, systemImage: "shuffle", tint: .labelColor)
         shuffleButton.target = self
         shuffleButton.action = #selector(shuffleClicked)
         shuffleButton.toolTip = "随机播放"
@@ -218,95 +238,7 @@ final class CatalogRoomHeaderView: NSView, NSCollectionViewElement, TrackTableHe
     }
 }
 
-// MARK: - 页头右端那两枚键
 
-/// 胶囊「播放」与圆形「随机播放」。旧版：13pt semibold 前景色 + `Color.primary.opacity(0.065)`
-/// 的底，胶囊左右内缩 20、圆键 32×32。
-private final class RoomActionButton: NSButton {
-
-    enum Shape { case capsule, circle }
-
-    private let shape: Shape
-    private var tint: NSColor = .labelColor
-    private var label: String?
-
-    init(shape: Shape) {
-        self.shape = shape
-        super.init(frame: .zero)
-        isBordered = false
-        bezelStyle = .shadowlessSquare
-        imagePosition = .imageOnly
-        imageScaling = .scaleNone
-        title = ""
-        wantsLayer = true
-        layer?.masksToBounds = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func set(title: String?, systemImage: String, tint: NSColor) {
-        self.tint = tint
-        label = title
-        image = NSImage(systemSymbolName: systemImage, accessibilityDescription: title)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))
-        contentTintColor = tint
-        if let title {
-            imagePosition = .imageLeading
-            attributedTitle = NSAttributedString(
-                string: title,
-                attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                             .foregroundColor: tint])
-            setAccessibilityLabel(title)
-            toolTip = title
-        } else {
-            imagePosition = .imageOnly
-            attributedTitle = NSAttributedString(string: "")
-        }
-        invalidateIntrinsicContentSize()
-    }
-
-    /// 圆键是定死的 32×32；胶囊按内容宽 + 左右各 20。
-    override var intrinsicContentSize: NSSize {
-        switch shape {
-        case .circle:
-            return NSSize(width: 32, height: 32)
-        case .capsule:
-            return NSSize(width: ceil(super.intrinsicContentSize.width) + 40, height: 32)
-        }
-    }
-
-    /// 圆角只跟高度走；配色不在这里改——`attributedTitle` 会反过来让布局失效。
-    override func layout() {
-        super.layout()
-        layer?.cornerRadius = bounds.height / 2
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyColors()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        applyColors()
-    }
-
-    /// `Color.primary.opacity(0.065)` 的 AppKit 等价：`labelColor` 打 6.5% 透明。
-    /// 语义色要在当前绘制外观里解析才拿得到正确的 CGColor。
-    private func applyColors() {
-        effectiveAppearance.performAsCurrentDrawingAppearance { [self] in
-            layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.065).cgColor
-            contentTintColor = tint
-            if let label {
-                attributedTitle = NSAttributedString(
-                    string: label,
-                    attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                                 .foregroundColor: tint])
-            }
-        }
-    }
-}
 
 // MARK: - 标签排
 
