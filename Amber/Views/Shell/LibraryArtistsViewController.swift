@@ -1005,9 +1005,10 @@ private final class LibraryCircleButton: NSButton {
 
     private func applyColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance { [self] in
+            glyph.contentTintColor = glyphColor
             switch style {
             case .subtle:
-                layer?.backgroundColor = NSColor.white.withAlphaComponent(
+                layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(
                     MusicMetrics.LibraryArtists.circleButtonFillAlpha).cgColor
                 layer?.borderWidth = 0
             case .brand:
@@ -1015,7 +1016,7 @@ private final class LibraryCircleButton: NSButton {
                 layer?.borderWidth = 0
             case .ring:
                 layer?.backgroundColor = NSColor.clear.cgColor
-                layer?.borderColor = NSColor(Color.amberKey).cgColor
+                layer?.borderColor = glyphColor.cgColor
                 layer?.borderWidth = MusicMetrics.LibraryArtists.circleButtonRingWidth
             }
         }
@@ -1201,14 +1202,11 @@ private final class LibraryArtistHeaderView: NSView {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(subtitleLabel)
 
-        let red = NSColor(Color.amberKey)
-        playButton.glyphColor = red
         playButton.toolTip = "播放"
         playButton.setAccessibilityLabel("播放")
         playButton.onClick = { [weak self] in self?.onPlay?() }
         buttonStack.addArrangedSubview(playButton)
 
-        shuffleButton.glyphColor = red
         shuffleButton.toolTip = "随机播放"
         shuffleButton.setAccessibilityLabel("随机播放")
         shuffleButton.onClick = { [weak self] in self?.onShuffle?() }
@@ -1224,7 +1222,6 @@ private final class LibraryArtistHeaderView: NSView {
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(buttonStack)
 
-        moreButton.glyphColor = red
         moreButton.toolTip = "更多"
         moreButton.setAccessibilityLabel("更多")
         moreButton.onClick = { [weak self] in
@@ -1421,12 +1418,9 @@ private final class LibraryArtistAlbumBlockCell: NSTableCellView {
         }
         headerContainer.addSubview(ratingView)
 
-        let red = NSColor(Color.amberKey)
-        addButton.glyphColor = red
         addButton.onClick = { [weak self] in self?.addTapped() }
         headerContainer.addSubview(addButton)
 
-        moreButton.glyphColor = red
         moreButton.onClick = { [weak self] in self?.showMoreMenu() }
 
         // 两枚钮进 stack：整张下完后 ↓ 收掉，⋯ 不会在原地留一个空格

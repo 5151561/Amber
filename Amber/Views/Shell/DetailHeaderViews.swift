@@ -80,20 +80,40 @@ class DetailHeaderView: NSView {
 // MARK: - 操作键
 
 /// 头部那三枚键：圆 38 / 胶囊 132×38 / 圆 38。
-/// 底色 `labelColor` 的一档浓度（歌单 8%、专辑 6.5%，与旧版`Color.primary.opacity(…)` 同值——
-/// SwiftUI 的 `.primary` 就是`labelColor`），图标与文字品牌红。
+/// [PX] 新版 Music 黑白按钮配色：
+/// - 主操作胶囊（「▶ 播放」，`isProminent == true`）：实心浅底 `rgb(243,243,243)`（浅色外观下反相为深底）+ 反相前景字/图标；
+/// - 两侧圆钮（随机播放、入库/下载/更多）：`labelColor` 低浓度半透明底（歌单 8%、专辑 6.5%）+ `labelColor` 单色图标。
 final class DetailActionButton: NSButton {
 
     private let backgroundOpacity: CGFloat
+    private let isProminent: Bool
+
+    /// [PX] 主胶囊深色外观下实测底色 rgb(243,243,243)、前景 rgb(0,0,0)；浅色外观对称反相。
+    private static let prominentFillColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark
+            ? NSColor(srgbRed: 243 / 255, green: 243 / 255, blue: 243 / 255, alpha: 1)
+            : NSColor(srgbRed: 28 / 255, green: 28 / 255, blue: 30 / 255, alpha: 1)
+    }
+
+    private static let prominentForegroundColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? .black : .white
+    }
+
+    private var foregroundColor: NSColor {
+        isProminent ? Self.prominentForegroundColor : .labelColor
+    }
 
     init(symbol: String?, title: String?, width: CGFloat, height: CGFloat,
          backgroundOpacity: CGFloat, iconSize: CGFloat, titleSize: CGFloat) {
         self.backgroundOpacity = backgroundOpacity
+        self.isProminent = title != nil
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
         isBordered = false
         bezelStyle = .shadowlessSquare
         imageScaling = .scaleNone
-        contentTintColor = NSColor(Color.amberKey)
+        contentTintColor = foregroundColor
         if let symbol {
             image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(pointSize: iconSize, weight: .semibold))
@@ -108,7 +128,7 @@ final class DetailActionButton: NSButton {
             attributedTitle = NSAttributedString(
                 string: title,
                 attributes: [.font: NSFont.systemFont(ofSize: titleSize, weight: .semibold),
-                             .foregroundColor: NSColor(Color.amberKey)])
+                             .foregroundColor: foregroundColor])
         } else {
             imagePosition = .imageOnly
             self.title = ""
@@ -119,7 +139,10 @@ final class DetailActionButton: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(backgroundOpacity).setFill()
+        let fill = isProminent
+            ? Self.prominentFillColor
+            : NSColor.labelColor.withAlphaComponent(backgroundOpacity)
+        fill.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2,
                      yRadius: bounds.height / 2).fill()
         super.draw(dirtyRect)
@@ -128,9 +151,11 @@ final class DetailActionButton: NSButton {
     /// 语义色随外观变，重画一次。
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        contentTintColor = NSColor(Color.amberKey)
-        if let attributedTitle = attributedTitle.mutableCopy() as? NSMutableAttributedString {
-            attributedTitle.addAttribute(.foregroundColor, value: NSColor(Color.amberKey),
+        let fg = foregroundColor
+        contentTintColor = fg
+        if let attributedTitle = attributedTitle.mutableCopy() as? NSMutableAttributedString,
+           attributedTitle.length > 0 {
+            attributedTitle.addAttribute(.foregroundColor, value: fg,
                                          range: NSRange(location: 0, length: attributedTitle.length))
             self.attributedTitle = attributedTitle
         }
