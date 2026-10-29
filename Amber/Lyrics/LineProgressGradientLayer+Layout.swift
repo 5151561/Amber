@@ -68,10 +68,9 @@ extension SyncedLyricsLineLayer {
 
         /// 强调缩放。**一条直线，没有缓动**——缓动全交给弹簧。
         ///
-        /// [实测]：`lo + (hi − lo) × t`，`t` 是音节自己的进度（`+0x38`）。
+        /// [实测]：`lo + (hi − lo) × t`，`t` 是音节自己的进度。
         ///
-        /// 这个 `t` 只在**发起那一刻**取一次：`（略）` 里
-        /// `s = specs[0x100] + t·(specs[0x108] − specs[0x100])` 算在逐字形循环之前，
+        /// 这个 `t` 只在**发起那一刻**取一次：`s = lo + t·(hi − lo)` 算在逐字形循环之前，
         /// 而循环的门槛是「这个音节的动画已经派过一次」，所以取到时 `t ≈ 1`、
         /// `s` 正好落在上界 1.14。函数留着是为了把那条直线写明白，
         /// 接线处直接用 `specs.emphasizingScaleRange.upperBound`。
@@ -93,7 +92,7 @@ extension SyncedLyricsLineLayer {
         /// 一个字形层那**两条**弹簧的时刻。§1.1 第 9 条。
         ///
         /// 零点都是这个音节**开始高亮**的那一刻（`startTime`）——**不是唱完**。
-        /// 放大与高亮同时起：`（略）` 里两条延迟都是纯延迟
+        /// 放大与高亮同时起：两条延迟都是纯延迟
         /// （`stagger·i` 与 `span/(n/2) + stagger·i`），代码里没有 `end` 项，
         /// 下发时刻就是「这个音节成为当前音节」那一帧。
         struct Window: Equatable {
@@ -122,14 +121,14 @@ extension SyncedLyricsLineLayer {
         /// 上一版把「够不够长」写在这个函数里，于是它和拆字形各有一套判断，
         /// 改一处忘一处就会让短词也跳一下——那是上过机的坏版本。
         ///
-        /// [实测] `（略）` 的逐字形循环，`start` 是音节起点、`span` 是时长：
+        /// [实测] 逐字形循环里，`start` 是音节起点、`span` 是时长：
         /// ```
         /// stagger  = min(span / n × 0.4, 0.4)
         /// grow_i   = start + stagger · i
         /// shrink_i = start + span / (n/2) + stagger · i
         /// ```
-        /// 两条都是**从下发那一刻起的纯延迟**（`（略）(stagger·i)` 与
-        /// `（略）(…, span/(n/2) + stagger·i, …)`），规格核对里没有任何 `end` 加法。
+        /// 两条都是**从下发那一刻起的纯延迟**（`stagger·i` 与
+        /// `span/(n/2) + stagger·i`），没有任何 `end` 加法。
         /// 所以鼓包**跟高亮同时起步**，逐字形往右爬；先起的那几个在 `span/(n/2)`
         /// 之后就被收回按下去——这也是「峰值只有 +8% 而不是 1.14」的原因：
         /// 弹簧时长 `min(span, 3)` 往往还没走完，收回就已经来了（§1.1 第 8 条）。
@@ -154,12 +153,12 @@ extension SyncedLyricsLineLayer {
 
         /// 这条强调弹簧：**临界阻尼**（ζ = 1），角频率由音节时长反解。
         ///
-        /// [实测] `（略）(ζ = 1.0, dur = min(span, 3.0))` 里
+        /// [实测] ζ = 1.0、`dur = min(span, 3.0)`：
         /// `mass = 1`、`ω = 2π/dur`、`k = m·ω²`、`c = 2·√(m·k)`——正是 ζ = 1，不弹。
         /// 所以短音节的弹簧很硬（0.4s → k ≈ 247、c ≈ 15.7），长音节被 3s 截顶。
         ///
         /// 注意这**不是** `SpringTimingParameters.syllableEmphasis`（1, 14, 7）——
-        /// 那三个数属于逐字形那条管颜色/遮罩的弹簧（`（略）`）。
+        /// 那三个数属于逐字形那条管颜色/遮罩的弹簧。
         static func spring(span: TimeInterval) -> SpringAnimationParameters {
             let duration = min(max(span, 0.05), 3.0)
             let omega = 2 * Double.pi / duration

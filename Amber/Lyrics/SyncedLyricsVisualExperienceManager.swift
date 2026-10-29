@@ -60,9 +60,8 @@ final class SyncedLyricsVisualExperienceManager {
     /// 再把 `filters.gaussianBlur.inputRadius` 动到 3.0。判据是二值的「是不是当前聚焦行」，
     /// 不是按距离的梯度——和实测的 σ≈3.1、不单调一致。
     ///
-    /// **调用链已在 分析工具 里闭合**（2026-10-27）：`（略）` 直接传
-    /// `0x4008000000000000`（= 3.0）进 `（略）`，后者算
-    /// `min(radius, 4.0)` 再落到 `（略）`（KVC `filters.gaussianBlur.inputRadius`）。
+    /// **调用链已闭合**（2026-10-27）：半径常量 3.0 直接进模糊设置，设置侧算
+    /// `min(radius, 4.0)` 再落到 KVC `filters.gaussianBlur.inputRadius`。
     /// 所以 **3.0 与 4.0 上限都是确证值**，本仓的 4.0 上限对、半径不对。
     ///
     /// **Amber 取 2.0，不是 3.0**（`[实机]`，2026-09-07 用户逐档判读定在 1.5，

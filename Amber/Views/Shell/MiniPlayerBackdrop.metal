@@ -141,7 +141,7 @@ constant float kMeshWarpAmplitude = 0.01;
 /// （那边是定点 2.14 的 4915/9667/1802）。[实测] spec §八
 constant float3 kLumaWeights = float3(0.299, 0.587, 0.114);
 
-/// 上屏。顺序照 spec §四 的推导过程：饱和度 → 亮度钳位 → 明暗因子 → 纱罩。
+/// 上屏。顺序照 spec §四 的步骤：饱和度 → 亮度钳位 → 明暗因子 → 纱罩。
 ///
 /// [实测] 用到的：`saturation`(2.0)、`floorValue`(0.07)、`ceilingValue`(0.97)、
 ///       `factorForDarkMode`、`factorForLightMode`、`blackScrimAlpha`、`whiteScrimAlpha`、

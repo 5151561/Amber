@@ -151,7 +151,7 @@ extension SyncedLyricsLineLayer {
     /// - Parameter adjustingBrightness: 悬停走 `false`。
     ///
     ///   原版悬停的「文字变暗」是 `containerLayer.opacity = 0.85`
-    ///   （`（略）` 的 model 闭包），不是亮度滤镜；亮度 ±1 那条是
+    ///   （`setHighlighted:` 的 model 闭包），不是亮度滤镜；亮度 ±1 那条是
     ///   **聚焦**（当前播放行）用的。两者同时上，17.5% 的字会被提亮再压到 0.85，
     ///   净效果等于没变——所以悬停这条路必须把亮度关掉，只留去模糊。
     func setLineFocused(_ focused: Bool, animated: Bool, adjustingBrightness: Bool = true) {
@@ -307,8 +307,7 @@ extension SyncedLyricsLineLayer {
 
     /// 悬停底板与文字透明度。
     ///
-    /// [实测] `SyncedLyricsLineView::setHighlighted:`（（略））→ 实体
-    /// `（略）`，三件事：
+    /// [实测] `setHighlighted:` 的实体做三件事：
     ///
     /// 1. 新值与 `isHighlighted` 相同就直接 return——**状态没变什么都不做**，
     ///    连动画都不重起（所以这里第一行就是那道判据）。
@@ -320,7 +319,7 @@ extension SyncedLyricsLineLayer {
     ///    琥珀的按下已经写了 0.95，两条一起动会互相打断，留待像素 A/B 定
     ///    `[推]`。
     ///
-    /// 底板颜色用 `+0x298` 那个 8% 白（`+0x290` 的 alpha 是 0，画不出东西）。
+    /// 底板颜色用 8% 白那一档（另一档 alpha 是 0，画不出东西）。
     func setHighlighted(_ highlighted: Bool, animated: Bool) {
         guard highlighted != isHighlighted else { return }
         isHighlighted = highlighted

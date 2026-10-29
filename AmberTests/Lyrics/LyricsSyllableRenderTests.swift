@@ -393,7 +393,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
         // 逐帧步进越过第二个音节的起唱点：挂着 position 动画，模型值已是抬升位。
         //
         // 注意 `animationHeadstart = 0.10`：下发给几何的时间是 `progress + 0.10`
-        // （`（略）`），所以步进要落在 0.90 之前，才在第二次步进时越过 1.0。
+        // （`animationHeadstart` 那条提前量），所以步进要落在 0.90 之前，才在第二次步进时越过 1.0。
         let playing = makeLayer()
         let base = try XCTUnwrap(playing.rows.first?.syllables[safe: 1]?.base)
         let restingY = base.position.y
@@ -433,7 +433,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
     // MARK: - §1.1 强调缩放的两条时刻
 
     /// 零点在**音节开唱**那一刻（不是唱完），逐字形错峰 `stagger·i`，
-    /// 回收比鼓起晚 `span/(n/2)`。三个数都是从 `（略）` 的延迟参数直读的，
+    /// 回收比鼓起晚 `span/(n/2)`。三个数都是实测出来的时刻表参数，
     /// 其中没有任何 `end` 加法——所以放大与高亮同时起步。
     func testEmphasisWindowsStaggerFromSyllableStart() {
         let windows = SyncedLyricsLineLayer.SyllableEmphasis.windows(
@@ -944,8 +944,8 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
 
     /// 强调时**额外**起一条 `shadowOpacity` 斜坡：与缩放同一相、同一条弹簧。
     ///
-    /// [实测] `（略）` 在逐字形循环之前对音节层下发，回调本体只有
-    /// `setShadowOpacity:`（`（略）`），所以它只推亮度、不加层。
+    /// [实测] 强调辉光在逐字形循环之前对音节层下发，回调本体只有
+    /// `setShadowOpacity:`，所以它只推亮度、不加层。
     func testEmphasisGlowFollowsTheScalePhase() throws {
         let layer = makeHeldWordLayer()
         let row = try XCTUnwrap(layer.rows.first)
@@ -1026,7 +1026,7 @@ final class LyricsSyllableRenderTests: XCTestCase, LyricsKitFixtures {
     ///
     /// 这条替换掉了 `testGlyphsDoNotScaleWhileStillSinging`——那条是按
     /// 「零点在唱完」的错误模型写的，量的正是本次推翻的结论。
-    /// 规格核对里两条延迟都是纯延迟（`stagger·i` / `span/(n/2) + stagger·i`），
+    /// 实测的两条延迟都是纯延迟（`stagger·i` / `span/(n/2) + stagger·i`），
     /// 没有任何 `end` 加法，所以下发时刻（音节成为当前音节那一帧）就是零点。
     func testHeldWordScalesFromTheStartAndShortWordNever() throws {
         let layer = makeHeldWordLayer()          // hello 0…2（5 个字形），world 2…2.5（1 层）

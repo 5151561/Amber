@@ -76,12 +76,12 @@ struct LyricsSpecs {
 
     /// 主字体：**`boldSystemFont(24)`**，不走 Dynamic Type。
     ///
-    /// [实测] 结构体默认值在 `+0xe0` 写的是 `.largeTitle` + bold（≈26），
-    /// 但主 surface 的 provider（`（略）` @（略））无条件覆写成
-    /// `boldSystemFont(24.0)`。**生效的是 24** —— 上一版取了 `.largeTitle`，
+    /// [实测] 结构体默认值写的是 `.largeTitle` + bold（≈26），
+    /// 但主 surface 的取值源无条件覆写成 `boldSystemFont(24.0)`。
+    /// **生效的是 24** —— 上一版取了 `.largeTitle`，
     /// 比原版大 8%。
     ///
-    /// 副行的 `+0xf0/+0xf8` 则被改写成 `.callout` + bold（见 `translationSmallFont`），
+    /// 副行的两个字体字段则被改写成 `.callout` + bold（见 `translationSmallFont`），
     /// 「更大字体」那条 `scaleSecondaryFonts` 只动副行，与原版一致。
     var font: NSFont = .boldSystemFont(ofSize: 24)
     /// [实测] `.title2` + `.bold` trait。
@@ -92,16 +92,16 @@ struct LyricsSpecs {
 
     /// 演唱中那个音节的放大系数。
     ///
-    /// [实测] 结构体 `+0x100`（lower 1.0）/ `+0x108`（upper 1.14），
-    /// `（略）` L306 的 `hScale = lower + t·(upper − lower)`。
+    /// [实测] 区间两端 lower 1.0 / upper 1.14，
+    /// 取值式 `hScale = lower + t·(upper − lower)`。
     /// `t` 是**该音节自身的归一化进度**，不是 emphasis 强度——两者不要串。
     ///
     /// **这个数不写字形几何。** 2026-10-27 与 Music.app 同帧对拍，原版整行字宽 / 字重
     /// 全程不变；本仓曾把它接到音节层 `transform`，结果整行「越唱越大」，与截图不符。
     /// 现在只剩两个不画字的消费者：
-    /// 渐变层纵向余量 `|ascent·1.14 + 2·glowRadius − h| / 2`（`（略）`）、
+    /// 渐变层纵向余量 `|ascent·1.14 + 2·glowRadius − h| / 2`、
     /// 辉光层 `rasterizationScale`（放大后栅格不糊）。
-    var emphasizingScaleRange: ClosedRange<Double> = 1.0...1.14   //[实测] +0x100/+0x108
+    var emphasizingScaleRange: ClosedRange<Double> = 1.0...1.14   // [实测] 生效值
 
     /// [实测] `.callout` + `.bold` trait ⇒ 本机 12pt`.SFNS-Semibold`。
     /// 同屏**有**音译时的译文档，选档规则见 `LyricsSecondaryText.swift`。
@@ -136,10 +136,10 @@ struct LyricsSpecs {
     // 原版每个颜色都是 `NSColor(name:dynamicProvider:)` + 外层 `withAlphaComponent`。
     // **provider 里返回什么是由宿主给的**：resolver 的默认值返回「平时 white /
     // 高对比度 labelColor」，但主 surface 的 provider 一律返回 `labelColor`，
-    // 于是明暗跟随系统、只剩 alpha 在变。两套都在二进制里，生效的是后者。
+    // 于是明暗跟随系统、只剩 alpha 在变。两套都写在参考实现里，生效的是后者。
     // `_x` 那一半是原结构里缓存解析结果的字段，复刻不需要。
 
-    // [实测] 主 surface 的 provider（`（略）`）把这一组**整段换掉**：
+    // [实测] 主 surface 的取值源把这一组**整段换掉**：
     // 全部是 `labelColor` 加不同 alpha，不再有 white 那一支。原来那套
     // 「平时 white / 高对比度换 labelColor」是 resolver（W1 默认值）的写法，
     // 运行时并不生效——上一版照默认值抄，未唱 0.35、普通行 0.175，
@@ -147,19 +147,19 @@ struct LyricsSpecs {
     //
     // 顺带修掉一个真实缺陷：white 系在浅色外观下等于「白字白底」，
     // 换成 labelColor 后自动跟随明暗。
-    var selectedTextColor = LyricsSpecs.dynamicLabel(1.00)        //+0x168
-    var selectedUpcomingTextColor = LyricsSpecs.dynamicLabel(0.50) //+0x178
-    var deselectedTextColor = LyricsSpecs.dynamicLabel(0.40)      //+0x188
-    var selectedBackgroundVocalsTextColor = LyricsSpecs.dynamicLabel(0.65)          //+0x198
-    var selectedUpcomingBackgroundVocalsTextColor = LyricsSpecs.dynamicLabel(0.45)  //+0x1a8
-    var deselectedScrollTextColor = LyricsSpecs.dynamicLabel(0.40) //+0x1b8 拖动时全部行
-    var translationTextColor: NSColor? = nil                      //+0x1d8 = labelColor，nil = 继承主色
-    /// 已唱段的颜色。`+0x1e8` 在主 surface 是 `labelColor @65%`，
+    var selectedTextColor = LyricsSpecs.dynamicLabel(1.00)        // 生效值 100%
+    var selectedUpcomingTextColor = LyricsSpecs.dynamicLabel(0.50) // 生效值 50%
+    var deselectedTextColor = LyricsSpecs.dynamicLabel(0.40)      // 生效值 40%
+    var selectedBackgroundVocalsTextColor = LyricsSpecs.dynamicLabel(0.65)          // 生效值 65%
+    var selectedUpcomingBackgroundVocalsTextColor = LyricsSpecs.dynamicLabel(0.45)  // 生效值 45%
+    var deselectedScrollTextColor = LyricsSpecs.dynamicLabel(0.40) // 拖动时全部行
+    var translationTextColor: NSColor? = nil                      // labelColor；nil = 继承主色
+    /// 已唱段的颜色。主 surface 的生效值是 `labelColor @65%`，
     /// 但「谁画已唱、谁画未唱」这条映射还挂着（`lyrics-spec.md` §6 O5），
     /// 改成 0.65 有可能把已唱/未唱**反过来**，所以先留 1.00 等 O5 闭合。
     var lineProgressionGradientColor = LyricsSpecs.dynamicLabel(1.00)   //[待 O5]
     /// 背景和声的渐变条颜色。**这一项没有在原版里定位到写入点**（provider 只写了
-    /// `+0x1e8` 那一处渐变），沿用手上的旧实测值，等和声行真正开始渲染时再查。`[未查]`
+    /// 渐变色那一处），沿用手上的旧实测值，等和声行真正开始渲染时再查。`[未查]`
     var lineProgressionBackgroundVocalsGradientColor =
         LyricsSpecs.dynamicWhite(0.175, highContrast: 0.175)
 
@@ -176,11 +176,10 @@ struct LyricsSpecs {
 
     /// 已唱段与未唱段之间那条定宽软边的宽度。
     ///
-    /// [实测] 结构体 `+0x250` 的字面量是 **30.0**，`（略）`（渐变层布局）
-    /// 把它同时用作渐变条宽与 fill 的扣减量。本仓曾收窄到 16，注释理由是
-    /// 「减轻音节滞后」——那是产品手调，不是原版值，本轮按结构体改回 30。
-    /// 短行会命中 `（略）` 里的 `max(W − feather, 0)`，fill 宽夹到 0 即可。
-    var lineProgressionGradientFeather: CGFloat = 30              //[实测] +0x250
+    /// [实测] 生效值 **30.0**，渐变层布局把它同时用作渐变条宽与 fill 的扣减量。
+    /// 本仓曾收窄到 16，注释理由是「减轻音节滞后」——那是产品手调，不是原版值，
+    /// 本轮按规格改回 30。短行会命中布局里的 `max(W − feather, 0)`，fill 宽夹到 0 即可。
+    var lineProgressionGradientFeather: CGFloat = 30              // [实测] 生效值
     var touchDownTransform = CGAffineTransform(scaleX: 0.95, y: 0.95) //[实测]
 
     // MARK: 悬停 / 点击
@@ -201,7 +200,7 @@ struct LyricsSpecs {
 
     /// 被唱到的音节上抬多少。
     ///
-    /// [实测] 结构体 `+0x2d0` 读出来是 2.0，但那个数在 `（略）` 里是按
+    /// [实测] 生效值是 2.0，但那个数在落点公式里是按
     /// **字形落点**的坐标系算的：`newY = (sh + scale·y + y) × 0.25 − syllableLift`
     /// 里的 y 已经是「相对词基线的一组候选落点」，减 2 落在那一套里只是微调。
     /// [PX] 对着播放中的 Music 逐像素量，已唱字比未唱高 **3.5…4.2pt**
@@ -249,24 +248,23 @@ struct LyricsSpecs {
 
     /// 翻行 / 焦点位让位用的弹簧。`(mass 1, stiffness 100, damping 18)`
     ///
-    /// [实测] 解析器 `（略）` 里这一组不走 `CASpringAnimation`，
-    /// 而是 `（略）` 打包成 timing 值存进 `+0x2f8`（`scrollLead` 因此可解析求值）。
+    /// [实测] 这一组不走 `CASpringAnimation`，而是打包成 timing 值
+    /// （`scrollLead` 因此可解析求值）。
     var lineChangeSpringTimingParameters =
-        SpringTimingParameters(mass: 1, stiffness: 100, damping: 18)     //[实测] +0x2f8
+        SpringTimingParameters(mass: 1, stiffness: 100, damping: 18)     // [实测] 生效值
 
     /// 副行展开 / 收起。`(1, 150, 30)` 与 `(1, 130, 30)`
     ///
     /// [实测] 解析器里这两组各自 new 了一个 `CASpringAnimation` 只为取 `settlingDuration`，
-    /// 存进 `+0x310` / `+0x338`。阻尼比分别 1.22 / 1.32，都是过阻尼——落到终点不回弹。
+    /// 另存两组。阻尼比分别 1.22 / 1.32，都是过阻尼——落到终点不回弹。
     var showTranslationTransliterationSpringParameters =
-        SpringAnimationParameters(mass: 1, stiffness: 150, damping: 30)  //[实测] +0x310
+        SpringAnimationParameters(mass: 1, stiffness: 150, damping: 30)  // [实测]
     var hideTranslationTransliterationSpringParameters =
-        SpringAnimationParameters(mass: 1, stiffness: 130, damping: 30)  //[实测] +0x338
+        SpringAnimationParameters(mass: 1, stiffness: 130, damping: 30)  // [实测]
 
     /// 悬停底板的进出弹簧。`进 (2, 300, 50)` / `出 (1, 322, 24)`
     ///
-    /// [实测] `（略）`（`setHighlighted:` 实体）里的立即数：
-    /// `0x4000000000000000`/`0x4072c00000000000`/`0x4049000000000000` 进出两组。
+    /// [实测] `setHighlighted:` 里进出两组的立即数各不相同：
     /// 进入更"弹"（mass 2、damping 50），退出更脆（mass 1、damping 24），不要共用一套。
     var hoverHighlightSpringIn = SpringAnimationParameters(mass: 2, stiffness: 300, damping: 50)
     var hoverHighlightSpringOut = SpringAnimationParameters(mass: 1, stiffness: 322, damping: 24)

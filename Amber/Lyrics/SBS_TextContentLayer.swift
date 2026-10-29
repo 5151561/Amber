@@ -122,8 +122,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
         var glows: [Int: GlowRamp] = [:]
         /// **强调辉光**的第二条 ramp，与 `glows` 同键不同源（§1.1.1）。
         ///
-        /// [实测] `（略）`：音节被强调时对**音节层**再跑一条 `shadowOpacity`
-        /// 斜坡，`from = specs[0x240]`、`to = specs[0x248]`、按 `t` 取端点，
+        /// [实测] 音节被强调时对**音节层**再跑一条 `shadowOpacity`
+        /// 斜坡，端点取强调辉光的 from / to 两项、按 `t` 在区间内取值，
         /// 弹簧 `min(span, 3)`。它与 `startGlowRamps` 那条**词级**辉光是两条独立的
         /// ramp（不同触发点、不同层），所以这里分开存，合成时才相加。
         var emphasisGlows: [Int: GlowRamp] = [:]
@@ -410,7 +410,7 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// `liftAnimated` **只管抬升**（渐变、辉光、音译都是逐帧直写模型值）：
     /// 真时那 2pt 由 (1, 14, 7) 那条弹簧慢慢飘上去，假时当场落位。
     /// - Parameter headstart: 是否把 `animationHeadstart`（0.10s）叠到进度上。
-    ///   [实测] `（略）`：**只有选中行且走动画那一路**才加，
+    ///   [实测] **只有选中行且走动画那一路**才加，
     ///   seek / 重排一律用真值。原版加在 `TextLayer.applyProgress` 的入参上，
     ///   内容层自己存的 `progress` 仍是原始秒数——所以这里也只改局部变量。
     func applyProgress(liftAnimated: Bool, headstart: Bool = false) {
@@ -548,8 +548,8 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// **是常量位移不是动画幅度**（§8.1：它是直接从纵向落点里减掉的），抬起来之后保持。
     ///
     /// 放大不在这条路上——它有自己的时刻表与弹簧，见 `emphasizeSyllables`。
-    /// 两个字段（`+0x100/+0x108` 与 `+0x2d0`）在原版里也是两套：
-    /// 缩放归 `（略）` 的逐字形循环，抬升归落点公式。
+    /// 两个字段（缩放区间与 `syllableLift`）在原版里也是两套：
+    /// 缩放走逐字形循环，抬升归落点公式。
     ///
     /// **进出都做**：§25.3 的 `LyricsAnimationStatus` 有 `reverseAnimating` 一支，
     /// 说明这套动画本来就是可逆的。往回 seek 时把越过的音节放回原位，
@@ -586,9 +586,9 @@ final class SBS_TextContentLayer: CALayer, SyncedLyricsContentLayer, SBS_TextCon
     /// `start + span/(n/2) + stagger·i` 把它写回恒等。
     ///
     /// 四条与观感直接对应的：
-    /// - **零点在「开唱」不是「唱完」**：放大跟高亮同时起。规格核对里两条延迟都是
-    ///   纯延迟（`（略）(stagger·i)` / `（略）(…, span/(n/2)+stagger·i, …)`），
-    ///   没有 `end` 项，下发时刻就是音节成为当前音节那一帧。
+    /// - **零点在「开唱」不是「唱完」**：放大跟高亮同时起。两条延迟都是
+    ///   纯延迟（`stagger·i` / `span/(n/2) + stagger·i`），没有 `end` 项，
+    ///   下发时刻就是音节成为当前音节那一帧。
     /// - **逐字形错峰**：首字母先鼓、末字母晚 `stagger·(n−1)` 起。
     ///   所以「横扫」扫的是**一个词内部**，词与词之间不扫。
     /// - **回落是覆盖不是曲线**：第二次写恒等直接把第一次的放大顶掉，

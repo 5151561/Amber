@@ -44,16 +44,16 @@ final class SyncedLyricsLineLayer: CALayer {
     /// 内容层的父层。悬停时只动它的 `opacity`（1 → `highlightLabelAlpha`）。
     ///
     /// [实测] 原版 `SyncedLyricsLineLayer` 构造时**只**立即创建这一层
-    /// （`（略）` 里唯一的 `alloc/init`），其余内容层与底板都是懒建。
+    /// （构造里唯一的 `alloc/init`），其余内容层与底板都是懒建。
     /// 单独立这一层是为了让「文字压到 85%」只作用一次——按两个文本层各调一次
     /// 会得到 0.85²。
     let containerLayer = CALayer()
 
     /// 悬停底板。懒创建，插在 index 0（最底），四周外扩 `highlightViewMargin`。
     ///
-    /// [实测] `（略）`：`backgroundColor = specs+0x290`（透明占位）/
+    /// [实测] `setHighlighted:` 里：`backgroundColor` 取透明那一档占位、
     /// `opacity 0` / `cornerCurve .continuous` / `cornerRadius 16`，
-    /// 可见的 8% 白来自相邻的 `+0x298`（存储副本）。动画分开两条：
+    /// 可见的 8% 白来自相邻的另一档颜色。动画分开两条：
     /// 透明度走 0.12s 曲线，几何走弹簧。
     var backgroundLayer: CALayer?
     /// 未接线：`applyScrolling` 写它并同时转告内容层，判色用的是**内容层自己**

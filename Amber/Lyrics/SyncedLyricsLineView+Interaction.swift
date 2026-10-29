@@ -30,7 +30,7 @@ extension SyncedLyricsLineView {
     func setHovered(_ hovered: Bool) {
         guard shouldApplyHover() else { return }
         lineLayer?.isHighlighted = hovered
-        // 悬停的观感是**底板 + 文字压到 85%**（`（略）`）：8% 白、圆角 16、
+        // 悬停的观感是**底板 + 文字压到 85%**：8% 白、圆角 16、
         // 四周外扩 16，透明度走 0.12s 曲线。
         lineLayer?.setHighlighted(hovered, animated: true)
         // 聚焦那条只管**去模糊**：亮度滤镜留给当前播放行，悬停不吃
