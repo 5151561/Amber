@@ -23,6 +23,7 @@ final class AuxiliaryWindows {
     private var settings: SettingsWindowController?
     private var songsViewOptions: SongsViewOptionsPanelController?
     private var qqLoginSheet: NSWindow?
+    private var neteaseLoginSheet: NSWindow?
     private var miniPlayer: MiniPlayerWindowController?
     private var infoPanel: InfoPanelWindowController?
 
@@ -71,6 +72,37 @@ final class AuxiliaryWindows {
             parent.endSheet(sheet)
         } else {
             // 还没挂上去就被叫停（主窗当时不在）：直接收掉，免得留一扇孤窗
+            sheet.close()
+        }
+    }
+
+    /// 在主窗上以 sheet 呈现网易云登录面板。已经开着就不重复开。
+    ///
+    /// 与 QQ 那扇的区别只有一处：**没有状态位**。QQ 的 `showingQQLogin` 是因为主菜单
+    /// （Amber ▸ 登录 QQ 音乐…）也要开它，得有个全局意图位；网易云只从侧栏底部那颗
+    /// 账号按钮进（设置窗里那扇是它自己 `.sheet(item:)` 开的），所以由这里自己持有。
+    func presentNeteaseLogin() {
+        guard let appState, neteaseLoginSheet == nil, let parent = mainWindowProvider() else { return }
+
+        let host = NSHostingController(rootView: NeteaseLoginView(onDismiss: { [weak self] in
+            self?.dismissNeteaseLogin()
+        }).environment(appState.neteaseLogin))
+        host.sizingOptions = [.preferredContentSize]
+        let sheet = NSWindow(contentViewController: host)
+        sheet.styleMask = [.titled, .fullSizeContentView]
+        sheet.isReleasedWhenClosed = false
+
+        neteaseLoginSheet = sheet
+        parent.beginSheet(sheet, completionHandler: nil)
+    }
+
+    /// 收掉网易云登录 sheet（登录成功 / 用户点关闭）。
+    func dismissNeteaseLogin() {
+        guard let sheet = neteaseLoginSheet else { return }
+        neteaseLoginSheet = nil
+        if let parent = sheet.sheetParent {
+            parent.endSheet(sheet)
+        } else {
             sheet.close()
         }
     }

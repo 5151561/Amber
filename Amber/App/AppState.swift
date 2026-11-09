@@ -562,6 +562,7 @@ final class AppState {
         // 校完凭证再拉账号资料：过期的那份在上一行已经被打回未登录，
         // 侧栏底部就不会先亮出一个其实已经登不上的名字。
         qqLogin.refreshProfile()
+        neteaseLogin.refreshProfile()
         await syncAccountPlaylists()
         signposter.emitEvent("AppState.launch.playlists",
                              "playlists=\(self.library.playlists.count)")

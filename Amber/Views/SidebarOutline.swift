@@ -157,12 +157,21 @@ final class SidebarViewController: NSViewController {
         observers.observe({ [appState] in appState.sidebarSelection }) { [weak self] selection in
             self?.reloadEntries(selection: selection)
         }
-        // 账号那一行跟着登录态与账号资料翻（名字、头像）。
-        // 两条都用 `observeNow`：原来没有 `dropFirst`，订阅当场就拿当前登录态刷一次账号行。
+        // 账号那一行跟着**当前来源**、登录态与账号资料翻（名字、头像）。
+        // 三条都用 `observeNow`：订阅当场就先按现状刷一次账号行。
+        observers.observeNow({ [weak appState] in appState?.selectedProvider }) { [weak self] _ in
+            self?.updateAccount()
+        }
         observers.observeNow({ [weak appState] in appState?.qqLogin.credential }) { [weak self] _ in
             self?.updateAccount()
         }
         observers.observeNow({ [weak appState] in appState?.qqLogin.profile }) { [weak self] _ in
+            self?.updateAccount()
+        }
+        observers.observeNow({ [weak appState] in appState?.neteaseLogin.credential }) { [weak self] _ in
+            self?.updateAccount()
+        }
+        observers.observeNow({ [weak appState] in appState?.neteaseLogin.profile }) { [weak self] _ in
             self?.updateAccount()
         }
     }
@@ -218,7 +227,7 @@ final class SidebarViewController: NSViewController {
         accountButton.contentTintColor = .labelColor
         accountButton.alignment = .left
         accountButton.target = self
-        accountButton.action = #selector(showQQLogin)
+        accountButton.action = #selector(showAccountLogin)
         accountButton.translatesAutoresizingMaskIntoConstraints = false
         updateAccount()
 
@@ -240,14 +249,44 @@ final class SidebarViewController: NSViewController {
         return container
     }
 
-    /// 账号那一行显示的是**账号名**，不是登录状态词（Music 那颗按钮的 AX description
+    /// 账号那一行显示的是**当前来源**的账号名，不是登录状态词（Music 那颗按钮的 AX description
     /// 就是用户名本身）。资料还没拉回来（或这次没取到）时才退回状态词。
+    ///
+    /// 从前这里写死读 `qqLogin.profile`：切到网易云之后，左下角还是 QQ 的昵称与头像。
+    /// 两家各有一份登录态，所以名字、首字母、头像一律走 `currentAccount`，
+    /// 只有「这家叫 QQ 音乐 / 网易云音乐」这种文案差异由 `accountBrand` 补。
     private func updateAccount() {
-        let profile = appState.qqLogin.profile
-        accountButton.title = profile?.nickname
-            ?? (appState.qqLogin.isLoggedIn ? "QQ 音乐已登录" : "登录 QQ 音乐")
-        accountIcon.initial = profile?.nickname.first.map(String.init)
-        loadAccountAvatar(profile?.avatarURL)
+        let account = currentAccount
+        accountButton.title = account.nickname
+            ?? (account.isLoggedIn ? "\(accountBrand)已登录" : "登录 \(accountBrand)")
+        accountIcon.initial = account.nickname?.first.map(String.init)
+        loadAccountAvatar(account.avatarURL)
+    }
+
+    /// 当前来源对应哪一家的账号。两家的 store 形状不同（QQ 有独立的 `profile`，
+    /// 网易的昵称还多一份在凭证里），在这里合成一份，控件那边只认这三个值。
+    private var currentAccount: (nickname: String?, avatarURL: String?, isLoggedIn: Bool) {
+        switch appState.selectedProvider {
+        case .qq:
+            let profile = appState.qqLogin.profile
+            return (profile?.nickname, profile?.avatarURL, appState.qqLogin.isLoggedIn)
+        case .netease:
+            let login = appState.neteaseLogin
+            // 头像要等 `user/detail` 那一趟回来，昵称在凭证里现成有——先顶上，
+            // 免得已登录却在这一小段里显示成「网易云音乐已登录」这种状态词。
+            return (login.profile?.nickname ?? login.credential?.nickname,
+                    login.profile?.avatarURL,
+                    login.isLoggedIn)
+        }
+    }
+
+    /// 按钮文案里的品牌名。QQ 那边一直是带空格的写法（「QQ 音乐」），
+    /// 不跟着 `ProviderKind.displayName`（「QQ音乐」）改，免得顺手改掉已有的文案。
+    private var accountBrand: String {
+        switch appState.selectedProvider {
+        case .qq: return "QQ 音乐"
+        case .netease: return "网易云音乐"
+        }
     }
 
     private func loadAccountAvatar(_ urlString: String?) {
@@ -257,14 +296,21 @@ final class SidebarViewController: NSViewController {
         guard let urlString, accountIcon.image == nil else { return }
         Task { [weak self] in
             let image = await ImageCache.shared.image(for: urlString)
-            // 回来时地址可能已经换人了（注销、换号），对不上就不贴。
+            // 回来时地址可能已经换人了（注销、换号、切来源），对不上就不贴。
             guard let self, self.accountAvatarURL == urlString else { return }
             self.accountIcon.image = image
         }
     }
 
-    @objc private func showQQLogin() {
-        appState.showingQQLogin = true
+    /// 账号按钮：按**当前来源**开对应的登录面板。点网易的头像却弹出 QQ 的登录面板，
+    /// 是这一处最容易漏的一环。
+    @objc private func showAccountLogin() {
+        switch appState.selectedProvider {
+        case .qq:
+            appState.showingQQLogin = true
+        case .netease:
+            AuxiliaryWindows.shared.presentNeteaseLogin()
+        }
     }
 }
 

@@ -50,6 +50,17 @@ enum NeteaseCookieLoginState: Equatable {
     var isBusy: Bool { self == .validating }
 }
 
+/// 已登录账号的昵称与头像。形状与 `QQAccountProfile` 对齐——侧栏底部那颗按钮
+/// 按当前来源在两家的资料之间切换，两边交出来的得是同一种东西。
+///
+/// 昵称在凭证里现成有（`account/get` 顺带收的），**头像没有**：那条接口的 profile
+/// 只留了 uid/nickname 两项，头像得单独打一条 `user/detail`（见 `currentUserProfile()`）。
+struct NeteaseAccountProfile: Equatable, Sendable {
+    let nickname: String
+    /// 头像地址，取不到就 nil（界面退回首字母／人形占位）。
+    let avatarURL: String?
+}
+
 // MARK: - 登录态服务
 
 /// 网易云登录态：cookie 存 Keychain，uid/昵称这类非敏感信息存 UserDefaults。
@@ -82,11 +93,15 @@ final class NeteaseLoginStore {
     /// Cookie 导入状态。与 `qrState` 并列，两条路谁也不碰谁的字段。
     private(set) var cookieState: NeteaseCookieLoginState = .idle
 
+    /// 已登录账号的昵称与头像。没登录、或这一趟没取到就是 nil。
+    private(set) var profile: NeteaseAccountProfile?
+
     /// 由 AppState 注入的 API 实例（扫码登录用）
     @ObservationIgnored var qrAPI: NeteaseAPI?
 
     private var qrTask: Task<Void, Never>?
     private var cookieTask: Task<Void, Never>?
+    private var profileTask: Task<Void, Never>?
 
     private static let cookieKey = "neteaseCookie"
     private static let uidKey = "neteaseUID"
@@ -111,11 +126,43 @@ final class NeteaseLoginStore {
         UserDefaults.standard.removeObject(forKey: Self.nicknameKey)
         credential = nil
         qrState = .idle
+        refreshProfile()
     }
 
     /// 凭证失效（`account/get` 复核确认失效时调用）
     func markExpired() {
         credential = nil
+        refreshProfile()
+    }
+
+    // MARK: - 账号资料
+
+    /// 拉一次昵称与头像。没登录就直接清空——换号／注销后侧栏不能还挂着上一个人的名字。
+    ///
+    /// 昵称先拿凭证里那份垫上（那是登录时 `account/get` 给的，不用等网络），头像没有
+    /// 现成的，只能再打一条 `user/detail`。所以侧栏在「已登录、头像还没回来」这一小段里
+    /// 显示的是昵称 + 首字母占位，而不是退回「已登录」那种状态词。
+    ///
+    /// 启动时由 `AppState.runLaunchTasksOnce` 在校完凭证之后叫一次（`init` 里不发网络请求），
+    /// 之后登录态每变一次重来一次。
+    func refreshProfile() {
+        profileTask?.cancel()
+        profileTask = nil
+        guard let qrAPI, let credential else {
+            profile = nil
+            return
+        }
+        if let nickname = credential.nickname, !nickname.isEmpty {
+            profile = NeteaseAccountProfile(nickname: nickname, avatarURL: profile?.avatarURL)
+        }
+        profileTask = Task { [weak self] in
+            let fetched = await qrAPI.currentUserProfile()
+            guard !Task.isCancelled else { return }
+            // 取不到（断网、接口抖动）就留着上面垫的那份，不清空：没证据说明这个人没了。
+            guard let self, let fetched else { return }
+            self.profile = NeteaseAccountProfile(nickname: fetched.nickname,
+                                                 avatarURL: fetched.avatarURL)
+        }
     }
 
     // MARK: - 扫码登录
@@ -186,6 +233,7 @@ final class NeteaseLoginStore {
         UserDefaults.standard.set(credential.uid ?? 0, forKey: Self.uidKey)
         UserDefaults.standard.set(credential.nickname, forKey: Self.nicknameKey)
         self.credential = credential
+        refreshProfile()
     }
 
     /// 取消扫码。面板 `onDisappear` 也走这里，所以顺手把 Cookie 那边的**残留提示**一起清掉
