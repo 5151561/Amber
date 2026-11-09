@@ -26,6 +26,11 @@ final class CatalogPosterCardView: CatalogCardContentView {
     override func build() {
         artworkView.cornerRadius = M.posterCornerRadius
         artworkView.hoverScrimOpacity = 0.18
+        // 图与卡比例对不上时（音源给 1:1 / 横图，卡是 3:4）不裁图，改成：
+        // 图缩进内缩 16 的图框里按比例贴合，图框之外由封面模糊底铺满。
+        // 比例本来就吻合的（3:4 竖图）仍走铺满，跟改之前一模一样。
+        artworkView.artworkInset = M.posterArtworkInset
+        artworkView.artworkTextBand = M.posterArtworkMinTextBand
         addSubview(artworkView)
         for field in [eyebrowField, titleField, descField] {
             CatalogCardKit.applyArtworkShadow(field)

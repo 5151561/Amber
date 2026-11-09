@@ -2080,6 +2080,46 @@ enum MusicMetrics {
         static let posterChinTwoLine: CGFloat = 45
         static let posterChinThreeLine: CGFloat = 60
 
+        // MARK: 图槽与模糊底（2026-11-09）
+
+        /// 海报卡的封面不再整卡 `aspectFill`：**图与卡比例对不上时**（音源给的是 1:1 方图、
+        /// 2:1 横图，而卡是 3:4），图缩进一只内缩的图框里按比例贴合，图框之外由同一张
+        /// 封面放大模糊后铺满整卡。比例本来就吻合的（3:4 竖图）仍照旧铺满、零开销。
+        ///
+        /// 判据是**图比 对 卡比**（246/328 = 0.75），不是对图槽比：竖图 3:4 与卡完全同形，
+        /// 铺满本来就一点没裁，不该被塞进方框里再缩一圈。
+        ///
+        /// 四边内缩 16：与 `posterTextInset` 同值，于是图的左右沿正好压在文字的左右沿上。
+        /// [PX] 依据 2026-11-09 用户提供的 iOS Music 截图（「专属精选推荐」卡宽约 300、
+        /// 方图左沿约 25，折到 246 约 20）；取 16 是为了与文字内缩共用一格，
+        /// 而不是再造一个 20 的散数——按铁律 6，能对齐已有的设计常量就不新立常量。
+        static let posterArtworkInset: CGFloat = 16
+        /// 图框下面留给文字的带高。三行（eyebrow 11 / 标题 13 / 描述 11，行高各 16、
+        /// 间距 2、末行距卡底 15）从卡底往上排共占 67，取 70 留 3 的呼吸。
+        /// `CatalogPosterCardView.layout()` 那条自底向上的排法**一行都不用改**，
+        /// 这个数只用来把图框的下沿钉在文字上方。
+        static let posterArtworkMinTextBand: CGFloat = 70
+        /// 图框自己的圆角。图不再贴卡边，四角都露在模糊底上，得自己收边。
+        /// [推] 卡圆角 10、图框内缩 16，取 6 让内外两圈圆角看起来同族（近似同心圆角）。
+        static let posterArtworkCornerRadius: CGFloat = 6
+
+        /// 模糊底上的暗罩。它铺满整卡但**垫在封面图的下面**，所以实际只压住图框外那圈模糊区：
+        /// 图一点不损失，白字又有足够对比。
+        ///
+        /// [推] 0.56 → 0.66（自上而下略深）：浅色封面（白底或大面积天空）模糊后亮度约 0.8，
+        /// 压到 0.3 上下才融得进深色页面，同时又还能看出封面的色相；
+        /// 深色封面本来就近黑，压多少都还是黑，不影响。
+        static let backdropScrimOpacity: Float = 0.56
+        static let backdropScrimFloorOpacity: Float = 0.66
+        /// 图比与卡比的差在这个以内就当吻合，直接铺满、不生成模糊底。
+        /// 0.03 对应约 4% 的裁切量，肉眼看不出来。
+        static let artworkFitTolerance: CGFloat = 0.03
+        /// 模糊底在缓存里的降采样边长（像素）。48 铺回 246 的卡是 5 倍放大，
+        /// 放大本身就是主要的糊，再叠一层小的 `CIGaussianBlur` 抹掉块边。
+        /// 32 那一档试过：放大的竖条纹路在图框边上能看出来，48 才散干净。
+        static let backdropSampleSize: Int = 48
+        static let backdropBlurSigma: CGFloat = 6
+
         /// 方卡（product-lockup）[AX] 图 179.5 + 文字块 37（216.5−179.5）
         /// [WEB] 标题 12/400 主色(0.92)、副标题 12/400 次要色(0.64)，图底 +4 起第一行、行距 16
         static let squareWidth: CGFloat = 179.5

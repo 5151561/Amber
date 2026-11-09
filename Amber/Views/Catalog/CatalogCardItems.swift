@@ -96,10 +96,25 @@ enum CatalogCardKit {
 /// 卡片的封面块：`CALayer` 贴图（`resizeAspectFill`，与旧版 `ArtworkView` 的
 /// `scaledToFill` + 裁切是同一件事）+ 没图时的渐变占位 + 悬浮暗罩 + 图底可读性渐变。
 /// 圆角与遮罩都在这一层，外面不用再裁。
+///
+/// **2026-11-09 起多一条路：图比与容器比不符时不再裁**。设 `artworkInset` 之后，
+/// 封面缩进内缩的图框里按比例贴合（`resizeAspect`），图框之外由同一张封面放大模糊后
+/// 铺满——这就是 iOS Music 那种「小方框 + 模糊延伸」的观感。比例本来就吻合的
+///（3:4 竖图配 3:4 卡）仍走原来的铺满，一行没变。
 final class CatalogArtworkView: NSView {
 
+    /// 层的名字（测试按名字取层，别数下标——这层叠顺序随卡型改）。
+    static let placeholderLayerName = "catalogArtworkPlaceholder"
+    static let backdropLayerName = "catalogArtworkBackdrop"
+    static let scrimLayerName = "catalogArtworkBackdropScrim"
+    static let artworkLayerName = "catalogArtwork"
+
     private let placeholder = CAGradientLayer()
+    /// 模糊底：同一张封面降采样 + 高斯模糊，铺满整卡。只在走「贴合」那条路时露出来。
+    private let backdrop = CALayer()
     private let artwork = CALayer()
+    /// 暗罩：铺满整卡，但**垫在封面图的下面**，所以实际只压住图框外那圈模糊底。
+    private let backdropScrim = CAGradientLayer()
     private let glyph = NSImageView()
     private let hoverScrim = CALayer()
     private let legibility = CAGradientLayer()
@@ -110,6 +125,28 @@ final class CatalogArtworkView: NSView {
     private var requestToken: UInt64 = 0
     /// 这次铺的是条目自带的品牌渐变（非 nil）还是默认灰底（nil），见 `applyPlaceholderFill`。
     private var brandFill: [Color]?
+
+    /// 当前贴上去的那张图，只用来算「图比 vs 容器比」。
+    private var loadedImage: NSImage?
+    /// 模糊底的请求序号与负责的地址（同一张图不重复请求）。
+    private var backdropTask: Task<Void, Never>?
+    private var backdropToken: UInt64 = 0
+    private var backdropSourceKey: String?
+    /// 此刻是不是正走「贴合 + 模糊底」那条路。
+    private var usesBackdrop = false
+
+    /// 图框的内缩（0 = 老路：图铺满整个 bounds）。左右与顶部各内缩这么多。
+    var artworkInset: CGFloat = 0 {
+        didSet {
+            guard artworkInset != oldValue else { return }
+            artwork.contentsGravity = artworkInset > 0 ? .resizeAspect : .resizeAspectFill
+            needsLayout = true
+        }
+    }
+    /// 图框下面让给文字的带高（只有 `artworkInset > 0` 时有意义）。
+    var artworkTextBand: CGFloat = 0 {
+        didSet { if artworkTextBand != oldValue { needsLayout = true } }
+    }
 
     /// 图底可读性渐变的高度（0 = 不要这层）。SwiftUI 的 `LegibilityScrim`：透明 → 黑 0.55。
     var legibilityHeight: CGFloat = 0 { didSet { needsLayout = true } }
@@ -129,10 +166,38 @@ final class CatalogArtworkView: NSView {
         layer?.cornerRadius = cornerRadius
         layer?.masksToBounds = true
 
+        // 给每一层起名：这几层的位置本来就是叠放顺序的一部分（占位 → 模糊底 → 暗罩 →
+        // 封面 → 可读性渐变 → 悬浮罩），改动一处顺序就会牵到测试与别的卡型，
+        // 有名字才好按名字取，不用数「第几层」。
+        placeholder.name = CatalogArtworkView.placeholderLayerName
+        backdrop.name = CatalogArtworkView.backdropLayerName
+        backdropScrim.name = CatalogArtworkView.scrimLayerName
+        artwork.name = CatalogArtworkView.artworkLayerName
+
         placeholder.startPoint = CGPoint(x: 0, y: 1)   // topLeading
         placeholder.endPoint = CGPoint(x: 1, y: 0)     // bottomTrailing
         ArtworkPlaceholder.fill(placeholder, for: self)
         layer?.addSublayer(placeholder)
+
+        // 模糊底垫在图下面、占位之上：图不透明时会整个盖住它，只有走「贴合」那条路、
+        // 图框四周留出空隙时才露出来。
+        backdrop.contentsGravity = .resizeAspectFill
+        backdrop.masksToBounds = true
+        backdrop.isHidden = true
+        layer?.addSublayer(backdrop)
+
+        // 暗罩**压在模糊底上、图的下面**，不是图的上面：
+        // 把它铺满整卡，图框外的模糊区被压暗（白字才站得住），而图本身整块盖住它、
+        // 一点不损失。原先放图上时整张封面都被压灰一档，是这一版最早那次返工的原因。
+        // 颜色固定黑，不跟外观走——卡片上的字一直是白的，浅色模式也一样。
+        backdropScrim.colors = [
+            NSColor(white: 0, alpha: CGFloat(MusicMetrics.Catalog.backdropScrimOpacity)).cgColor,
+            NSColor(white: 0, alpha: CGFloat(MusicMetrics.Catalog.backdropScrimFloorOpacity)).cgColor,
+        ]
+        backdropScrim.startPoint = CGPoint(x: 0.5, y: 1)   // 顶端浅
+        backdropScrim.endPoint = CGPoint(x: 0.5, y: 0)     // 底端深
+        backdropScrim.isHidden = true
+        layer?.addSublayer(backdropScrim)
 
         artwork.contentsGravity = .resizeAspectFill
         artwork.masksToBounds = true
@@ -186,12 +251,106 @@ final class CatalogArtworkView: NSView {
     override func layout() {
         super.layout()
         CatalogCardKit.setFrame(placeholder, bounds)
-        CatalogCardKit.setFrame(artwork, bounds)
+
+        // 图框：左右与顶部各内缩 `artworkInset`，底部让出 `artworkTextBand` 给文字。
+        // 内缩为 0 时就是整个 bounds —— 老路原样。
+        let box = artworkBox
+        CatalogCardKit.setFrame(artwork, box)
+        // 图不再贴卡边，四角都露在模糊底上，得自己收边；贴边时交给卡圆角裁，别叠两道。
+        artwork.cornerRadius = artworkInset > 0 ? MusicMetrics.Catalog.posterArtworkCornerRadius : 0
+
+        CatalogCardKit.setFrame(backdrop, bounds)
+        // 暗罩铺满整卡——它在图下面，图会把它整块盖掉，所以实际只压住图框外那圈模糊底。
+        CatalogCardKit.setFrame(backdropScrim, bounds)
         CatalogCardKit.setFrame(hoverScrim, bounds)
         CatalogCardKit.setFrame(legibility,
                                 NSRect(x: 0, y: 0, width: bounds.width, height: legibilityHeight))
-        legibility.isHidden = legibilityHeight <= 0
+        // 走「贴合」那条路时文字坐在模糊底上，图底那层渐变没有意义（暗化交给 `backdropScrim`）。
+        legibility.isHidden = legibilityHeight <= 0 || usesBackdrop
         glyph.frame = bounds
+
+        updateBackdropIfNeeded()
+    }
+
+    /// 图框（`artworkInset == 0` 时等于 bounds）。
+    private var artworkBox: CGRect {
+        guard artworkInset > 0 else { return bounds }
+        let width = max(0, bounds.width - artworkInset * 2)
+        let height = max(0, bounds.height - artworkInset - artworkTextBand)
+        guard width > 0, height > 0 else { return bounds }
+        // 非翻转坐标：卡顶是 maxY，图框从顶部往下钉。
+        return CGRect(x: artworkInset, y: bounds.height - artworkInset - height,
+                      width: width, height: height)
+    }
+
+    // MARK: 贴合 + 模糊底
+
+    /// 每次布局都过一遍：图比与容器比不符就露出模糊底，并（在需要时）去取一张。
+    /// `backdropSourceKey` 兜着，重复布局不会重复请求。
+    private func updateBackdropIfNeeded() {
+        guard artworkInset > 0, bounds.width > 1, bounds.height > 1, let image = loadedImage else {
+            setBackdropVisible(false)
+            return
+        }
+        let wants = !Self.ratiosMatch(image, container: bounds)
+        setBackdropVisible(wants)
+        guard wants, let key = requestedURL, backdropSourceKey != key else { return }
+        backdropSourceKey = key
+        startBackdropLoad(key: key)
+    }
+
+    private func setBackdropVisible(_ visible: Bool) {
+        guard usesBackdrop != visible else { return }
+        usesBackdrop = visible
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backdrop.isHidden = !visible
+        backdropScrim.isHidden = !visible
+        // 走贴合这条路时文字坐在模糊底上，图底那层渐变没意义（暗化交给 `backdropScrim`）。
+        legibility.isHidden = legibilityHeight <= 0 || visible
+        CATransaction.commit()
+    }
+
+    /// 先把清晰的那张顶上去当底，模糊图到了再换。
+    ///
+    /// 模糊图要几十毫秒（还得先等原图从缓存里出来），这段空窗里露灰底比露一张
+    /// 「马上会虚掉的封面」更难看——图框里那张才是主角，底下糊不糊只影响边缘。
+    private func startBackdropLoad(key: String) {
+        backdropTask?.cancel()
+        backdropToken &+= 1
+        let token = backdropToken
+        writeBackdrop(loadedImage)
+        if let cached = ImageCache.shared.memoryCachedBackdrop(for: key) {
+            writeBackdrop(cached)
+            return
+        }
+        backdropTask = Task { [weak self] in
+            let blurred = await ImageCache.shared.backdropImage(for: key)
+            guard let self, !Task.isCancelled, self.backdropToken == token,
+                  self.requestedURL == key else { return }
+            self.writeBackdrop(blurred)
+        }
+    }
+
+    private func writeBackdrop(_ image: NSImage?) {
+        guard let image else { return }
+        let contents: Any? = image.amberCGImage ?? image
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backdrop.contents = contents
+        CATransaction.commit()
+    }
+
+    /// 图比与容器比的差在 `artworkFitTolerance` 以内 = 铺满也裁不到东西。
+    /// 取不到尺寸时一律按「吻合」处理：宁可走老路，也不要凭空多一层模糊底。
+    private static func ratiosMatch(_ image: NSImage, container: CGRect) -> Bool {
+        let size = image.size
+        guard size.width > 0, size.height > 0, container.width > 0, container.height > 0
+        else { return true }
+        let ratio = size.width / size.height
+        let containerRatio = container.width / container.height
+        return abs(ratio - containerRatio) / containerRatio
+            <= MusicMetrics.Catalog.artworkFitTolerance
     }
 
     /// - Parameters:
@@ -287,6 +446,9 @@ final class CatalogArtworkView: NSView {
         artwork.isHidden = image == nil
         CATransaction.commit()
         if image != nil { glyph.isHidden = true }
+        // 「要不要走贴合」跟着图走：复用时上一张是方图、这一张是竖图，得重判一次。
+        loadedImage = image
+        updateBackdropIfNeeded()
     }
 
     func setHovering(_ hovering: Bool, animated: Bool) {
@@ -298,6 +460,18 @@ final class CatalogArtworkView: NSView {
         loadTask?.cancel()
         loadTask = nil
         requestedURL = nil
+        // 模糊底那一套也要断干净：不复位的话下一张卡会先用着上一张的底，
+        // 而 `backdropSourceKey` 还是旧地址，新图的底永远不会去取。
+        backdropTask?.cancel()
+        backdropTask = nil
+        backdropToken &+= 1
+        backdropSourceKey = nil
+        loadedImage = nil
+        setBackdropVisible(false)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backdrop.contents = nil
+        CATransaction.commit()
         // 清封面走 `showArtwork(nil)` 这条唯一通路（它把隐式动画关掉），别直接写
         // `contents = nil`：手加的 sublayer 是吃隐式动画的，那一下会给复用中的层挂一次
         // `contents` 淡出，紧接着 `configure` 贴上的新图就成了「上一张淡成这一张」——

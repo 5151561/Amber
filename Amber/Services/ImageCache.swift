@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import CryptoKit
 import Foundation
 import ImageIO
@@ -96,6 +97,72 @@ final class ImageCache: @unchecked Sendable {
         }
         return await task.value
     }
+
+    // MARK: - 模糊底（卡片图槽外那一圈背景）
+
+    /// 派生图的键后缀。与封面本体共用一个 `NSCache`、但键不同：32px 的小图
+    /// 不会把 500px 的封面顶掉，反过来也不会。
+    private static let backdropKeySuffix = "#backdrop"
+
+    /// 模糊底的内存命中（同步）。
+    ///
+    /// 跟 `memoryCachedImage(for:)` 同一条理由：卡片重新上屏时先同步贴上，
+    /// 走一次异步都是「空白至少一帧」，滚动时就是那下闪。
+    func memoryCachedBackdrop(for urlString: String?) -> NSImage? {
+        guard let urlString else { return nil }
+        return memory.object(forKey: (urlString + Self.backdropKeySuffix) as NSString)
+    }
+
+    /// 模糊底：给「图与卡比例对不上」的卡当背景（`CatalogArtworkView`）。
+    ///
+    /// 32px 降采样 + 一层小 `CIGaussianBlur`，铺回 246 的卡是七倍多放大——
+    /// **放大本身就是主要的糊**，高斯只是把降采样留下的块边抹掉，所以 sigma 只要 4。
+    ///
+    /// 不用 `CALayer.filters` 做这件事：那是每帧重算，一张货架十来张卡同时在滚时
+    /// 代价直接压在合成器上；而且它跟 `masksToBounds` 一起用时，圆角边缘会漏一圈亮边。
+    /// 这里渲染一次、进缓存，滚动和复用都不再算。
+    @concurrent
+    func backdropImage(for urlString: String?) async -> NSImage? {
+        guard let urlString else { return nil }
+        let key = urlString + Self.backdropKeySuffix
+        if let cached = memory.object(forKey: key as NSString) { return cached }
+        guard let source = await image(for: urlString),
+              let blurred = Self.blurred(source,
+                                         sampleSize: MusicMetrics.Catalog.backdropSampleSize,
+                                         sigma: MusicMetrics.Catalog.backdropBlurSigma)
+        else { return nil }
+        store(blurred, for: key)
+        return blurred
+    }
+
+    /// 降采样 + 高斯模糊。返回的是**像素尺寸**的位图（同 `decode`，不按 DPI 折算）。
+    ///
+    /// `clampedToExtent()` 必须在模糊之前：不 clamp 的话卷积会把四边的透明像素也吃进来，
+    /// 模糊底四周就有一圈发灰的边——而它铺满整卡，那圈边正好压在卡片圆角上。
+    nonisolated static func blurred(_ image: NSImage,
+                                    sampleSize: Int,
+                                    sigma: CGFloat) -> NSImage? {
+        guard let cgImage = image.amberCGImage else { return nil }
+        let source = CIImage(cgImage: cgImage)
+        let extent = source.extent
+        guard extent.width >= 1, extent.height >= 1 else { return nil }
+        let scale = CGFloat(sampleSize) / max(extent.width, extent.height)
+        let small = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let softened = small.clampedToExtent()
+            .applyingGaussianBlur(sigma: sigma)
+            .cropped(to: small.extent)
+        guard let output = backdropContext.createCGImage(softened, from: small.extent) else { return nil }
+        return NSImage(cgImage: output,
+                       size: CGSize(width: output.width, height: output.height))
+    }
+
+    /// 全局唯一一只 `CIContext`。建一次要几毫秒、还带一份 GPU command queue，
+    /// 每张卡建一只等于把滚动变成建 context 比赛。
+    ///
+    /// `nonisolated(unsafe)` 是在描述**既有的**线程安全而不是绕过检查：Apple 文档原文
+    /// "A CIContext is thread-safe"、可跨线程共享，`CIImage` 更是不变对象。
+    /// 之所以还得写这一行，只是 `CIContext` 没标 `Sendable`。
+    private nonisolated(unsafe) static let backdropContext = CIContext()
 
     /// 真正取一张图：本地文件 → 磁盘缓存 → 网络。只由 `image(for:)` 的在途 task 调。
     @concurrent

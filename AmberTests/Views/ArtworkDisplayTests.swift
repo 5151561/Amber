@@ -86,8 +86,9 @@ final class ArtworkDisplayTests: XCTestCase {
         try makeJPEG(size: 24, color: .systemGreen).write(to: file)
 
         let view = CatalogArtworkView(frame: NSRect(x: 0, y: 0, width: 50, height: 50))
-        let artwork = try XCTUnwrap(view.layer?.sublayers?.dropFirst().first,
-                                    "第二层是封面层（第一层是渐变占位）")
+        let artwork = try XCTUnwrap(view.layer?.sublayers?.first {
+            $0.name == CatalogArtworkView.artworkLayerName
+        }, "按名字取封面层：它底下多了模糊底与暗罩两层（2026-11-09 起）")
 
         view.setArtwork(url: file.absoluteString, points: nil)
         try await waitUntil { artwork.contents != nil }
